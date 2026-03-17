@@ -79,8 +79,9 @@ asr = [
   "scipy>=1.11.0",
 ]
 # Optional: flash-attn + flashinfer for faster vLLM embedding (bfloat16 + FLASH_ATTN).
+# vLLM from GitHub cu130 wheel (PyPI only ships CUDA 12); torch/torchvision already use torch-cuda (cu130).
 embed-vllm = [
-  "vllm>=0.16.0",
+  "vllm",
   # flashinfer and cubin versions must match
   "flashinfer-cubin==0.6.3",
   "flashinfer-python==0.6.3",
@@ -106,6 +107,8 @@ nemotron-table-structure-v1 = { index = "test-pypi" }
 nemotron-ocr = { index = "test-pypi" }
 torch = { index = "torch-cuda"}
 torchvision = { index ="torch-cuda"}
+# CUDA 13 wheel from GitHub (PyPI only has CUDA 12). Use _aarch64 wheel on ARM.
+vllm = { url = "https://github.com/vllm-project/vllm/releases/download/v0.16.0/vllm-0.16.0%2Bcu130-cp38-abi3-manylinux_2_35_x86_64.whl" }
 
 [[tool.uv.index]]
 name = "test-pypi"

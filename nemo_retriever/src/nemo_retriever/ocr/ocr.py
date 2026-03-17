@@ -23,7 +23,7 @@ import numpy as np
 import pandas as pd
 from nemo_retriever.params import RemoteRetryParams
 from nemo_retriever.nim.nim import invoke_image_inference_batches
-from nemo_retriever.util.table_and_chart import join_graphic_elements_and_ocr_output
+from nemo_retriever.utils.table_and_chart import join_graphic_elements_and_ocr_output
 
 try:
     from PIL import Image
@@ -123,16 +123,20 @@ def _crop_all_from_page(
     page_image_b64: str,
     detections: List[Dict[str, Any]],
     wanted_labels: set,
-) -> List[Tuple[str, List[float], np.ndarray]]:
+    *,
+    as_b64: bool = False,
+) -> List[Tuple[str, List[float], Any]]:
     """
     Decode the page image **once** and crop all matching detections.
 
-    Returns a list of ``(label_name, bbox_xyxy_norm, crop_array)`` tuples for
+    Returns a list of ``(label_name, bbox_xyxy_norm, value)`` tuples for
     detections whose ``label_name`` is in *wanted_labels* and whose crop is
     valid.  Skips detections that fail to crop (bad bbox, tiny region, etc.).
 
-    Crops are returned as HWC uint8 numpy arrays so they can be passed
-    directly to ``NemotronOCRV1.invoke()`` without a PNG/base64 round-trip.
+    When *as_b64* is ``False`` (default), *value* is an HWC uint8 numpy array
+    suitable for local model inference.  When ``True``, *value* is a base64-
+    encoded PNG string — this avoids a wasteful numpy→PIL→PNG round-trip on
+    the remote inference path.
     """
     if Image is None:  # pragma: no cover
         raise ImportError("Cropping requires pillow.")
@@ -158,7 +162,7 @@ def _crop_all_from_page(
             return lo
         return int(min(max(v, float(lo)), float(hi)))
 
-    results: List[Tuple[str, List[float], np.ndarray]] = []
+    results: List[Tuple[str, List[float], Any]] = []
     for det in detections:
         if not isinstance(det, dict):
             continue
@@ -189,9 +193,15 @@ def _crop_all_from_page(
             crop.close()
             continue
 
-        crop_array = np.asarray(crop, dtype=np.uint8).copy()
-        crop.close()
-        results.append((label_name, [float(x) for x in bbox], crop_array))
+        if as_b64:
+            buf = io.BytesIO()
+            crop.save(buf, format="PNG")
+            crop.close()
+            value = base64.b64encode(buf.getvalue()).decode("ascii")
+        else:
+            value = np.asarray(crop, dtype=np.uint8).copy()
+            crop.close()
+        results.append((label_name, [float(x) for x in bbox], value))
 
     im.close()
     return results
@@ -327,16 +337,29 @@ def _parse_ocr_result(preds: Any) -> List[Dict[str, Any]]:
 
 
 def _blocks_to_text(blocks: List[Dict[str, Any]]) -> str:
-    """Sort text blocks by reading order (y then x) and join with newlines."""
+    """Sort text blocks by reading order (y then x) and join with whitespace."""
     blocks.sort(key=lambda b: (b.get("sort_y", 0.0), b.get("sort_x", 0.0)))
-    return "\n".join(b["text"] for b in blocks if b.get("text"))
+    return " ".join(b["text"] for b in blocks if b.get("text"))
 
 
-def _blocks_to_pseudo_markdown(blocks: List[Dict[str, Any]]) -> str:
+def _blocks_to_pseudo_markdown(
+    blocks: List[Dict[str, Any]],
+    crop_hw: Tuple[int, int] = (0, 0),
+) -> str:
     """Convert OCR text blocks into pseudo-markdown table format.
 
-    Uses DBSCAN clustering on y-coordinates to identify rows, then
+    Uses DBSCAN clustering on pixel y-coordinates to identify rows, then
     sorts within each row by x-coordinate and joins with pipe separators.
+
+    Parameters
+    ----------
+    blocks : list of dict
+        OCR text blocks with ``sort_y`` (normalised [0,1]) and ``sort_x``.
+    crop_hw : (height, width)
+        Pixel dimensions of the crop image.  When provided the normalised
+        ``sort_y`` values are scaled to pixels and clustered with
+        ``eps=10`` (matching nv-ingest behaviour).  Falls back to the old
+        normalised-space heuristic when the height is unavailable.
     """
     if not blocks:
         return ""
@@ -348,19 +371,27 @@ def _blocks_to_pseudo_markdown(blocks: List[Dict[str, Any]]) -> str:
     from sklearn.cluster import DBSCAN
 
     df = pd.DataFrame(valid)
+    df = df.sort_values("sort_y")
 
-    # Normalize y-coordinates to [0,1] for scale-invariant clustering.
     y_vals = df["sort_y"].values
-    y_range = y_vals.max() - y_vals.min()
-    if y_range > 0:
-        y_norm = (y_vals - y_vals.min()) / y_range
-        eps = 0.03  # ~3% of bbox height ≈ one text line
+    crop_h = crop_hw[0] if crop_hw else 0
+
+    if crop_h > 0:
+        # Pixel-space clustering (matches nv-ingest eps=10).
+        y_pixels = (y_vals * crop_h).astype(int)
+        eps = 10
     else:
-        y_norm = y_vals
-        eps = 0.1
+        # Fallback: normalise to [0,1] when pixel dims are unknown.
+        y_range = y_vals.max() - y_vals.min()
+        if y_range > 0:
+            y_pixels = (y_vals - y_vals.min()) / y_range
+            eps = 0.03
+        else:
+            y_pixels = y_vals
+            eps = 0.1
 
     dbscan = DBSCAN(eps=eps, min_samples=1)
-    dbscan.fit(y_norm.reshape(-1, 1))
+    dbscan.fit(y_pixels.reshape(-1, 1))
     df["cluster"] = dbscan.labels_
 
     df = df.sort_values(["cluster", "sort_x"])
@@ -523,14 +554,10 @@ def ocr_page_elements(
                     row_wanted = wanted_labels | _TEXT_LABELS
 
             # --- decode page image once, crop all matching detections ---
-            crops = _crop_all_from_page(page_image_b64, dets, row_wanted)
-
             if use_remote:
-                crop_b64s: List[str] = []
-                crop_meta: List[Tuple[str, List[float], Tuple[int, int]]] = []
-                for label_name, bbox, crop_array in crops:
-                    crop_b64s.append(_np_rgb_to_b64_png(crop_array))
-                    crop_meta.append((label_name, bbox, (crop_array.shape[0], crop_array.shape[1])))
+                crops = _crop_all_from_page(page_image_b64, dets, row_wanted, as_b64=True)
+                crop_b64s: List[str] = [b64 for _label, _bbox, b64 in crops]
+                crop_meta: List[Tuple[str, List[float]]] = [(label, bbox) for label, bbox, _b64 in crops]
 
                 if crop_b64s:
                     response_items = invoke_image_inference_batches(
@@ -546,12 +573,21 @@ def ocr_page_elements(
                     if len(response_items) != len(crop_meta):
                         raise RuntimeError(f"Expected {len(crop_meta)} OCR responses, got {len(response_items)}")
 
-                    for i, (label_name, bbox, crop_hw) in enumerate(crop_meta):
+                    for i, (label_name, bbox) in enumerate(crop_meta):
                         preds = _extract_remote_ocr_item(response_items[i])
 
                         if label_name == "chart" and use_graphic_elements:
                             ge_dets = _find_ge_detections_for_bbox(row, bbox)
                             if ge_dets:
+                                # Decode crop dimensions from the b64 PNG for graphic element joining.
+                                crop_hw = (0, 0)
+                                try:
+                                    _raw = base64.b64decode(crop_b64s[i])
+                                    with Image.open(io.BytesIO(_raw)) as _cim:
+                                        _cw, _ch = _cim.size
+                                        crop_hw = (_ch, _cw)
+                                except Exception:
+                                    pass
                                 text = join_graphic_elements_and_ocr_output(ge_dets, preds, crop_hw)
                                 if text:
                                     chart_items.append({"bbox_xyxy_norm": bbox, "text": text})
@@ -559,7 +595,15 @@ def ocr_page_elements(
 
                         blocks = _parse_ocr_result(preds)
                         if label_name == "table":
-                            text = _blocks_to_pseudo_markdown(blocks) or _blocks_to_text(blocks)
+                            crop_hw_table: Tuple[int, int] = (0, 0)
+                            try:
+                                _raw = base64.b64decode(crop_b64s[i])
+                                with Image.open(io.BytesIO(_raw)) as _cim:
+                                    _cw, _ch = _cim.size
+                                    crop_hw_table = (_ch, _cw)
+                            except Exception:
+                                pass
+                            text = _blocks_to_pseudo_markdown(blocks, crop_hw=crop_hw_table) or _blocks_to_text(blocks)
                         else:
                             text = _blocks_to_text(blocks)
                         entry = {"bbox_xyxy_norm": bbox, "text": text}
@@ -572,6 +616,8 @@ def ocr_page_elements(
                         elif label_name in _TEXT_LABELS:
                             row_ocr_text_blocks.extend(blocks)
             else:
+                crops = _crop_all_from_page(page_image_b64, dets, row_wanted)
+
                 if inference_batch_size is None or inference_batch_size < 1:
                     raise ValueError(
                         f"inference_batch_size must be set and greater than 0. Value: {inference_batch_size}"
@@ -598,7 +644,7 @@ def ocr_page_elements(
                                 return
                     blocks = _parse_ocr_result(preds)
                     if label_name == "table":
-                        text = _blocks_to_pseudo_markdown(blocks)
+                        text = _blocks_to_pseudo_markdown(blocks, crop_hw=crop_hw)
                         if not text:
                             text = _blocks_to_text(blocks)
                     else:
@@ -877,25 +923,16 @@ def nemotron_parse_page_elements(
                 all_meta.append({"timing": None, "error": None})
                 continue
 
-            crops = _crop_all_from_page(page_image_b64, dets, wanted_labels)
-            # Parse-only mode may skip page-elements detection entirely. In that
-            # case, parse the full page once and fan out the text to enabled
-            # content channels.
-            if not crops and wanted_labels:
-                try:
-                    raw = base64.b64decode(page_image_b64)
-                    with Image.open(io.BytesIO(raw)) as im0:
-                        full_crop = np.asarray(im0.convert("RGB"), dtype=np.uint8).copy()
-                    crops = [("full_page", [0.0, 0.0, 1.0, 1.0], full_crop)]
-                except Exception:
-                    crops = []
-
             if use_remote:
-                crop_b64s: List[str] = []
-                crop_meta: List[Tuple[str, List[float]]] = []
-                for label_name, bbox, crop_array in crops:
-                    crop_b64s.append(_np_rgb_to_b64_png(crop_array))
-                    crop_meta.append((label_name, bbox))
+                crops = _crop_all_from_page(page_image_b64, dets, wanted_labels, as_b64=True)
+                # Parse-only mode may skip page-elements detection entirely. In that
+                # case, parse the full page once and fan out the text to enabled
+                # content channels.  The image is already base64 — pass it through.
+                if not crops and wanted_labels:
+                    crops = [("full_page", [0.0, 0.0, 1.0, 1.0], page_image_b64)]
+
+                crop_b64s: List[str] = [b64 for _label, _bbox, b64 in crops]
+                crop_meta: List[Tuple[str, List[float]]] = [(label, bbox) for label, bbox, _b64 in crops]
 
                 if crop_b64s:
                     response_items = invoke_image_inference_batches(
@@ -928,6 +965,15 @@ def nemotron_parse_page_elements(
                             if extract_infographics:
                                 infographic_items.append(dict(entry))
             else:
+                crops = _crop_all_from_page(page_image_b64, dets, wanted_labels)
+                if not crops and wanted_labels:
+                    try:
+                        raw = base64.b64decode(page_image_b64)
+                        with Image.open(io.BytesIO(raw)) as im0:
+                            full_crop = np.asarray(im0.convert("RGB"), dtype=np.uint8).copy()
+                        crops = [("full_page", [0.0, 0.0, 1.0, 1.0], full_crop)]
+                    except Exception:
+                        crops = []
                 for label_name, bbox, crop_array in crops:
                     text = str(model.invoke(crop_array, task_prompt=task_prompt) or "").strip()
                     entry = {"bbox_xyxy_norm": bbox, "text": text}

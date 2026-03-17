@@ -225,6 +225,41 @@ class HelmManager(ServiceManager):
             print(f"Warning: Error finding services: {e}")
             return []
 
+    def _wait_for_services_by_pattern(self, pattern: str, timeout_s: int = 120, interval_s: int = 5) -> list[str]:
+        """
+        Wait for at least one service matching the pattern to appear, then return all matches.
+
+        For patterns without wildcards, returns [pattern] immediately (no wait).
+        For wildcard patterns, polls until matches are found or timeout.
+
+        Args:
+            pattern: Service name or pattern (e.g., "nv-ingest", "*embed*")
+            timeout_s: Maximum time to wait in seconds
+            interval_s: Time between poll attempts in seconds
+
+        Returns:
+            List of matching service names (may be empty if timeout)
+        """
+        if "*" not in pattern:
+            return [pattern]
+
+        deadline = time.time() + timeout_s
+        attempt = 0
+        while time.time() < deadline:
+            attempt += 1
+            service_names = self._find_services_by_pattern(pattern)
+            if service_names:
+                if attempt > 1:
+                    print(f"  Found {len(service_names)} service(s) matching '{pattern}' after {attempt} attempt(s)")
+                return service_names
+            if attempt == 1:
+                print(
+                    f"Waiting for service(s) matching '{pattern}' (timeout: {timeout_s}s, poll every {interval_s}s)..."
+                )
+            time.sleep(interval_s)
+
+        return []
+
     def _start_port_forwards(self) -> None:
         """Start port forwarding for all configured services."""
         # Get port forward configuration
@@ -253,8 +288,8 @@ class HelmManager(ServiceManager):
                 print(f"Warning: Invalid port forward config: {pf_config}")
                 continue
 
-            # Find matching services
-            service_names = self._find_services_by_pattern(service_pattern)
+            # Find matching services (wait for pattern-matched services to appear)
+            service_names = self._wait_for_services_by_pattern(service_pattern)
 
             if not service_names:
                 print(f"Warning: No services found matching pattern '{service_pattern}'")
@@ -606,7 +641,9 @@ done
 
         return 0
 
-    def check_readiness(self, timeout_s: int, check_milvus: bool = True, check_embedding: bool = True) -> bool:
+    def check_readiness(
+        self, timeout_s: int, check_milvus: bool = True, check_embedding: bool = True, verbose: bool = True
+    ) -> bool:
         """
         Check readiness by polling HTTP endpoint.
 
@@ -614,47 +651,75 @@ done
             timeout_s: Timeout in seconds
             check_milvus: If True, also check Milvus health endpoint
             check_embedding: If True, also check embedding service health endpoint
+            verbose: If True, print waiting message and per-service readiness status
 
         Returns:
             True if ready, False on timeout
         """
         url = self.get_service_url("health")
         deadline = time.time() + timeout_s
+        hostname = getattr(self.config, "hostname", "localhost")
+        last_status_time = 0.0
+        status_interval = 10.0  # print status every 10s when verbose
+
+        if verbose:
+            print(f"Waiting for services to become ready (timeout: {timeout_s}s)...")
 
         while time.time() < deadline:
+            now = time.time()
+            main_ready = False
+            milvus_ready = not check_milvus
+            embedding_ready = not check_embedding
+
             try:
-                # Check main service health
                 with urllib.request.urlopen(url, timeout=5) as resp:
-                    if resp.status == 200:
-                        all_services_ready = True
-
-                        # If Milvus check is enabled, verify it's also ready
-                        if check_milvus:
-                            hostname = getattr(self.config, "hostname", "localhost")
-                            milvus_url = f"http://{hostname}:9091/healthz"
-                            try:
-                                with urllib.request.urlopen(milvus_url, timeout=5) as milvus_resp:
-                                    if milvus_resp.status != 200:
-                                        all_services_ready = False
-                            except Exception:
-                                all_services_ready = False
-
-                        # If embedding check is enabled, verify it's also ready
-                        if check_embedding:
-                            hostname = getattr(self.config, "hostname", "localhost")
-                            embedding_url = f"http://{hostname}:8012/v1/health/ready"
-                            try:
-                                with urllib.request.urlopen(embedding_url, timeout=5) as embedding_resp:
-                                    if embedding_resp.status != 200:
-                                        all_services_ready = False
-                            except Exception:
-                                all_services_ready = False
-
-                        if all_services_ready:
-                            return True
+                    main_ready = resp.status == 200
             except Exception:
                 pass
+
+            if main_ready and check_milvus:
+                milvus_url = f"http://{hostname}:9091/healthz"
+                try:
+                    with urllib.request.urlopen(milvus_url, timeout=5) as milvus_resp:
+                        milvus_ready = milvus_resp.status == 200
+                except Exception:
+                    pass
+
+            if main_ready and check_embedding:
+                embedding_url = f"http://{hostname}:8012/v1/health/ready"
+                try:
+                    with urllib.request.urlopen(embedding_url, timeout=5) as embedding_resp:
+                        embedding_ready = embedding_resp.status == 200
+                except Exception:
+                    pass
+
+            all_services_ready = main_ready and milvus_ready and embedding_ready
+            if all_services_ready:
+                if verbose:
+                    print("All services ready.")
+                return True
+
+            if verbose and (now - last_status_time >= status_interval or last_status_time == 0):
+                last_status_time = now
+                parts = [f"main (7670): {'ready' if main_ready else 'not ready'}"]
+                if main_ready:
+                    if check_milvus:
+                        parts.append(f"milvus (9091): {'ready' if milvus_ready else 'not ready'}")
+                    if check_embedding:
+                        parts.append(f"embedding (8012): {'ready' if embedding_ready else 'not ready'}")
+                print("  " + " | ".join(parts))
+
             time.sleep(3)
+
+        if verbose:
+            parts = []
+            if not main_ready:
+                parts.append("main (7670)")
+            if main_ready and check_milvus and not milvus_ready:
+                parts.append("milvus (9091)")
+            if main_ready and check_embedding and not embedding_ready:
+                parts.append("embedding (8012)")
+            print(f"Readiness timeout. Not ready: {', '.join(parts) or 'unknown'}")
         return False
 
     def get_service_url(self, service: str = "api") -> str:
@@ -882,3 +947,173 @@ done
         except Exception as e:
             print(f"Error: Failed to dump logs: {e}")
             return 1
+
+    # Deployment names for stage-based control (per chart NIMService names and main deploy)
+    _INGESTION_DEPLOYMENTS = (
+        # main deploy uses release name (e.g. nv-ingest); set at runtime
+        "nemotron-page-elements-v3",
+        "nemoretriever-page-elements-v3",
+        "nemotron-graphic-elements-v1",
+        "nemoretriever-graphic-elements-v1",
+        "nemotron-table-structure-v1",
+        "nemoretriever-table-structure-v1",
+        "nemotron-ocr-v1",
+        "nemoretriever-ocr-v1",
+    )
+    _NON_INGESTION_DEPLOYMENTS = (
+        "llama-nemotron-rerank-1b-v2",
+        "llama-32-nv-rerankqa-1b-v2",
+    )
+
+    def _wait_for_deployments_available(self, timeout_s: int = 600, verbose: bool = True) -> None:
+        """Wait for all deployments in the release namespace to be available (condition=available).
+        Ensures the deployment list is complete before scaling. No-op or proceeds on timeout/no resources.
+        """
+        if verbose:
+            print(f"Waiting for deployments in {self.namespace} to be available (timeout: {timeout_s}s)...")
+        cmd = self.kubectl_cmd + [
+            "wait",
+            "--for=condition=available",
+            "deployment",
+            "--all",
+            "-n",
+            self.namespace,
+            f"--timeout={timeout_s}s",
+        ]
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s + 30)
+            if result.returncode == 0 and verbose:
+                print("Deployments available.")
+            elif result.returncode != 0 and verbose:
+                print("Proceeding (deployments wait finished or timed out).")
+        except Exception as e:
+            if verbose:
+                print(f"Proceeding after wait error: {e}")
+
+    def _get_existing_deployments(self) -> set[str]:
+        """Return set of deployment names that exist in the release namespace."""
+        cmd = self.kubectl_cmd + [
+            "get",
+            "deployments",
+            "-n",
+            self.namespace,
+            "-o",
+            "jsonpath={range .items[*]}{.metadata.name}{'\\n'}{end}",
+        ]
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            if result.returncode != 0:
+                return set()
+            return {n.strip() for n in result.stdout.strip().split("\n") if n.strip()}
+        except Exception:
+            return set()
+
+    def _scale_deployment(self, name: str, replicas: int) -> int:
+        """Scale a deployment to the given replica count. Returns 0 on success."""
+        cmd = self.kubectl_cmd + [
+            "scale",
+            "deployment",
+            name,
+            "-n",
+            self.namespace,
+            "--replicas",
+            str(replicas),
+        ]
+        return run_cmd(cmd)
+
+    def stop_ingestion_services(self) -> int:
+        """Stop only ingestion-related services (scale to 0) to free VRAM before recall."""
+        existing = self._get_existing_deployments()
+        main_name = self.release_name
+        to_stop = ([main_name] if main_name in existing else []) + [
+            d for d in self._INGESTION_DEPLOYMENTS if d in existing
+        ]
+        if not to_stop:
+            return 0
+        print("Stopping ingestion-only services (minimize VRAM)...")
+        for name in to_stop:
+            rc = self._scale_deployment(name, 0)
+            if rc != 0:
+                print(f"Warning: Failed to scale {name} to 0")
+        return 0
+
+    def start_ingestion_services(self) -> int:
+        """Start ingestion-related services (scale to 1) before the next dataset's e2e."""
+        existing = self._get_existing_deployments()
+        main_name = self.release_name
+        to_start = ([main_name] if main_name in existing else []) + [
+            d for d in self._INGESTION_DEPLOYMENTS if d in existing
+        ]
+        if not to_start:
+            return 0
+        print("Starting ingestion-only services...")
+        for name in to_start:
+            rc = self._scale_deployment(name, 1)
+            if rc != 0:
+                print(f"Warning: Failed to scale {name} to 1")
+        return 0
+
+    def stop_non_ingestion_services(self) -> int:
+        """Stop reranker and other non-ingestion services (scale to 0) after initial start."""
+        timeout_s = getattr(self.config, "readiness_timeout", 600)
+        self._wait_for_deployments_available(timeout_s=timeout_s, verbose=True)
+        existing = self._get_existing_deployments()
+        to_stop = [d for d in self._NON_INGESTION_DEPLOYMENTS if d in existing]
+        if not to_stop:
+            return 0
+        print("Stopping non-ingestion services (reranker, etc.)...")
+        for name in to_stop:
+            rc = self._scale_deployment(name, 0)
+            if rc != 0:
+                print(f"Warning: Failed to scale {name} to 0")
+        return 0
+
+    def start_retrieval_services(self, reranker: bool = False) -> int:
+        """Start recall-required services; if reranker is True, scale reranker(s) to 1.
+        Tries both known reranker deployment names (llama-nemotron-rerank-1b-v2, llama-32-nv-rerankqa-1b-v2).
+        """
+        if not reranker:
+            return 0
+        existing = self._get_existing_deployments()
+        to_start = [d for d in self._NON_INGESTION_DEPLOYMENTS if d in existing]
+        if not to_start:
+            return 0
+        print("Starting retrieval services (reranker)...")
+        rc = 0
+        for name in to_start:
+            if self._scale_deployment(name, 1) != 0:
+                print(f"Warning: Failed to scale {name} to 1")
+                rc = 1
+        return rc
+
+    def wait_for_reranker_readiness(self, timeout_s: int, verbose: bool = True) -> bool:
+        """Wait for reranker NIM to become ready (poll /v1/health/ready on port 8015)."""
+        hostname = getattr(self.config, "hostname", "localhost")
+        url = f"http://{hostname}:8015/v1/health/ready"
+        deadline = time.time() + timeout_s
+        last_status_time = 0.0
+        status_interval = 10.0
+
+        if verbose:
+            print(f"Waiting for reranker to become ready (timeout: {timeout_s}s)...")
+
+        while time.time() < deadline:
+            now = time.time()
+            try:
+                with urllib.request.urlopen(url, timeout=5) as resp:
+                    if resp.status == 200:
+                        if verbose:
+                            print("Reranker ready.")
+                        return True
+            except Exception:
+                pass
+
+            if verbose and (now - last_status_time >= status_interval or last_status_time == 0):
+                last_status_time = now
+                print("  reranker (8015): not ready")
+
+            time.sleep(3)
+
+        if verbose:
+            print("Readiness timeout. Reranker (8015) did not become ready.")
+        return False

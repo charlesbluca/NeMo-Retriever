@@ -4,13 +4,19 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from io import BytesIO
-from typing import Any, Dict, List, Optional
+from dataclasses import dataclass
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 import base64
 import traceback
-import pypdfium2.raw as pdfium_c
+
+import cv2
+
+from nv_ingest_api.util.pdf.pdfium import (
+    convert_bitmap_to_corrected_numpy,
+    is_scanned_page as _is_scanned_page,
+)
 
 import pandas as pd
 
@@ -27,81 +33,97 @@ try:
 except Exception:  # pragma: no cover
     np = None  # type: ignore[assignment]
 
-try:
-    from PIL import Image
-except Exception:  # pragma: no cover
-    Image = None  # type: ignore[assignment]
+# Default model input size used by nv-ingest for page-element detection.
+_MODEL_INPUT_SIZE: Tuple[int, int] = (1024, 1024)
+
+# Allowed render-mode values.
+RenderMode = Literal["full_dpi", "fit_to_model"]
 
 
-def _render_page_to_base64(page: Any, *, dpi: int = 200, image_format: str = "png") -> Dict[str, Any]:
+def _compute_fit_to_model_scale(
+    page: Any,
+    target_wh: Tuple[int, int] = _MODEL_INPUT_SIZE,
+    max_dpi: int = 300,
+) -> float:
+    """Compute a pdfium render scale that fits the page within *target_wh* pixels.
+
+    This mirrors the logic in ``nv_ingest_api.util.pdf.pdfium._compute_render_scale_to_fit``
+    combined with the ``min(base_scale, fit_scale)`` cap applied in
+    ``pdfium_pages_to_numpy`` when ``scale_tuple`` is provided.
+
+    For a US-Letter page (612×792 pt) fitting into 1024×1024 the result is
+    ``min(300/72, min(1024/612, 1024/792)) ≈ 1.293`` → ~93 effective DPI.
     """
-    Render a page to an image and return base64 plus minimal metadata.
+    target_w, target_h = target_wh
+    page_w = float(page.get_width())
+    page_h = float(page.get_height())
+    if page_w <= 0 or page_h <= 0 or target_w <= 0 or target_h <= 0:
+        return max(float(max_dpi) / 72.0, 0.01)
+
+    fit_scale = max(min(target_w / page_w, target_h / page_h), 1e-3)
+    base_scale = max(float(max_dpi) / 72.0, 0.01)
+    return min(base_scale, fit_scale)
+
+
+def _render_page_to_base64(
+    page: Any,
+    *,
+    dpi: int = 200,
+    image_format: str = "jpeg",
+    jpeg_quality: int = 100,
+    render_mode: RenderMode = "fit_to_model",
+) -> Dict[str, Any]:
+    """Render a page and encode as JPEG or PNG.
+
+    Parameters
+    ----------
+    render_mode:
+        ``"full_dpi"`` – render at *dpi* (default 300 → 2550×3300 for US Letter).
+        ``"fit_to_model"`` – render at the nv-ingest fit-to-1024 scale (~93 DPI
+        for US Letter) so the raster is already close to the model's input size,
+        avoiding a large bilinear down-scale in ``resize_pad``.
 
     Returns dict with:
     - image_b64: str
-    - encoding: str ("png" or "raw")
+    - encoding: str ("jpeg" or "png")
     - orig_shape_hw: tuple[int,int] (H,W) of the rendered raster
-    - shape/dtype: optional (for raw)
     """
-    scale = max(float(dpi) / 72.0, 0.01)
-    bitmap = page.render(scale=scale)
+    if render_mode == "fit_to_model":
+        render_scale = _compute_fit_to_model_scale(page, _MODEL_INPUT_SIZE, max_dpi=dpi)
+    else:
+        render_scale = max(float(dpi) / 72.0, 0.01)
+    bitmap = page.render(scale=render_scale)
 
-    # Prefer numpy output when available.
-    arr = None
-    if hasattr(bitmap, "to_numpy"):
-        try:
-            arr = bitmap.to_numpy()
-        except Exception:
-            arr = None
+    arr = convert_bitmap_to_corrected_numpy(bitmap)
 
-    if arr is None and hasattr(bitmap, "to_pil"):
-        try:
-            pil_img = bitmap.to_pil()
-        except Exception:
-            pil_img = None
-        if pil_img is not None:
-            w, h = pil_img.size
-            buf = BytesIO()
-            pil_img.save(buf, format=image_format.upper())
-            return {
-                "image_b64": base64.b64encode(buf.getvalue()).decode("ascii"),
-                "encoding": image_format.lower(),
-                "orig_shape_hw": (int(h), int(w)),
-            }
+    orig_h, orig_w = int(arr.shape[0]), int(arr.shape[1])
 
-    # Fallback: if we got a numpy-like array, try encoding with Pillow; else raw bytes.
-    if arr is not None and Image is not None:
-        try:
-            # Expect typical image layouts like (H,W,C) or (H,W).
-            h = int(arr.shape[0]) if hasattr(arr, "shape") and len(arr.shape) >= 2 else 0
-            w = int(arr.shape[1]) if hasattr(arr, "shape") and len(arr.shape) >= 2 else 0
-            pil = Image.fromarray(arr)
-            buf = BytesIO()
-            pil.save(buf, format=image_format.upper())
-            return {
-                "image_b64": base64.b64encode(buf.getvalue()).decode("ascii"),
-                "encoding": image_format.lower(),
-                "orig_shape_hw": (int(h), int(w)),
-            }
-        except Exception:
-            pass
+    # Strip alpha channel (RGBA→RGB) for JPEG compatibility.
+    if arr.ndim == 3 and arr.shape[2] == 4:
+        arr = arr[:, :, :3]
 
-    if arr is not None:
-        # Last resort: raw bytes base64 (still a base64 string, but not a standard image container).
-        raw = arr.tobytes()
-        meta: Dict[str, Any] = {"image_b64": base64.b64encode(raw).decode("ascii"), "encoding": "raw"}
-        if hasattr(arr, "shape"):
-            meta["shape"] = tuple(arr.shape)
-            try:
-                if len(arr.shape) >= 2:
-                    meta["orig_shape_hw"] = (int(arr.shape[0]), int(arr.shape[1]))
-            except Exception:
-                pass
-        if hasattr(arr, "dtype"):
-            meta["dtype"] = str(arr.dtype)
-        return meta
+    # Encode.
+    fmt = image_format.lower()
+    if fmt == "jpeg":
+        # convert_bitmap_to_corrected_numpy returns RGB; OpenCV needs BGR.
+        bgr = cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
+        ok, buf = cv2.imencode(".jpg", bgr, [cv2.IMWRITE_JPEG_QUALITY, int(jpeg_quality)])
+        if not ok:
+            raise RuntimeError("cv2.imencode failed for JPEG")
+        encoded_bytes = buf.tobytes()
+    else:
+        # PNG with fast compression.
+        bgr = cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
+        ok, buf = cv2.imencode(".png", bgr, [cv2.IMWRITE_PNG_COMPRESSION, 3])
+        if not ok:
+            raise RuntimeError("cv2.imencode failed for PNG")
+        encoded_bytes = buf.tobytes()
 
-    raise RuntimeError("Failed to render page to an image representation.")
+    return {
+        "image_b64": base64.b64encode(encoded_bytes).decode("ascii"),
+        "encoding": fmt,
+        "orig_shape_hw": (orig_h, orig_w),
+    }
 
 
 def _error_record(
@@ -143,15 +165,6 @@ def _error_record(
     }
 
 
-def _is_scanned_page(page) -> bool:
-    tp = page.get_textpage()
-    text = tp.get_text_bounded() or ""
-    num_chars = len(text.strip())
-    num_images = sum(1 for obj in page.get_objects() if obj.type == pdfium_c.FPDF_PAGEOBJ_IMAGE)
-
-    return num_chars == 0 and num_images > 0
-
-
 def _extract_page_text(page) -> str:
     """
     Always extract text from the given page and return it as a raw string.
@@ -169,9 +182,11 @@ def pdf_extraction(
     extract_charts: bool = False,
     extract_infographics: bool = False,
     dpi: int = 200,
-    image_format: str = "png",
+    image_format: str = "jpeg",
+    jpeg_quality: int = 100,
     text_extraction_method: str = "pdfium_hybrid",
     text_depth: str = "page",
+    render_mode: RenderMode = "fit_to_model",
     **kwargs: Any,
 ) -> Any:
     """
@@ -231,7 +246,7 @@ def pdf_extraction(
                     doc = pdfium.PdfDocument(BytesIO(bytes(pdf_bytes)))
 
                 # TODO: Extend to support more image formats
-                if image_format not in {"png"}:
+                if image_format not in {"png", "jpeg"}:
                     raise ValueError(f"Unsupported image_format: {image_format!r}")
 
                 # Step 2: process only the first page (single-page doc).
@@ -273,7 +288,13 @@ def pdf_extraction(
                     )
                     render_info: Optional[Dict[str, Any]] = None
                     if want_any_raster:
-                        render_info = _render_page_to_base64(page, dpi=dpi, image_format=image_format)
+                        render_info = _render_page_to_base64(
+                            page,
+                            dpi=dpi,
+                            image_format=image_format,
+                            jpeg_quality=jpeg_quality,
+                            render_mode=render_mode,
+                        )
 
                     page_record: Dict[str, Any] = {
                         "path": pdf_path,

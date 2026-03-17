@@ -30,6 +30,13 @@ try:
 except Exception:  # pragma: no cover
     Image = None  # type: ignore[assignment]
 
+try:
+    from nv_ingest_api.internal.primitives.nim.model_interface.yolox import (
+        YOLOX_GRAPHIC_MIN_SCORE,
+    )
+except ImportError:
+    YOLOX_GRAPHIC_MIN_SCORE = 0.1  # type: ignore[assignment]
+
 
 def _error_payload(*, stage: str, exc: BaseException) -> Dict[str, Any]:
     return {
@@ -360,7 +367,7 @@ def graphic_elements_ocr_page_elements(
         _np_rgb_to_b64_png,
         _parse_ocr_result,
     )
-    from nemo_retriever.util.table_and_chart import join_graphic_elements_and_ocr_output
+    from nemo_retriever.utils.table_and_chart import join_graphic_elements_and_ocr_output
 
     retry = remote_retry or RemoteRetryParams(
         remote_max_pool_workers=int(kwargs.get("remote_max_pool_workers", 16)),
@@ -443,7 +450,13 @@ def graphic_elements_ocr_page_elements(
                 if len(response_items) != len(crops):
                     raise RuntimeError(f"Expected {len(crops)} GE responses, got {len(response_items)}")
                 for resp in response_items:
-                    ge_results.append(_remote_response_to_ge_detections(resp))
+                    ge_results.append(
+                        [
+                            d
+                            for d in _remote_response_to_ge_detections(resp)
+                            if (d.get("score") or 0.0) >= YOLOX_GRAPHIC_MIN_SCORE
+                        ]
+                    )
             else:
                 # Local batched inference.
                 for _, _, crop_array in crops:
@@ -458,7 +471,7 @@ def graphic_elements_ocr_page_elements(
                         pre = pre.unsqueeze(0)
                     pred = graphic_elements_model.invoke(pre, (h, w))
                     ge_dets = _prediction_to_detections(pred, label_names=label_names)
-                    ge_results.append(ge_dets)
+                    ge_results.append([d for d in ge_dets if (d.get("score") or 0.0) >= YOLOX_GRAPHIC_MIN_SCORE])
 
             # --- Run OCR on all crops ---
             ocr_results: List[Any] = []

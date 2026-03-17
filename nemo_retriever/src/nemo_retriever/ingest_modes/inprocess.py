@@ -46,6 +46,7 @@ except Exception as e:  # pragma: no cover
     pdfium = None  # type: ignore[assignment]
     _PDFIUM_IMPORT_ERROR = e
 
+from ..image.load import SUPPORTED_IMAGE_EXTENSIONS
 from ..utils.convert import SUPPORTED_EXTENSIONS, convert_to_pdf_bytes
 from ..ingestor import Ingestor
 from ..params import ASRParams
@@ -1003,7 +1004,16 @@ class InProcessIngestor(Ingestor):
         # NOTE: `kwargs` passed to `.extract()` are intended primarily for PDF extraction
         # (e.g. `extract_text`, `dpi`, etc). Downstream model stages do NOT necessarily
         # accept the same keyword arguments. Keep per-stage kwargs isolated.
-
+        if self._input_documents and all(f.lower().endswith(".txt") for f in self._input_documents):
+            txt_params = TextChunkParams()
+            return self.extract_txt(params=txt_params)
+        if self._input_documents and all(f.lower().endswith(".html") for f in self._input_documents):
+            html_params = HtmlChunkParams()
+            return self.extract_html(params=html_params)
+        if self._input_documents and all(
+            os.path.splitext(f)[1].lower() in SUPPORTED_IMAGE_EXTENSIONS for f in self._input_documents
+        ):
+            return self.extract_image_files(params=params, **kwargs)
         resolved = _coerce_params(params, ExtractParams, kwargs)
         if (
             any(
@@ -1019,13 +1029,7 @@ class InProcessIngestor(Ingestor):
         ):
             resolved = resolved.model_copy(update={"api_key": resolve_remote_api_key()})
         kwargs = resolved.model_dump(mode="python")
-        batch_tuning = kwargs.get("batch_tuning") if isinstance(kwargs.get("batch_tuning"), dict) else {}
-        nemotron_parse_workers = float(batch_tuning.get("nemotron_parse_workers", 0.0) or 0.0)
-        gpu_nemotron_parse = float(batch_tuning.get("gpu_nemotron_parse", 0.0) or 0.0)
-        nemotron_parse_batch_size = float(batch_tuning.get("nemotron_parse_batch_size", 0.0) or 0.0)
-        use_nemotron_parse_only = (
-            nemotron_parse_workers > 0.0 and gpu_nemotron_parse > 0.0 and nemotron_parse_batch_size > 0.0
-        )
+        use_nemotron_parse_only = kwargs.get("method") == "nemotron_parse"
         extract_kwargs = dict(kwargs)
         # Downstream in-process stages (page elements / table / chart / infographic) assume
         # `page_image.image_b64` exists. Ensure PDF extraction emits a page image unless
@@ -1053,9 +1057,6 @@ class InProcessIngestor(Ingestor):
 
         Shared by ``extract()`` (PDF) and ``extract_image_files()`` (standalone images).
         """
-        batch_tuning = kwargs.get("batch_tuning") if isinstance(kwargs.get("batch_tuning"), dict) else {}
-        nemotron_parse_batch_size = float(batch_tuning.get("nemotron_parse_batch_size", 0.0) or 0.0)
-
         # Common, optional knobs shared by our detect_* helpers.
         detect_passthrough_keys = {
             "inference_batch_size",
@@ -1101,7 +1102,6 @@ class InProcessIngestor(Ingestor):
                 parse_flags["extract_charts"] = True
             if kwargs.get("extract_infographics") is True:
                 parse_flags["extract_infographics"] = True
-            parse_flags["inference_batch_size"] = int(nemotron_parse_batch_size)
             parse_flags.update(_stage_remote_kwargs("nemotron_parse"))
             parse_invoke_url = kwargs.get(
                 "nemotron_parse_invoke_url", kwargs.get("ocr_invoke_url", kwargs.get("invoke_url", ""))
@@ -1258,15 +1258,24 @@ class InProcessIngestor(Ingestor):
         ):
             resolved = resolved.model_copy(update={"api_key": resolve_remote_api_key()})
         kwargs = resolved.model_dump(mode="python")
-        batch_tuning = kwargs.get("batch_tuning") if isinstance(kwargs.get("batch_tuning"), dict) else {}
-        nemotron_parse_workers = float(batch_tuning.get("nemotron_parse_workers", 0.0) or 0.0)
-        gpu_nemotron_parse = float(batch_tuning.get("gpu_nemotron_parse", 0.0) or 0.0)
-        nemotron_parse_batch_size = float(batch_tuning.get("nemotron_parse_batch_size", 0.0) or 0.0)
-        use_nemotron_parse_only = (
-            nemotron_parse_workers > 0.0 and gpu_nemotron_parse > 0.0 and nemotron_parse_batch_size > 0.0
-        )
+        use_nemotron_parse_only = kwargs.get("method") == "nemotron_parse"
         self._pipeline_type = "image"
         self._append_detection_tasks(kwargs, use_nemotron_parse_only=use_nemotron_parse_only)
+        return self
+
+    def split(self, params: TextChunkParams | None = None, **kwargs: Any) -> "InProcessIngestor":
+        """
+        Re-chunk the ``text`` column by token count (post-extraction transform).
+
+        Appends :func:`~nemo_retriever.txt.split.split_df` as a GPU-category
+        task so it runs in sequence after extraction and before embedding.
+        """
+        from nemo_retriever.txt.split import split_df
+
+        resolved = _coerce_params(params, TextChunkParams, kwargs)
+        split_kwargs = resolved.model_dump(mode="python")
+        split_kwargs.pop("encoding", None)
+        self._tasks.append((split_df, split_kwargs))
         return self
 
     def extract_txt(self, params: TextChunkParams | None = None, **kwargs: Any) -> "InProcessIngestor":
@@ -1276,9 +1285,13 @@ class InProcessIngestor(Ingestor):
         Use with .files("*.txt").extract_txt(...).embed().vdb_upload().ingest().
         Do not call .extract() when using .extract_txt().
         """
+        from nemo_retriever.txt.ray_data import TxtSplitActor
+
         self._pipeline_type = "txt"
         resolved = _coerce_params(params, TextChunkParams, kwargs)
         self._extract_txt_kwargs = resolved.model_dump(mode="python")
+        text_split = TxtSplitActor(params=TextChunkParams(**self._extract_txt_kwargs))
+        self._tasks.append((text_split, {}))
         return self
 
     def extract_html(self, params: HtmlChunkParams | None = None, **kwargs: Any) -> "InProcessIngestor":
@@ -1288,9 +1301,15 @@ class InProcessIngestor(Ingestor):
         Use with .files("*.html").extract_html(...).embed().vdb_upload().ingest().
         Do not call .extract() when using .extract_html().
         """
+        from nemo_retriever.html.ray_data import HtmlSplitActor
+
         self._pipeline_type = "html"
         resolved = _coerce_params(params, HtmlChunkParams, kwargs)
         self._extract_html_kwargs = resolved.model_dump(mode="python")
+        html_split = HtmlSplitActor(
+            params=HtmlChunkParams(**self._extract_html_kwargs),
+        )
+        self._tasks.append((html_split, {}))
         return self
 
     def extract_audio(

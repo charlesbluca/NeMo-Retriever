@@ -14,7 +14,10 @@ from typing import Optional
 import lancedb
 import typer
 from nemo_retriever import create_ingestor
+from nemo_retriever.audio.asr_actor import asr_params_from_env
 from nemo_retriever.examples.common import estimate_processed_pages, print_pages_per_second
+from nemo_retriever.params import ASRParams
+from nemo_retriever.params import AudioChunkParams
 from nemo_retriever.params import EmbedParams
 from nemo_retriever.params import ExtractParams
 from nemo_retriever.params import IngestExecuteParams
@@ -44,7 +47,7 @@ def main(
     input_type: str = typer.Option(
         "pdf",
         "--input-type",
-        help="Input format: 'pdf', 'txt', 'html', 'doc', or 'image'. Use 'txt' for .txt, 'html' for .html (markitdown -> chunks), 'doc' for .docx/.pptx (converted to PDF via LibreOffice), 'image' for standalone image files (PNG, JPEG, BMP, TIFF, SVG).",  # noqa: E501
+        help="Input format: 'pdf', 'txt', 'html', 'doc', 'image', or 'audio'. Use 'audio' for MP3/WAV/M4A (chunk + ASR -> embed). Use 'txt' for .txt, 'html' for .html (markitdown -> chunks), 'doc' for .docx/.pptx (converted to PDF via LibreOffice), 'image' for standalone image files (PNG, JPEG, BMP, TIFF, SVG).",  # noqa: E501
     ),
     query_csv: Path = typer.Option(
         "bo767_query_gt.csv",
@@ -173,6 +176,17 @@ def main(
         "--text-chunk-overlap-tokens",
         help="Token overlap between consecutive text chunks (default: 150). Implies --text-chunk.",
     ),
+    audio_invoke_url: Optional[str] = typer.Option(
+        None,
+        "--audio-invoke-url",
+        help="Optional remote endpoint URL for audio (ASR) model inference.",
+    ),
+    audio_chunk_interval: int = typer.Option(
+        450,
+        "--audio-chunk-interval",
+        min=1,
+        help="Audio chunk size (bytes when split_type=size) for .extract_audio() pipeline.",
+    ),
 ) -> None:
     if gpu_devices is not None and num_gpus is not None:
         raise typer.BadParameter("--gpu-devices and --num-gpus are mutually exclusive.")
@@ -183,6 +197,8 @@ def main(
     else:
         gpu_device_list = ["0"]
 
+    import glob as _glob
+
     input_path = Path(input_path)
     if input_path.is_file():
         file_patterns = [str(input_path)]
@@ -192,9 +208,17 @@ def main(
             "html": ["*.html"],
             "doc": ["*.docx", "*.pptx"],
             "image": ["*.png", "*.jpg", "*.jpeg", "*.bmp", "*.tiff", "*.tif", "*.svg"],
+            "audio": ["*.mp3", "*.wav", "*.m4a"],
         }
         exts = ext_map.get(input_type, ["*.pdf"])
-        file_patterns = [str(input_path / e) for e in exts]
+        all_candidates = [str(input_path / e) for e in exts]
+        # Only pass patterns that match at least one file (avoids FileNotFoundError for
+        # e.g. *.wav when the directory only contains .mp3 files).
+        file_patterns = [p for p in all_candidates if _glob.glob(p)]
+        if not file_patterns:
+            raise typer.BadParameter(
+                f"No files found for input_type={input_type!r} in {input_path} (tried: {', '.join(exts)})"
+            )
     else:
         raise typer.BadParameter(f"Path does not exist: {input_path}")
 
@@ -212,6 +236,23 @@ def main(
                 max_tokens=text_chunk_max_tokens or 1024,
                 overlap_tokens=text_chunk_overlap_tokens if text_chunk_overlap_tokens is not None else 150,
             )
+        )
+    elif input_type == "audio":
+        # CLI-driven: remote only when --audio-invoke-url is set (same as other stages).
+        if audio_invoke_url is None:
+            asr_params = ASRParams(audio_endpoints=(None, None))
+        else:
+            asr_params = asr_params_from_env()
+            asr_params = ASRParams(
+                audio_endpoints=(audio_invoke_url.strip(), None),
+                audio_infer_protocol=asr_params.audio_infer_protocol,
+                function_id=asr_params.function_id,
+                auth_token=asr_params.auth_token,
+                segment_audio=asr_params.segment_audio,
+            )
+        ingestor = ingestor.files(file_patterns).extract_audio(
+            params=AudioChunkParams(split_type="size", split_interval=audio_chunk_interval),
+            asr_params=asr_params,
         )
     elif input_type == "image":
         ingestor = ingestor.files(file_patterns).extract_image_files(
@@ -265,7 +306,9 @@ def main(
             )
         )
 
-    enable_text_chunk = text_chunk or text_chunk_max_tokens is not None or text_chunk_overlap_tokens is not None
+    enable_text_chunk = input_type != "audio" and (
+        text_chunk or text_chunk_max_tokens is not None or text_chunk_overlap_tokens is not None
+    )
     if enable_text_chunk:
         ingestor = ingestor.split(
             TextChunkParams(
@@ -366,7 +409,11 @@ def main(
             ext = (
                 ".txt"
                 if input_type == "txt"
-                else (".html" if input_type == "html" else (".docx" if input_type == "doc" else ".pdf"))
+                else (
+                    ".html"
+                    if input_type == "html"
+                    else (".docx" if input_type == "doc" else (".mp3" if input_type == "audio" else ".pdf"))
+                )
             )
             print(f"\nQuery {i}: {q}")
             print(f"  Gold: {g}  (file: {doc}{ext}, page: {page})")
@@ -385,7 +432,11 @@ def main(
             ext = (
                 ".txt"
                 if input_type == "txt"
-                else (".html" if input_type == "html" else (".docx" if input_type == "doc" else ".pdf"))
+                else (
+                    ".html"
+                    if input_type == "html"
+                    else (".docx" if input_type == "doc" else (".mp3" if input_type == "audio" else ".pdf"))
+                )
             )
             missed_gold.append((f"{doc}{ext}", str(page)))
 

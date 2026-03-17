@@ -23,6 +23,9 @@ from nemo_retriever import create_ingestor
 from nemo_retriever.ingest_modes.batch import BatchIngestor
 from nemo_retriever.ingest_modes.lancedb_utils import lancedb_schema
 from nemo_retriever.model import resolve_embed_model
+from nemo_retriever.audio.asr_actor import asr_params_from_env
+from nemo_retriever.params import ASRParams
+from nemo_retriever.params import AudioChunkParams
 from nemo_retriever.params import EmbedParams
 from nemo_retriever.params import ExtractParams
 from nemo_retriever.params import IngestExecuteParams
@@ -280,7 +283,7 @@ def main(
     input_type: str = typer.Option(
         "pdf",
         "--input-type",
-        help="Input format: 'pdf', 'txt', 'html', 'doc', or 'image'. Use 'txt' for .txt, 'html' for .html (markitdown -> chunks), 'doc' for .docx/.pptx (converted to PDF via LibreOffice), 'image' for standalone image files (PNG, JPEG, BMP, TIFF, SVG).",  # noqa: E501
+        help="Input format: 'pdf', 'txt', 'html', 'doc', 'image', or 'audio'. Use 'audio' for MP3/WAV/M4A (chunk + ASR -> embed). Use 'txt' for .txt, 'html' for .html (markitdown -> chunks), 'doc' for .docx/.pptx (converted to PDF via LibreOffice), 'image' for standalone image files (PNG, JPEG, BMP, TIFF, SVG).",  # noqa: E501
     ),
     lancedb_uri: str = typer.Option(
         LANCEDB_URI,
@@ -494,6 +497,17 @@ def main(
         "--text-chunk-overlap-tokens",
         help="Token overlap between consecutive text chunks (default: 150). Implies --text-chunk.",
     ),
+    audio_invoke_url: Optional[str] = typer.Option(
+        None,
+        "--audio-invoke-url",
+        help="Optional remote endpoint URL for audio (ASR) model inference.",
+    ),
+    audio_chunk_interval: int = typer.Option(
+        450,
+        "--audio-chunk-interval",
+        min=1,
+        help="Audio chunk size (bytes when split_type=size) for .extract_audio() pipeline.",
+    ),
 ) -> None:
     log_handle, original_stdout, original_stderr = _configure_logging(log_file, debug=bool(debug))
     try:
@@ -584,6 +598,7 @@ def main(
                 "html": ["*.html"],
                 "doc": ["*.docx", "*.pptx"],
                 "image": ["*.png", "*.jpg", "*.jpeg", "*.bmp", "*.tiff", "*.tif", "*.svg"],
+                "audio": ["*.mp3", "*.wav", "*.m4a"],
             }
             # If a specific image extension was requested, use only that extension's globs.
             if _original_input_type in _image_ext_map:
@@ -690,12 +705,31 @@ def main(
             ingestor = ingestor.files(file_patterns).extract_image_files(_extract_params(_detection_batch_tuning))
         elif input_type == "doc":
             ingestor = ingestor.files(file_patterns).extract(_extract_params(_pdf_batch_tuning))
+        elif input_type == "audio":
+            # CLI-driven: remote only when --audio-invoke-url is set (same as other stages).
+            if audio_invoke_url is None:
+                asr_params = ASRParams(audio_endpoints=(None, None))
+            else:
+                asr_params = asr_params_from_env()
+                asr_params = ASRParams(
+                    audio_endpoints=(audio_invoke_url.strip(), None),
+                    audio_infer_protocol=asr_params.audio_infer_protocol,
+                    function_id=asr_params.function_id,
+                    auth_token=asr_params.auth_token,
+                    segment_audio=asr_params.segment_audio,
+                )
+            ingestor = ingestor.files(file_patterns).extract_audio(
+                params=AudioChunkParams(split_type="size", split_interval=audio_chunk_interval),
+                asr_params=asr_params,
+            )
         else:
             ingestor = ingestor.files(file_patterns).extract(
                 _extract_params(_pdf_batch_tuning, inference_batch_size=page_elements_batch_size)
             )
 
-        enable_text_chunk = text_chunk or text_chunk_max_tokens is not None or text_chunk_overlap_tokens is not None
+        enable_text_chunk = input_type != "audio" and (
+            text_chunk or text_chunk_max_tokens is not None or text_chunk_overlap_tokens is not None
+        )
         if enable_text_chunk:
             ingestor = ingestor.split(_text_chunk_params)
 

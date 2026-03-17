@@ -8,6 +8,10 @@ ASRActor: Ray Data map_batches callable for speech-to-text.
 Supports remote (Parakeet/Riva gRPC) or local (HuggingFace nvidia/parakeet-ctc-1.1b).
 When audio_endpoints are both null/empty, uses local model; otherwise uses remote client.
 
+Core batch function: asr_chunks_to_text(batch_df, model=..., client=..., asr_params=...).
+Model injection happens there; inprocess and GPU pool pass a ParakeetCTC1B1ASR instance.
+ASRActor is a thin wrapper that holds _model/_client and delegates to asr_chunks_to_text.
+
 Consumes chunk rows (path, bytes, source_path, duration, chunk_index, metadata)
 and produces rows with text (transcript) for downstream embed/VDB.
 """
@@ -116,60 +120,57 @@ def _get_client(params: ASRParams):  # noqa: ANN201
     )
 
 
-class ASRActor:
+def _transcribe_remote_with_client(client: Any, raw: bytes, path: Optional[str]) -> Optional[str]:
+    """Use remote gRPC client to transcribe audio bytes."""
+    audio_b64 = base64.b64encode(raw).decode("ascii")
+    try:
+        segments, transcript = client.infer(
+            audio_b64,
+            model_name="parakeet",
+        )
+        return transcript if transcript else ""
+    except Exception as e:
+        logger.warning("Parakeet infer failed for path=%s: %s", path, e)
+        return None
+
+
+def _asr_out_columns() -> List[str]:
+    return [
+        "path",
+        "source_path",
+        "duration",
+        "chunk_index",
+        "metadata",
+        "page_number",
+        "text",
+    ]
+
+
+def asr_chunks_to_text(
+    batch_df: pd.DataFrame,
+    *,
+    model: Any = None,
+    client: Any = None,
+    asr_params: Optional[dict] = None,
+    **kwargs: Any,
+) -> pd.DataFrame:
     """
-    Ray Data map_batches callable: chunk rows (path/bytes) -> rows with text (transcript).
+    Core batch function: turn chunk rows (path/bytes) into rows with text (transcript).
 
-    When audio_endpoints are set, uses Parakeet (Riva ASR) via gRPC. When both are
-    null/empty, uses local HuggingFace/NeMo Parakeet (nvidia/parakeet-ctc-1.1b).
-    Output rows have path, text, page_number, metadata for downstream embed.
+    model: ParakeetCTC1B1ASR instance for local ASR (or None).
+    client: Remote gRPC client for remote ASR (or None).
+    asr_params: ASRParams or dict for options / creating backend when none injected.
+
+    If both model and client are None, builds ASRActor(asr_params) and delegates
+    with model=actor._model, client=actor._client.
     """
+    if not isinstance(batch_df, pd.DataFrame) or batch_df.empty:
+        return pd.DataFrame(columns=_asr_out_columns())
 
-    def __init__(self, params: ASRParams | None = None) -> None:
-        self._params = params or ASRParams()
-        if _use_remote(self._params):
-            self._client = _get_client(self._params)
-            self._model = None
-        else:
-            self._client = None
-            from nemo_retriever.model.local import ParakeetCTC1B1ASR
+    params = ASRParams(**(asr_params or {}))
 
-            self._model = ParakeetCTC1B1ASR()
-
-    def __call__(self, batch_df: pd.DataFrame) -> pd.DataFrame:
-        if not isinstance(batch_df, pd.DataFrame) or batch_df.empty:
-            return pd.DataFrame(
-                columns=["path", "source_path", "duration", "chunk_index", "metadata", "page_number", "text"]
-            )
-
-        if self._client is not None:
-            return self._call_remote_batch(batch_df)
-        return self._call_local_batch(batch_df)
-
-    def _call_remote_batch(self, batch_df: pd.DataFrame) -> pd.DataFrame:
-        """Remote ASR: one infer call per row (no batching on server side)."""
-        out_rows: List[Dict[str, Any]] = []
-        for _, row in batch_df.iterrows():
-            try:
-                out_row = self._transcribe_one(row)
-                if out_row is not None:
-                    out_rows.append(out_row)
-            except Exception as e:
-                logger.exception("ASR failed for row path=%s: %s", row.get("path"), e)
-                continue
-
-        if not out_rows:
-            return pd.DataFrame(
-                columns=["path", "source_path", "duration", "chunk_index", "metadata", "page_number", "text"]
-            )
-        return pd.DataFrame(out_rows)
-
-    def _call_local_batch(self, batch_df: pd.DataFrame) -> pd.DataFrame:
-        """Local ASR: one batched transcribe call for the whole batch."""
-        if self._model is None:
-            return pd.DataFrame(
-                columns=["path", "source_path", "duration", "chunk_index", "metadata", "page_number", "text"]
-            )
+    # Local path: model has transcribe(paths)
+    if model is not None and hasattr(model, "transcribe"):
         temp_paths: List[Optional[str]] = []
         paths_for_model: List[str] = []
         rows_list: List[pd.Series] = []
@@ -215,7 +216,7 @@ class ASRActor:
             temp_paths.append(temp_created)
 
         try:
-            transcripts = self._model.transcribe(paths_for_model) if paths_for_model else []
+            transcripts = model.transcribe(paths_for_model) if paths_for_model else []
         finally:
             for p in temp_paths:
                 if p:
@@ -242,95 +243,85 @@ class ASRActor:
                     "text": transcript or "",
                 }
             )
-
         if not out_rows:
-            return pd.DataFrame(
-                columns=["path", "source_path", "duration", "chunk_index", "metadata", "page_number", "text"]
-            )
+            return pd.DataFrame(columns=_asr_out_columns())
         return pd.DataFrame(out_rows)
 
-    def _transcribe_remote(self, raw: bytes, path: Optional[str]) -> Optional[str]:
-        """Use remote gRPC client to transcribe audio bytes."""
-        audio_b64 = base64.b64encode(raw).decode("ascii")
-        try:
-            segments, transcript = self._client.infer(
-                audio_b64,
-                model_name="parakeet",
+    # Remote path: client is set
+    if client is not None:
+        out_rows = []
+        for _, row in batch_df.iterrows():
+            raw = row.get("bytes")
+            path = row.get("path")
+            if raw is None and path:
+                try:
+                    with open(path, "rb") as f:
+                        raw = f.read()
+                except Exception as e:
+                    logger.warning("Could not read %s: %s", path, e)
+                    continue
+            if raw is None:
+                continue
+            transcript = _transcribe_remote_with_client(client, raw, path)
+            if transcript is None:
+                continue
+            source_path = row.get("source_path", path)
+            duration = row.get("duration")
+            chunk_index = row.get("chunk_index", 0)
+            metadata = row.get("metadata")
+            if not isinstance(metadata, dict):
+                metadata = {"source_path": source_path, "chunk_index": chunk_index, "duration": duration}
+            page_number = row.get("page_number", chunk_index)
+            out_rows.append(
+                {
+                    "path": path,
+                    "source_path": source_path,
+                    "duration": duration,
+                    "chunk_index": chunk_index,
+                    "metadata": metadata,
+                    "page_number": page_number,
+                    "text": transcript,
+                }
             )
-            return transcript if transcript else ""
-        except Exception as e:
-            logger.warning("Parakeet infer failed for path=%s: %s", path, e)
-            return None
+        if not out_rows:
+            return pd.DataFrame(columns=_asr_out_columns())
+        return pd.DataFrame(out_rows)
 
-    def _transcribe_local(self, raw: bytes, path: Optional[str]) -> Optional[str]:
-        """Use local Parakeet model to transcribe; path or temp file with raw bytes."""
-        if self._model is None:
-            return None
-        path_to_use = path
-        if not path_to_use or not Path(path_to_use).exists():
-            # Raw bytes: write to temp file (format detected by loader/ffmpeg)
-            with tempfile.NamedTemporaryFile(suffix=".audio", delete=False) as f:
-                f.write(raw)
-                path_to_use = f.name
-            try:
-                transcripts = self._model.transcribe([path_to_use])
-                return transcripts[0] if transcripts else ""
-            finally:
-                Path(path_to_use).unlink(missing_ok=True)
-        else:
-            transcripts = self._model.transcribe([path_to_use])
-            return transcripts[0] if transcripts else ""
-
-    def _transcribe_one(self, row: pd.Series) -> Optional[Dict[str, Any]]:
-        raw = row.get("bytes")
-        path = row.get("path")
-        if raw is None and path:
-            try:
-                with open(path, "rb") as f:
-                    raw = f.read()
-            except Exception as e:
-                logger.warning("Could not read %s: %s", path, e)
-                return None
-        if raw is None:
-            return None
-
-        if self._client is not None:
-            transcript = self._transcribe_remote(raw, path)
-        else:
-            transcript = self._transcribe_local(raw, path)
-
-        if transcript is None:
-            return None
-        source_path = row.get("source_path", path)
-        duration = row.get("duration")
-        chunk_index = row.get("chunk_index", 0)
-        metadata = row.get("metadata")
-        if not isinstance(metadata, dict):
-            metadata = {"source_path": source_path, "chunk_index": chunk_index, "duration": duration}
-        page_number = row.get("page_number", chunk_index)
-
-        return {
-            "path": path,
-            "source_path": source_path,
-            "duration": duration,
-            "chunk_index": chunk_index,
-            "metadata": metadata,
-            "page_number": page_number,
-            "text": transcript,
-        }
-
-
-def apply_asr_to_df(
-    batch_df: pd.DataFrame,
-    asr_params: Optional[dict] = None,
-    **kwargs: Any,
-) -> pd.DataFrame:
-    """
-    Inprocess helper: apply ASR to a DataFrame of chunk rows; returns DataFrame with text column set.
-
-    Used by InProcessIngestor when _pipeline_type == "audio". asr_params can be a dict
-    to construct ASRParams (e.g. from model_dump()).
-    """
-    params = ASRParams(**(asr_params or {}))
+    # Backward compat: no model/client injected, create actor and delegate
     actor = ASRActor(params=params)
-    return actor(batch_df)
+    return asr_chunks_to_text(
+        batch_df,
+        model=actor._model,
+        client=actor._client,
+        asr_params=params.model_dump(mode="python"),
+        **kwargs,
+    )
+
+
+class ASRActor:
+    """
+    Ray Data map_batches callable: chunk rows (path/bytes) -> rows with text (transcript).
+
+    When audio_endpoints are set, uses Parakeet (Riva ASR) via gRPC. When both are
+    null/empty, uses local HuggingFace/NeMo Parakeet (nvidia/parakeet-ctc-1.1b).
+    Output rows have path, text, page_number, metadata for downstream embed.
+    """
+
+    def __init__(self, params: ASRParams | None = None) -> None:
+        self._params = params or ASRParams()
+        if _use_remote(self._params):
+            self._client = _get_client(self._params)
+            self._model = None
+        else:
+            self._client = None
+            from nemo_retriever.model.local import ParakeetCTC1B1ASR
+
+            self._model = ParakeetCTC1B1ASR()
+
+    def __call__(self, batch_df: pd.DataFrame) -> pd.DataFrame:
+        return asr_chunks_to_text(
+            batch_df,
+            model=self._model,
+            client=self._client,
+            asr_params=self._params.model_dump(mode="python"),
+        )

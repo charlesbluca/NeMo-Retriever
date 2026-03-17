@@ -88,6 +88,24 @@ class EmbeddingModelConfig:
         )
 
 
+@dataclass
+class ASRModelConfig:
+    """Config to recreate a ParakeetCTC1B1ASR model (same pattern as OCRModelConfig)."""
+
+    device: Optional[str] = None
+    hf_cache_dir: Optional[str] = None
+    model_id: Optional[str] = None
+
+    def create(self) -> Any:
+        from nemo_retriever.model.local import ParakeetCTC1B1ASR
+
+        return ParakeetCTC1B1ASR(
+            device=self.device,
+            hf_cache_dir=self.hf_cache_dir,
+            model_id=self.model_id,
+        )
+
+
 # ---------------------------------------------------------------------------
 # GPUTaskDescriptor — picklable replacement for (func, kwargs_with_model)
 # ---------------------------------------------------------------------------
@@ -124,9 +142,28 @@ class GPUTaskDescriptor:
 
 def _extract_model_config(func: Callable, kwargs: dict[str, Any]) -> Any:
     """Extract a picklable model config from live kwargs, or None."""
+    from nemo_retriever.audio.asr_actor import asr_chunks_to_text
     from nemo_retriever.page_elements import detect_page_elements_v3
     from nemo_retriever.ocr.ocr import nemotron_parse_page_elements, ocr_page_elements
     from .inprocess import collapse_content_to_page_rows, embed_text_main_text_embed, explode_content_to_rows
+
+    if func is asr_chunks_to_text:
+        asr_params = kwargs.get("asr_params") or {}
+        endpoints = asr_params.get("audio_endpoints") or (None, None)
+        grpc_endpoint = (endpoints[0] or "").strip() if isinstance(endpoints, (list, tuple)) else ""
+        http_endpoint = (
+            (endpoints[1] or "").strip() if isinstance(endpoints, (list, tuple)) and len(endpoints) > 1 else ""
+        )
+        if grpc_endpoint or http_endpoint:
+            return None  # Remote ASR, no local model in worker
+        model = kwargs.get("model")
+        if model is not None and hasattr(model, "_device"):
+            return ASRModelConfig(
+                device=getattr(model, "_device", None),
+                hf_cache_dir=getattr(model, "_hf_cache_dir", None),
+                model_id=getattr(model, "_model_id", None),
+            )
+        return ASRModelConfig()
 
     if func is detect_page_elements_v3:
         if kwargs.get("invoke_url"):

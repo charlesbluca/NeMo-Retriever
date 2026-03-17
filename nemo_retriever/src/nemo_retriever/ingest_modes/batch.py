@@ -84,6 +84,46 @@ def _runtime_env_vars() -> dict[str, str]:
     return {key: value for key, value in env_vars.items() if isinstance(value, str)}
 
 
+def _ensure_source_id_batch(batch_df: Any) -> Any:
+    """Ensure every row has a source_id column set from the source filepath.
+
+    Used so ingest_results have a consistent source_id column for all input types
+    (PDF, audio, image, html, txt). Fills from row.source_id, row.source_path, or row.path.
+    """
+    if batch_df is None:
+        return batch_df
+    try:
+        import pandas as pd
+    except ImportError:
+        return batch_df
+    if not isinstance(batch_df, pd.DataFrame) or batch_df.empty:
+        return batch_df
+    has_sid = "source_id" in batch_df.columns
+    has_path = "path" in batch_df.columns
+    has_src_path = "source_path" in batch_df.columns
+    if not has_path and not has_src_path:
+        return batch_df
+
+    def _sid(row: Any) -> str:
+        if has_sid:
+            v = row.get("source_id") if isinstance(row, dict) else getattr(row, "source_id", None)
+            if v is not None and str(v).strip():
+                return str(v).strip()
+        if has_src_path:
+            v = row.get("source_path") if isinstance(row, dict) else getattr(row, "source_path", None)
+            if v is not None and str(v).strip():
+                return str(v).strip()
+        if has_path:
+            v = row.get("path") if isinstance(row, dict) else getattr(row, "path", None)
+            if v is not None and str(v).strip():
+                return str(v).strip()
+        return ""
+
+    batch_df = batch_df.copy()
+    batch_df["source_id"] = batch_df.apply(_sid, axis=1)
+    return batch_df
+
+
 class _LanceDBWriteActor:
     """Ray Data actor that streams batches into LanceDB as they arrive.
 
@@ -907,6 +947,13 @@ class BatchIngestor(Ingestor):
                 max_size=self._requested_plan.get_embed_max_actors(),
             ),
             fn_constructor_kwargs={"params": resolved},
+        )
+
+        # Ensure every row has source_id (source filepath) for metrics and downstream.
+        self._rd_dataset = self._rd_dataset.map_batches(
+            _ensure_source_id_batch,
+            batch_format="pandas",
+            num_cpus=1,
         )
 
         return self

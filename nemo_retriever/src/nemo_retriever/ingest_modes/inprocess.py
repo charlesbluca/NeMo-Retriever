@@ -1552,7 +1552,12 @@ class InProcessIngestor(Ingestor):
                     chunks: list[pd.DataFrame] = []
                     chunk_to_doc: list[str] = []
                     doc_chunk_total: dict[str, int] = defaultdict(int)
-                    for doc in docs:
+                    doc_iter = (
+                        tqdm(docs, desc="Chunking documents", unit="doc")
+                        if (show_progress and tqdm is not None)
+                        else docs
+                    )
+                    for doc in doc_iter:
                         for chunk_df in self._iter_doc_chunks(doc, page_chunk_size):
                             chunk_to_doc.append(doc)
                             doc_chunk_total[doc] += 1
@@ -1631,7 +1636,10 @@ class InProcessIngestor(Ingestor):
                 chunks: list[pd.DataFrame] = []
                 chunk_to_doc: list[str] = []
                 doc_chunk_total: dict[str, int] = defaultdict(int)
-                for doc in docs:
+                doc_iter = (
+                    tqdm(docs, desc="Chunking documents", unit="doc") if (show_progress and tqdm is not None) else docs
+                )
+                for doc in doc_iter:
                     for chunk_df in self._iter_doc_chunks(doc, page_chunk_size):
                         chunk_to_doc.append(doc)
                         doc_chunk_total[doc] += 1
@@ -1708,7 +1716,10 @@ class InProcessIngestor(Ingestor):
                 doc_chunk_total: dict[str, int] = defaultdict(int)
                 doc_done: dict[str, int] = defaultdict(int)
 
-                for doc_path in docs:
+                doc_iter = (
+                    tqdm(docs, desc="Chunking documents", unit="doc") if (show_progress and tqdm is not None) else docs
+                )
+                for doc_path in doc_iter:
                     for chunk_df in self._iter_doc_chunks(doc_path, page_chunk_size):
                         doc_chunk_total[doc_path] += 1
                         current: Any = chunk_df

@@ -502,11 +502,38 @@ def main(
         "--audio-invoke-url",
         help="Optional remote endpoint URL for audio (ASR) model inference.",
     ),
+    audio_chunk_batch_size: Optional[int] = typer.Option(
+        0,
+        "--audio-chunk-batch-size",
+        help="Batch size for audio chunking stage (MediaChunkActor). Omit or 0 for default (4).",
+    ),
     audio_chunk_interval: int = typer.Option(
         450,
         "--audio-chunk-interval",
         min=1,
         help="Audio chunk size (bytes when split_type=size) for .extract_audio() pipeline.",
+    ),
+    asr_actors: Optional[int] = typer.Option(
+        0,
+        "--asr-actors",
+        help="Actor count for ASR stage. Omit or 0 for default (1). Use >1 for an actor pool.",
+    ),
+    asr_batch_size: Optional[int] = typer.Option(
+        0,
+        "--asr-batch-size",
+        help="Ray Data batch size for ASR stage. Omit or 0 for default (8).",
+    ),
+    asr_cpus_per_actor: Optional[float] = typer.Option(
+        0.0,
+        "--asr-cpus-per-actor",
+        help="CPUs reserved per ASR actor. Omit or 0 for default (1).",
+    ),
+    asr_gpus_per_actor: Optional[float] = typer.Option(
+        0.0,
+        "--asr-gpus-per-actor",
+        min=0.0,
+        max=1.0,
+        help="GPUs reserved per ASR actor (e.g. 0.5 for fractional). Omit or 0 for default (0.5).",
     ),
 ) -> None:
     log_handle, original_stdout, original_stderr = _configure_logging(log_file, debug=bool(debug))
@@ -721,6 +748,15 @@ def main(
             ingestor = ingestor.files(file_patterns).extract_audio(
                 params=AudioChunkParams(split_type="size", split_interval=audio_chunk_interval),
                 asr_params=asr_params,
+                audio_chunk_batch_size=audio_chunk_batch_size or 4,
+                asr_actors=asr_actors if (asr_actors is not None and asr_actors > 0) else None,
+                asr_batch_size=asr_batch_size or 8,
+                asr_cpus_per_actor=(
+                    asr_cpus_per_actor if (asr_cpus_per_actor is not None and asr_cpus_per_actor > 0) else None
+                ),
+                asr_gpus_per_actor=(
+                    asr_gpus_per_actor if (asr_gpus_per_actor is not None and asr_gpus_per_actor > 0) else None
+                ),
             )
         else:
             ingestor = ingestor.files(file_patterns).extract(

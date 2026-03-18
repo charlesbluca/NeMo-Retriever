@@ -824,7 +824,8 @@ class BatchIngestor(Ingestor):
         Do not call .extract() when using .extract_audio().
         ASR requires a remote or self-deployed Parakeet/Riva gRPC endpoint (see ASRParams.audio_endpoints).
         Optional kwargs: audio_chunk_batch_size (default 4), asr_batch_size (default 8),
-        asr_num_gpus (default 0.5; GPUs reserved per ASR actor for local Parakeet).
+        asr_actors (default 1; use >1 for actor pool), asr_num_gpus / asr_gpus_per_actor (default 0.5),
+        asr_cpus_per_actor (default 1).
         """
         from nemo_retriever.audio import ASRActor
         from nemo_retriever.audio import MediaChunkActor
@@ -840,7 +841,11 @@ class BatchIngestor(Ingestor):
 
         audio_chunk_batch_size = kwargs.get("audio_chunk_batch_size", 4)
         asr_batch_size = kwargs.get("asr_batch_size", 8)
-        asr_num_gpus = kwargs.get("asr_num_gpus", 0.5)
+        asr_actors = kwargs.get("asr_actors")
+        if asr_actors is not None and asr_actors < 1:
+            asr_actors = 1
+        asr_gpus = kwargs.get("asr_gpus_per_actor") or kwargs.get("asr_num_gpus", 0.5)
+        asr_cpus = kwargs.get("asr_cpus_per_actor") or 1.0
 
         self._rd_dataset = self._rd_dataset.map_batches(
             MediaChunkActor,
@@ -849,14 +854,20 @@ class BatchIngestor(Ingestor):
             num_cpus=1,
             fn_constructor_kwargs={"params": AudioChunkParams(**self._extract_audio_chunk_kwargs)},
         )
-        self._rd_dataset = self._rd_dataset.map_batches(
-            ASRActor,
-            batch_size=asr_batch_size,
-            batch_format="pandas",
-            num_cpus=1,
-            num_gpus=asr_num_gpus,
-            fn_constructor_kwargs={"params": ASRParams(**self._extract_audio_asr_kwargs)},
-        )
+        asr_map_kw: dict[str, Any] = {
+            "batch_size": asr_batch_size,
+            "batch_format": "pandas",
+            "num_cpus": asr_cpus,
+            "num_gpus": asr_gpus,
+            "fn_constructor_kwargs": {"params": ASRParams(**self._extract_audio_asr_kwargs)},
+        }
+        if asr_actors is not None and asr_actors > 1:
+            asr_map_kw["compute"] = rd.ActorPoolStrategy(
+                initial_size=asr_actors,
+                min_size=asr_actors,
+                max_size=asr_actors,
+            )
+        self._rd_dataset = self._rd_dataset.map_batches(ASRActor, **asr_map_kw)
         return self
 
     def embed(

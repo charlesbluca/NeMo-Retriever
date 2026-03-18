@@ -16,25 +16,35 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 
+def _row_get(row: Any, key: str, default: Any = None) -> Any:
+    """Get a value from a row that may be a mapping (dict, pd.Series) or an object (named tuple)."""
+    if hasattr(row, "get") and callable(getattr(row, "get")) and not isinstance(row, type):
+        try:
+            return row.get(key, default)
+        except Exception:
+            pass
+    return getattr(row, key, default)
+
+
 def extract_embedding_from_row(
     row: Any,
     *,
     embedding_column: str = "text_embeddings_1b_v2",
     embedding_key: str = "embedding",
 ) -> Optional[List[float]]:
-    """Extract an embedding vector from a row (namedtuple or pd.Series).
+    """Extract an embedding vector from a row (dict, namedtuple, or pd.Series).
 
     Supports:
     - ``metadata.embedding`` (preferred if present)
     - *embedding_column* payloads like ``{"embedding": [...], ...}``
     """
-    meta = getattr(row, "metadata", None)
+    meta = _row_get(row, "metadata")
     if isinstance(meta, dict):
         emb = meta.get("embedding")
         if isinstance(emb, list) and emb:
             return emb  # type: ignore[return-value]
 
-    payload = getattr(row, embedding_column, None)
+    payload = _row_get(row, embedding_column)
     if isinstance(payload, dict):
         emb = payload.get(embedding_key)
         if isinstance(emb, list) and emb:
@@ -43,22 +53,15 @@ def extract_embedding_from_row(
 
 
 def extract_source_path_and_page(row: Any) -> Tuple[str, int]:
-    """Best-effort extract of source path and page number from a row."""
+    """Best-effort extract of source path and page number from a row.
+
+    Prefers document-level identity (source_path, source_id) over chunk-level path
+    so that batch and inprocess pipelines write consistent path/pdf_basename to LanceDB.
+    """
     path = ""
     page = -1
 
-    v = getattr(row, "path", None)
-    if isinstance(v, str) and v.strip():
-        path = v.strip()
-
-    v = getattr(row, "page_number", None)
-    try:
-        if v is not None:
-            page = int(v)
-    except Exception:
-        pass
-
-    meta = getattr(row, "metadata", None)
+    meta = _row_get(row, "metadata")
     if isinstance(meta, dict):
         sp = meta.get("source_path")
         if isinstance(sp, str) and sp.strip():
@@ -72,6 +75,24 @@ def extract_source_path_and_page(row: Any) -> Tuple[str, int]:
                 except Exception:
                     pass
 
+    if not path:
+        for key in ("source_path", "source_id"):
+            v = _row_get(row, key)
+            if isinstance(v, str) and v.strip():
+                path = v.strip()
+                break
+    if not path:
+        v = _row_get(row, "path")
+        if isinstance(v, str) and v.strip():
+            path = v.strip()
+
+    v = _row_get(row, "page_number")
+    try:
+        if v is not None:
+            page = int(v)
+    except Exception:
+        pass
+
     return path, page
 
 
@@ -79,21 +100,21 @@ def _build_detection_metadata(row: Any) -> Dict[str, Any]:
     """Extract per-page detection counters from a row for LanceDB metadata."""
     out: Dict[str, Any] = {}
 
-    pe_num = getattr(row, "page_elements_v3_num_detections", None)
+    pe_num = _row_get(row, "page_elements_v3_num_detections")
     if pe_num is not None:
         try:
             out["page_elements_v3_num_detections"] = int(pe_num)
         except Exception:
             pass
 
-    pe_counts = getattr(row, "page_elements_v3_counts_by_label", None)
+    pe_counts = _row_get(row, "page_elements_v3_counts_by_label")
     if isinstance(pe_counts, dict):
         out["page_elements_v3_counts_by_label"] = {
             str(k): int(v) for k, v in pe_counts.items() if isinstance(k, str) and v is not None
         }
 
     for ocr_col in ("table", "chart", "infographic"):
-        entries = getattr(row, ocr_col, None)
+        entries = _row_get(row, ocr_col)
         if isinstance(entries, list):
             out[f"ocr_{ocr_col}_detections"] = int(len(entries))
 
@@ -129,7 +150,7 @@ def build_lancedb_row(
     metadata_obj.update(_build_detection_metadata(row))
 
     # Preserve split metadata (chunk_index, chunk_count) from the original row.
-    orig_meta = getattr(row, "metadata", None)
+    orig_meta = _row_get(row, "metadata")
     if isinstance(orig_meta, dict):
         for k in ("chunk_index", "chunk_count"):
             if k in orig_meta:
@@ -150,7 +171,7 @@ def build_lancedb_row(
     }
 
     if include_text:
-        t = getattr(row, text_column, None)
+        t = _row_get(row, text_column)
         row_out["text"] = str(t) if isinstance(t, str) else ""
     else:
         row_out["text"] = ""
@@ -170,11 +191,14 @@ def build_lancedb_rows(
 
     Iterates with ``itertuples`` and delegates to :func:`build_lancedb_row`.
     Rows without an embedding are silently skipped.
+    Converts each row to a dict when possible so path/source_path/source_id
+    are accessed by key (consistent for batch pipeline after Ray serialization).
     """
     rows: List[Dict[str, Any]] = []
     for r in df.itertuples(index=False):
+        row = r._asdict() if hasattr(r, "_asdict") and callable(getattr(r, "_asdict")) else r
         row_out = build_lancedb_row(
-            r,
+            row,
             embedding_column=embedding_column,
             embedding_key=embedding_key,
             text_column=text_column,

@@ -84,11 +84,29 @@ def _runtime_env_vars() -> dict[str, str]:
     return {key: value for key, value in env_vars.items() if isinstance(value, str)}
 
 
-def _ensure_source_id_batch(batch_df: Any) -> Any:
-    """Ensure every row has a source_id column set from the source filepath.
+def _metadata_to_dict(meta: Any) -> Any:
+    """Return metadata as a dict; parse JSON string if needed (e.g. after Ray/Arrow serialization)."""
+    if meta is None:
+        return None
+    if isinstance(meta, dict):
+        return meta
+    if isinstance(meta, str) and meta.strip():
+        try:
+            import json
 
-    Used so ingest_results have a consistent source_id column for all input types
-    (PDF, audio, image, html, txt). Fills from row.source_id, row.source_path, or row.path.
+            return json.loads(meta)
+        except Exception:
+            pass
+    return None
+
+
+def _ensure_source_id_batch(batch_df: Any) -> Any:
+    """Ensure every row has source_id and source_path set to the document-level path.
+
+    Used so ingest_results and LanceDB get a consistent document identity for all
+    input types (PDF, audio, image, html, txt). Prefers metadata.source_path, then
+    row.source_id, row.source_path, then row.path, so that batch pipeline writes
+    document-level path/pdf_basename to LanceDB (same as inprocess).
     """
     if batch_df is None:
         return batch_df
@@ -98,13 +116,21 @@ def _ensure_source_id_batch(batch_df: Any) -> Any:
         return batch_df
     if not isinstance(batch_df, pd.DataFrame) or batch_df.empty:
         return batch_df
+    has_meta = "metadata" in batch_df.columns
     has_sid = "source_id" in batch_df.columns
     has_path = "path" in batch_df.columns
     has_src_path = "source_path" in batch_df.columns
-    if not has_path and not has_src_path:
+    if not has_path and not has_src_path and not has_sid:
         return batch_df
 
-    def _sid(row: Any) -> str:
+    def _doc_path(row: Any) -> str:
+        if has_meta:
+            raw = row.get("metadata") if isinstance(row, dict) else getattr(row, "metadata", None)
+            meta = _metadata_to_dict(raw)
+            if isinstance(meta, dict):
+                sp = meta.get("source_path")
+                if isinstance(sp, str) and sp.strip():
+                    return str(sp).strip()
         if has_sid:
             v = row.get("source_id") if isinstance(row, dict) else getattr(row, "source_id", None)
             if v is not None and str(v).strip():
@@ -120,7 +146,9 @@ def _ensure_source_id_batch(batch_df: Any) -> Any:
         return ""
 
     batch_df = batch_df.copy()
-    batch_df["source_id"] = batch_df.apply(_sid, axis=1)
+    doc_paths = batch_df.apply(_doc_path, axis=1)
+    batch_df["source_id"] = doc_paths
+    batch_df["source_path"] = doc_paths
     return batch_df
 
 

@@ -12,7 +12,13 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple  # noqa:
 from datetime import timedelta
 
 from nv_ingest_client.util.vdb.lancedb import LanceDB
-from nemo_retriever.ingest_modes.lancedb_utils import lancedb_schema
+from nemo_retriever.ingest_modes.lancedb_utils import (
+    lancedb_schema,
+    extract_embedding_from_row,
+    extract_source_path_and_page,
+    _row_get,
+    _metadata_to_dict,
+)
 import pandas as pd
 import lancedb
 
@@ -120,6 +126,29 @@ def _extract_page_number(meta: Dict[str, Any]) -> int:
         return -1
 
 
+def _row_to_dict(row: Any) -> Dict[str, Any]:
+    """Normalize a row from Ray take_all() (dict, Arrow row, or object) to a plain dict for key access."""
+    if isinstance(row, dict):
+        return row
+    if hasattr(row, "_asdict") and callable(getattr(row, "_asdict")):
+        return row._asdict()
+    out: Dict[str, Any] = {}
+    if hasattr(row, "get") and callable(getattr(row, "get")):
+        try:
+            for k in ("path", "source_path", "source_id", "metadata", "text", "page_number"):
+                if k in row:
+                    out[k] = row[k]
+        except Exception:
+            pass
+    if not out and hasattr(row, "__dict__"):
+        out = dict(getattr(row, "__dict__"))
+    # Fallback: attribute access for common keys
+    for key in ("path", "source_path", "source_id", "metadata", "text", "page_number"):
+        if key not in out and hasattr(row, key):
+            out[key] = getattr(row, key, None)
+    return out
+
+
 def _build_lancedb_rows_from_df(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
     Transform an embeddings-enriched primitives DataFrame into LanceDB rows.
@@ -177,6 +206,50 @@ def _build_lancedb_rows_from_df(rows: List[Dict[str, Any]]) -> List[Dict[str, An
                 "metadata": str(meta),
             }
         )
+
+    return out
+
+
+def _build_lancedb_rows_from_batch_results(rows: Iterable[Any]) -> List[Dict[str, Any]]:
+    """
+    Build LanceDB rows from batch pipeline take_all() results with document-level path.
+
+    Uses lancedb_utils.extract_source_path_and_page and extract_embedding_from_row so
+    path/pdf_basename are document-level (same as inprocess and vdb_upload actor).
+    """
+    out: List[Dict[str, Any]] = []
+
+    for raw_row in rows:
+        row = _row_to_dict(raw_row)
+        emb = extract_embedding_from_row(row)
+        if emb is None:
+            continue
+        path, page_number = extract_source_path_and_page(row)
+        p = Path(path) if path else None
+        filename = p.name if p is not None else ""
+        pdf_basename = p.stem if p is not None else ""
+        pdf_page = f"{pdf_basename}_{page_number}" if (pdf_basename and page_number >= 0) else ""
+        source_id = path or filename or pdf_basename
+
+        raw_meta = _row_get(row, "metadata")
+        meta = _metadata_to_dict(raw_meta)
+        meta_for_store = dict(meta) if isinstance(meta, dict) else {}
+        meta_for_store.pop("embedding", None)
+        meta_str = json.dumps(meta_for_store, ensure_ascii=False) if meta_for_store else "{}"
+
+        built = {
+            "vector": emb,
+            "pdf_page": pdf_page,
+            "filename": filename,
+            "pdf_basename": pdf_basename,
+            "page_number": int(page_number),
+            "source": source_id,
+            "source_id": source_id,
+            "path": path,
+            "text": str(_row_get(row, "text") or ""),
+            "metadata": meta_str,
+        }
+        out.append(built)
 
     return out
 
@@ -307,25 +380,26 @@ def write_text_embeddings_dir_to_lancedb(
 
 
 def handle_lancedb(
-    rows: Path,
+    rows: Iterable[Any],
     uri: str,
     table_name: str,
     hybrid: bool = False,
     mode: str = "overwrite",
 ) -> Dict[str, Any]:
     """
-        Handle LanceDB writing for a batch pipeline run.
+    Handle LanceDB writing for a batch pipeline run.
 
-        This is used by `nemo_retriever.examples.batch_pipeline.run(...)` after the embedding stage.
-
-        Reads `*.text_embeddings.json` files from `input_dir`, extracts embeddings, and uploads to LanceDB.
-    )
+    Used by ``nemo_retriever.examples.batch_pipeline.run(...)`` after the embedding stage:
+    receives the result of ``ingest_results.take_all()``, builds LanceDB rows with
+    document-level path/pdf_basename (same as inprocess), and writes to LanceDB.
     """
-    lancedb_config = LanceDBConfig(
-        uri=uri, table_name=table_name, hybrid=hybrid
-    )  # Use the same LanceDB config for writing and recall.
-    db = lancedb.connect(uri=lancedb_config.uri)
-    cleaned_rows = _build_lancedb_rows_from_df(rows)
+    lancedb_config = LanceDBConfig(uri=uri, table_name=table_name, hybrid=hybrid, overwrite=(mode == "overwrite"))
+    cleaned_rows = _build_lancedb_rows_from_batch_results(rows)
+    if not cleaned_rows:
+        logger.warning("handle_lancedb: no rows to write (empty or no embeddings).")
+        return {"uri": uri, "table_name": table_name, "rows_written": 0}
     _write_rows_to_lancedb(cleaned_rows, cfg=lancedb_config)
-    table = db.open_table(lancedb_config.table_name)  # Ensure table is open and metadata is updated before proceeding.
+    db = lancedb.connect(uri=lancedb_config.uri)
+    table = db.open_table(lancedb_config.table_name)
     create_lancedb_index(table, cfg=lancedb_config)
+    return {"uri": uri, "table_name": table_name, "rows_written": len(cleaned_rows)}

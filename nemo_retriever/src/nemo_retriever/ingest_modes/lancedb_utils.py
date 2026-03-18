@@ -12,8 +12,12 @@ Consolidates the duplicated logic that previously lived independently in
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+
+# Fallback to extract source_path from metadata string when JSON parse fails (e.g. Ray serialization).
+_SOURCE_PATH_RE = re.compile(r'"source_path"\s*:\s*"((?:[^"\\]|\\.)*)"', re.DOTALL)
 
 
 def _row_get(row: Any, key: str, default: Any = None) -> Any:
@@ -24,6 +28,20 @@ def _row_get(row: Any, key: str, default: Any = None) -> Any:
         except Exception:
             pass
     return getattr(row, key, default)
+
+
+def _metadata_to_dict(meta: Any) -> Optional[Dict[str, Any]]:
+    """Return metadata as a dict; parse JSON string if needed (e.g. after Ray/Arrow serialization)."""
+    if meta is None:
+        return None
+    if isinstance(meta, dict):
+        return meta
+    if isinstance(meta, str) and meta.strip():
+        try:
+            return json.loads(meta)
+        except Exception:
+            pass
+    return None
 
 
 def extract_embedding_from_row(
@@ -38,7 +56,8 @@ def extract_embedding_from_row(
     - ``metadata.embedding`` (preferred if present)
     - *embedding_column* payloads like ``{"embedding": [...], ...}``
     """
-    meta = _row_get(row, "metadata")
+    raw_meta = _row_get(row, "metadata")
+    meta = _metadata_to_dict(raw_meta)
     if isinstance(meta, dict):
         emb = meta.get("embedding")
         if isinstance(emb, list) and emb:
@@ -61,7 +80,8 @@ def extract_source_path_and_page(row: Any) -> Tuple[str, int]:
     path = ""
     page = -1
 
-    meta = _row_get(row, "metadata")
+    raw_meta = _row_get(row, "metadata")
+    meta = _metadata_to_dict(raw_meta)
     if isinstance(meta, dict):
         sp = meta.get("source_path")
         if isinstance(sp, str) and sp.strip():
@@ -85,6 +105,21 @@ def extract_source_path_and_page(row: Any) -> Tuple[str, int]:
         v = _row_get(row, "path")
         if isinstance(v, str) and v.strip():
             path = v.strip()
+
+    # If path looks like a chunk temp path (batch pipeline), prefer document path from metadata.
+    if path and ("retriever_audio_chunk" in path or "_chunk_" in path):
+        doc_path = None
+        if isinstance(meta, dict):
+            sp = meta.get("source_path")
+            if isinstance(sp, str) and sp.strip():
+                doc_path = sp.strip()
+        if not doc_path and isinstance(raw_meta, str) and raw_meta.strip():
+            # JSON parse may have failed; try to extract "source_path": "..." from raw string.
+            m = _SOURCE_PATH_RE.search(raw_meta)
+            if m and m.group(1).strip():
+                doc_path = m.group(1).strip().replace("\\/", "/")
+        if doc_path and ("retriever_audio_chunk" not in doc_path and "_chunk_" not in doc_path):
+            path = doc_path
 
     v = _row_get(row, "page_number")
     try:

@@ -28,7 +28,7 @@ Suggested sequence: **1 → 2, 3, 5 (any order) → 4**. Or: **1 → 3 → 4 →
 
 | File                                                                     | Changes                                                                                                                   |
 | ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------- |
-| `nemo_retriever/src/nemo_retriever/audio/asr_actor.py`                   | Extract `asr_chunks_to_text(batch_df, model=, client=, asr_params=)`; ASRActor delegates to it; remove `apply_asr_to_df`. |
+| `nemo_retriever/src/nemo_retriever/audio/asr_actor.py`                   | Extract `asr_chunks_to_text(...)`; ASRActor delegates; remote `segment_audio` fans out punctuation segments via `_build_output_rows`; `_infer_remote` returns `(segments, transcript)`; `apply_asr_to_df` = thin wrapper (compat with upstream tests / callers). |
 | `nemo_retriever/src/nemo_retriever/audio/__init__.py`                    | Export `asr_chunks_to_text`.                                                                                              |
 | `nemo_retriever/src/nemo_retriever/model/local/parakeet_ctc_1_1b_asr.py` | Cap segment duration (`MAX_AUDIO_DURATION_SEC`), split long audio, concatenate segment transcripts.                       |
 | `nemo_retriever/src/nemo_retriever/audio/media_interface.py`             | Robust duration/bitrate handling when ffprobe omits `duration` or `bit_rate`.                                             |
@@ -127,3 +127,13 @@ Suggested sequence: **1 → 2, 3, 5 (any order) → 4**. Or: **1 → 3 → 4 →
 ## Changelog (updates to this plan)
 
 - *(Initial version: PR breakdown and merge order from branch diff vs upstream/main.)*
+- **Merge `upstream/main` into `image-extract-dev`:** `asr_actor.py` conflict with **5c5557aa** (punctuation-based remote segmenting, `ASRParams.segment_audio`, tests). Resolution keeps `asr_chunks_to_text` + model/client injection and ports `_build_output_rows` / segment fan-out from main.
+
+---
+
+## Feature branches (`asr-refactor`, `lancedb-doc-path`)
+
+After merging current `main` into `image-extract-dev`:
+
+- **`asr-refactor`:** Rebase onto latest `main` (or merge `main`), then **re-resolve** `audio/asr_actor.py` the same way as on `image-extract-dev` (or cherry-pick the merge-resolution commit). The old PR1 snapshot will not include `segment_audio` / `_build_output_rows` / new tests until updated.
+- **`lancedb-doc-path`:** **No code overlap** with 5c5557aa. Rebase onto latest `main` only for a clean base; no ASR-specific conflict expected.

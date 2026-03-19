@@ -1632,7 +1632,13 @@ def _record_run_from_job(
 
     trigger_source = job.get("trigger_source")
     schedule_id = job.get("schedule_id")
-    artifact_dir = (run_result.get("artifacts") or {}).get("runtime_metrics_dir", "")
+    artifacts = run_result.get("artifacts") or {}
+    runtime_metrics_dir = artifacts.get("runtime_metrics_dir", "")
+    if runtime_metrics_dir:
+        artifact_dir = str(Path(runtime_metrics_dir).parent)
+    else:
+        command_file = artifacts.get("command_file", "")
+        artifact_dir = str(Path(command_file).parent) if command_file else ""
 
     try:
         run_row_id = history.record_run(

@@ -3280,6 +3280,17 @@ const REPORT_CHARTS = [
   { id: "gpu_ingest", label: "Ingest Time by GPU SKU (per Dataset)", metric: "ingest_secs", type: "gpu_bar" },
 ];
 
+const PRESET_MATRIX_PRESETS = [
+  { key: "PE_GE_OCR_TE_DENSE", label: "TE Dense", desc: "Page Elements + Graphic Elements + OCR + Text Embedding + Dense" },
+  { key: "PE_GE_OCR_TE_HYBRID", label: "TE Hybrid", desc: "Page Elements + Graphic Elements + OCR + Text Embedding + Hybrid" },
+  { key: "PE_GE_OCR_VL_IMAGE_ONLY_DENSE", label: "VL Image-Only Dense", desc: "Page Elements + Graphic Elements + OCR + llama-nemotron-embed-vl-1b-v2 (image only) + Dense" },
+  { key: "PE_GE_OCR_VL_IMAGE_ONLY_HYBRID", label: "VL Image-Only Hybrid", desc: "Page Elements + Graphic Elements + OCR + llama-nemotron-embed-vl-1b-v2 (image only) + Hybrid" },
+  { key: "PE_GE_OCR_VL_IMAGE_TEXT_DENSE", label: "VL Image+Text Dense", desc: "Page Elements + Graphic Elements + OCR + llama-nemotron-embed-vl-1b-v2 (image and text) + Dense" },
+  { key: "PE_GE_OCR_VL_IMAGE_TEXT_HYBRID", label: "VL Image+Text Hybrid", desc: "Page Elements + Graphic Elements + OCR + llama-nemotron-embed-vl-1b-v2 (image and text) + Hybrid" },
+  { key: "PE_GE_OCR_VL_TEXT_ONLY_DENSE", label: "VL Text-Only Dense", desc: "Page Elements + Graphic Elements + OCR + llama-nemotron-embed-vl-1b-v2 (Text only) + Dense" },
+  { key: "PE_GE_OCR_VL_TEXT_ONLY_HYBRID", label: "VL Text-Only Hybrid", desc: "Page Elements + Graphic Elements + OCR + llama-nemotron-embed-vl-1b-v2 (Text only) + Hybrid" },
+];
+
 function DataExportSection({ filteredRuns, filterDataset, filterPreset, filterStatus, dateFrom, dateTo }) {
   const [includeRaw, setIncludeRaw] = useState(true);
   const [exporting, setExporting] = useState(false);
@@ -3443,6 +3454,21 @@ function ReportingView({ runs, datasets, loading }) {
     }
     return out;
   }, [filteredRuns]);
+
+  const presetMatrix = useMemo(() => {
+    const map = {};
+    runs.forEach(r => {
+      if (r.success !== 1 || !r.preset || !r.dataset) return;
+      const key = `${r.preset}|||${r.dataset}`;
+      const ts = parseRunTimestamp(r.timestamp);
+      if (!ts) return;
+      if (!map[key] || ts > map[key].ts) {
+        map[key] = { ts, pps: r.pages_per_sec, recall5: r.recall_5 };
+      }
+    });
+    const datasets = [...new Set(runs.map(r => r.dataset).filter(Boolean))].sort();
+    return { map, datasets };
+  }, [runs]);
 
   const buildChart = useCallback((canvasEl, chartDef) => {
     if (!canvasEl) return null;
@@ -3712,6 +3738,121 @@ function ReportingView({ runs, datasets, loading }) {
     a.click();
   };
 
+  const downloadPresetMatrixPng = () => {
+    const { map, datasets } = presetMatrix;
+    const presets = PRESET_MATRIX_PRESETS;
+    const colW = 150, rowHeaderW = 220, headerH = 70, rowH = 52, pad = 24;
+    const titleBarH = 56;
+    const w = pad * 2 + rowHeaderW + datasets.length * colW;
+    const h = titleBarH + pad + headerH + presets.length * rowH + pad;
+    const offscreen = document.createElement('canvas');
+    offscreen.width = w;
+    offscreen.height = h;
+    const ctx = offscreen.getContext('2d');
+
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, w, h);
+
+    ctx.fillStyle = '#76b900';
+    ctx.fillRect(0, 0, w, titleBarH);
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 20px Inter, sans-serif';
+    ctx.fillText('Preset \u00d7 Dataset Matrix — Last Successful Run', pad, 36);
+    const now = new Date().toLocaleString();
+    ctx.font = '11px Inter, sans-serif';
+    ctx.fillStyle = '#ffffffcc';
+    ctx.textAlign = 'right';
+    ctx.fillText(`Generated: ${now}`, w - pad, 36);
+    ctx.textAlign = 'left';
+
+    const tableTop = titleBarH + pad;
+    const fmtV = (v) => v != null ? v.toFixed(2) : '\u2014';
+
+    const bestPps = {};
+    const bestRecall = {};
+    datasets.forEach(ds => {
+      presets.forEach(p => {
+        const cell = map[`${p.key}|||${ds}`];
+        if (cell && cell.pps != null && (bestPps[ds] == null || cell.pps > bestPps[ds])) bestPps[ds] = cell.pps;
+        if (cell && cell.recall5 != null && (bestRecall[ds] == null || cell.recall5 > bestRecall[ds])) bestRecall[ds] = cell.recall5;
+      });
+    });
+
+    ctx.fillStyle = '#f5f5f5';
+    ctx.fillRect(pad, tableTop, rowHeaderW + datasets.length * colW, headerH);
+    ctx.strokeStyle = '#ddd';
+    ctx.lineWidth = 1;
+
+    ctx.fillStyle = '#333';
+    ctx.font = 'bold 11px Inter, sans-serif';
+    ctx.textAlign = 'center';
+    datasets.forEach((ds, i) => {
+      const cx = pad + rowHeaderW + i * colW + colW / 2;
+      ctx.fillText(ds, cx, tableTop + 28);
+      ctx.fillStyle = '#888';
+      ctx.font = '9px Inter, sans-serif';
+      ctx.fillText('PPS / Recall@5', cx, tableTop + 46);
+      ctx.fillStyle = '#333';
+      ctx.font = 'bold 11px Inter, sans-serif';
+    });
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#555';
+    ctx.font = 'bold 10px Inter, sans-serif';
+    ctx.fillText('PRESET', pad + 10, tableTop + 38);
+
+    presets.forEach((p, ri) => {
+      const ry = tableTop + headerH + ri * rowH;
+      ctx.fillStyle = ri % 2 === 0 ? '#ffffff' : '#fafafa';
+      ctx.fillRect(pad, ry, rowHeaderW + datasets.length * colW, rowH);
+
+      ctx.strokeStyle = '#eee';
+      ctx.beginPath();
+      ctx.moveTo(pad, ry + rowH);
+      ctx.lineTo(pad + rowHeaderW + datasets.length * colW, ry + rowH);
+      ctx.stroke();
+
+      ctx.fillStyle = '#222';
+      ctx.font = '11px Inter, sans-serif';
+      ctx.textAlign = 'left';
+      ctx.fillText(p.label, pad + 10, ry + rowH / 2 + 4);
+
+      datasets.forEach((ds, ci) => {
+        const cell = map[`${p.key}|||${ds}`];
+        const cx = pad + rowHeaderW + ci * colW + colW / 2;
+        const ppsVal = cell ? cell.pps : null;
+        const recallVal = cell ? cell.recall5 : null;
+        const isBestPps = ppsVal != null && ppsVal === bestPps[ds];
+        const isBestRecall = recallVal != null && recallVal === bestRecall[ds];
+
+        ctx.textAlign = 'center';
+        ctx.fillStyle = isBestPps ? '#76b900' : '#333';
+        ctx.font = (isBestPps ? 'bold ' : '') + '12px Inter, sans-serif';
+        ctx.fillText(fmtV(ppsVal), cx, ry + 20);
+
+        ctx.fillStyle = isBestRecall ? '#76b900' : '#888';
+        ctx.font = (isBestRecall ? 'bold ' : '') + '11px Inter, sans-serif';
+        ctx.fillText(fmtV(recallVal), cx, ry + 38);
+      });
+    });
+
+    ctx.strokeStyle = '#ccc';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(pad, tableTop, rowHeaderW + datasets.length * colW, headerH + presets.length * rowH);
+    for (let i = 0; i <= datasets.length; i++) {
+      const x = pad + rowHeaderW + i * colW;
+      ctx.beginPath();
+      ctx.moveTo(x, tableTop);
+      ctx.lineTo(x, tableTop + headerH + presets.length * rowH);
+      ctx.stroke();
+    }
+
+    const dataUrl = offscreen.toDataURL('image/png', 1);
+    const a = document.createElement('a');
+    a.href = dataUrl;
+    a.download = `preset_matrix_${new Date().toISOString().slice(0,10)}.png`;
+    a.click();
+  };
+
   const labelStyle = {display:'block',fontSize:'10px',fontWeight:600,color:'var(--nv-text-dim)',marginBottom:'4px',textTransform:'uppercase',letterSpacing:'0.05em'};
 
   return (
@@ -3883,6 +4024,72 @@ function ReportingView({ runs, datasets, loading }) {
           </div>
         );
       })()}
+
+      {/* Preset x Dataset Matrix */}
+      {presetMatrix.datasets.length > 0 && (
+        <div className="card" style={{padding:'16px 20px',marginBottom:'20px'}}>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'12px'}}>
+            <h3 style={{margin:0,fontSize:'14px',fontWeight:600,color:'var(--nv-text-muted)'}}>
+              Preset &times; Dataset Matrix (Last Successful Run)
+            </h3>
+            <button className="btn btn-ghost btn-sm" onClick={downloadPresetMatrixPng} title="Download as PNG">
+              <IconDownload /> Download PNG
+            </button>
+          </div>
+          <div style={{overflowX:'auto'}}>
+            <table className="runs-table" style={{fontSize:'12px'}}>
+              <thead>
+                <tr>
+                  <th style={{minWidth:'180px'}}>Preset</th>
+                  {presetMatrix.datasets.map(ds => (
+                    <th key={ds} style={{textAlign:'center',minWidth:'120px'}}>
+                      <div>{ds}</div>
+                      <div style={{fontSize:'9px',fontWeight:400,color:'var(--nv-text-dim)',marginTop:'2px'}}>PPS / Recall@5</div>
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {(() => {
+                  const bestPps = {};
+                  const bestRecall = {};
+                  presetMatrix.datasets.forEach(ds => {
+                    PRESET_MATRIX_PRESETS.forEach(p => {
+                      const cell = presetMatrix.map[`${p.key}|||${ds}`];
+                      if (cell && cell.pps != null && (bestPps[ds] == null || cell.pps > bestPps[ds])) bestPps[ds] = cell.pps;
+                      if (cell && cell.recall5 != null && (bestRecall[ds] == null || cell.recall5 > bestRecall[ds])) bestRecall[ds] = cell.recall5;
+                    });
+                  });
+                  const fmtN = (v) => v != null ? v.toFixed(2) : '\u2014';
+                  return PRESET_MATRIX_PRESETS.map((p, ri) => (
+                    <tr key={p.key}>
+                      <td style={{fontWeight:500,color:'#fff',whiteSpace:'nowrap'}} title={p.desc}>{p.label}</td>
+                      {presetMatrix.datasets.map(ds => {
+                        const cell = presetMatrix.map[`${p.key}|||${ds}`];
+                        const ppsVal = cell ? cell.pps : null;
+                        const recallVal = cell ? cell.recall5 : null;
+                        const isBestPps = ppsVal != null && ppsVal === bestPps[ds];
+                        const isBestRecall = recallVal != null && recallVal === bestRecall[ds];
+                        return (
+                          <td key={ds} style={{textAlign:'center',verticalAlign:'middle'}}>
+                            <div style={{fontWeight:isBestPps?700:400,color:isBestPps?'var(--nv-green)':'#fff',fontSize:'12px'}}>
+                              {fmtN(ppsVal)}
+                              {isBestPps && <span style={{marginLeft:'4px',fontSize:'9px',color:'var(--nv-green)'}}>BEST</span>}
+                            </div>
+                            <div style={{fontWeight:isBestRecall?600:400,color:isBestRecall?'var(--nv-green)':'var(--nv-text-muted)',fontSize:'11px',marginTop:'1px'}}>
+                              {fmtN(recallVal)}
+                            </div>
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  ));
+                })()}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       {/* Data Export */}
       <DataExportSection filteredRuns={filteredRuns} filterDataset={filterDataset} filterPreset={filterPreset}

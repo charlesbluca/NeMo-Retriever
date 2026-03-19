@@ -170,6 +170,7 @@ class RunnerUpdateRequest(BaseModel):
     status: str | None = None
     tags: list[str] | None = None
     metadata: dict[str, Any] | None = None
+    ray_address: str | None = None
 
 
 class ScheduleCreateRequest(BaseModel):
@@ -610,6 +611,147 @@ async def delete_playground_session(session_id: str):
     return {"ok": True}
 
 
+# ---------------------------------------------------------------------------
+# Models Playground
+# ---------------------------------------------------------------------------
+
+_AVAILABLE_MODELS = [
+    {
+        "id": "nvidia/llama-nemotron-embed-1b-v2",
+        "name": "Llama Nemotron Embed 1B v2",
+        "type": "embedding",
+        "description": "Dense text embedding model for retrieval. Produces 4096-dim vectors.",
+        "max_length": 8192,
+    },
+    {
+        "id": "nvidia/llama-nemotron-embed-vl-1b-v2",
+        "name": "Llama Nemotron Embed VL 1B v2",
+        "type": "embedding",
+        "description": "Vision-language embedding model for multimodal retrieval.",
+        "max_length": 8192,
+    },
+    {
+        "id": "nvidia/llama-nemotron-rerank-1b-v2",
+        "name": "Llama Nemotron Rerank 1B v2",
+        "type": "reranker",
+        "description": "Cross-encoder reranker. Scores query-document relevance (higher = better).",
+        "max_length": 8192,
+    },
+]
+
+
+@app.get("/api/models")
+async def list_models():
+    """Return the list of available HuggingFace models."""
+    return _AVAILABLE_MODELS
+
+
+class EmbedTestRequest(BaseModel):
+    model_id: str = "nvidia/llama-nemotron-embed-1b-v2"
+    texts: list[str]
+    prefix: str = "query: "
+    batch_size: int = 64
+
+
+@app.post("/api/models/embed")
+async def test_embed_model(req: EmbedTestRequest):
+    """Send texts to an embedding model and return vectors + metadata."""
+    if not req.texts:
+        raise HTTPException(status_code=400, detail="texts list cannot be empty")
+    try:
+        import time as _time
+
+        from nemo_retriever.model import create_local_embedder
+
+        prefixed = [f"{req.prefix}{t}" for t in req.texts] if req.prefix else list(req.texts)
+        t0 = _time.perf_counter()
+        embedder = create_local_embedder(req.model_id)
+        load_time = _time.perf_counter() - t0
+
+        t1 = _time.perf_counter()
+        vecs = embedder.embed(prefixed, batch_size=req.batch_size)
+        embed_time = _time.perf_counter() - t1
+
+        results = []
+        for i, text in enumerate(req.texts):
+            vec = vecs[i].tolist()
+            results.append({
+                "text": text,
+                "embedding_dim": len(vec),
+                "embedding_preview": vec[:8],
+                "embedding_norm": round(sum(v * v for v in vec) ** 0.5, 6),
+            })
+
+        return {
+            "model_id": req.model_id,
+            "prefix": req.prefix,
+            "count": len(results),
+            "embedding_dim": results[0]["embedding_dim"] if results else 0,
+            "model_load_ms": round(load_time * 1000, 1),
+            "embed_ms": round(embed_time * 1000, 1),
+            "results": results,
+        }
+    except ImportError as exc:
+        raise HTTPException(status_code=500, detail=f"Missing dependency: {exc}")
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+class RerankTestRequest(BaseModel):
+    model_id: str = "nvidia/llama-nemotron-rerank-1b-v2"
+    query: str
+    documents: list[str]
+    max_length: int = 512
+    batch_size: int = 32
+
+
+@app.post("/api/models/rerank")
+async def test_rerank_model(req: RerankTestRequest):
+    """Score query-document relevance pairs using a cross-encoder reranker."""
+    if not req.query:
+        raise HTTPException(status_code=400, detail="query cannot be empty")
+    if not req.documents:
+        raise HTTPException(status_code=400, detail="documents list cannot be empty")
+    try:
+        import time as _time
+
+        from nemo_retriever.model.local.nemotron_rerank_v2 import NemotronRerankV2
+
+        t0 = _time.perf_counter()
+        reranker = NemotronRerankV2(model_name=req.model_id)
+        load_time = _time.perf_counter() - t0
+
+        t1 = _time.perf_counter()
+        scores = reranker.score(
+            req.query, req.documents, max_length=req.max_length, batch_size=req.batch_size,
+        )
+        score_time = _time.perf_counter() - t1
+
+        results = []
+        for i, (doc, score) in enumerate(zip(req.documents, scores)):
+            results.append({
+                "rank": i + 1,
+                "document": doc,
+                "score": round(float(score), 4),
+            })
+        results.sort(key=lambda x: x["score"], reverse=True)
+        for i, r in enumerate(results):
+            r["rank"] = i + 1
+
+        return {
+            "model_id": req.model_id,
+            "query": req.query,
+            "count": len(results),
+            "model_load_ms": round(load_time * 1000, 1),
+            "score_ms": round(score_time * 1000, 1),
+            "results": results,
+        }
+    except ImportError as exc:
+        raise HTTPException(status_code=500, detail=f"Missing dependency: {exc}")
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
 @app.get("/api/datasets")
 async def list_datasets():
     """Return distinct dataset names from run history (legacy)."""
@@ -1030,6 +1172,22 @@ async def delete_runner_endpoint(runner_id: int):
     return {"ok": True}
 
 
+@app.post("/api/runners/{runner_id}/pause")
+async def pause_runner_endpoint(runner_id: int):
+    """Temporarily pause a runner so no new jobs are dispatched to it."""
+    if not history.pause_runner(runner_id):
+        raise HTTPException(status_code=404, detail="Runner not found")
+    return {"ok": True, "status": "paused"}
+
+
+@app.post("/api/runners/{runner_id}/resume")
+async def resume_runner_endpoint(runner_id: int):
+    """Resume a paused runner so it can receive jobs again."""
+    if not history.resume_runner(runner_id):
+        raise HTTPException(status_code=404, detail="Runner not found")
+    return {"ok": True, "status": "online"}
+
+
 class JobRejectRequest(BaseModel):
     runner_id: int
     reason: str = "Dataset not found on runner"
@@ -1042,7 +1200,8 @@ class HeartbeatRequest(BaseModel):
 
 @app.post("/api/runners/{runner_id}/heartbeat")
 async def runner_heartbeat(runner_id: int, req: HeartbeatRequest | None = None):
-    if not history.heartbeat_runner(runner_id):
+    runner_status = history.heartbeat_runner(runner_id)
+    if runner_status is None:
         raise HTTPException(status_code=404, detail="Runner not found")
 
     cancel_job_id: str | None = None
@@ -1054,10 +1213,23 @@ async def runner_heartbeat(runner_id: int, req: HeartbeatRequest | None = None):
         if current_job and current_job.get("status") == "cancelling":
             cancel_job_id = req.current_job_id
 
-    jobs = history.get_pending_jobs_for_runner(runner_id)
-    next_job = _pick_job_for_runner(jobs, runner_id)
+    next_job = None
+    if runner_status != "paused":
+        jobs = history.get_pending_jobs_for_runner(runner_id)
+        next_job = _pick_job_for_runner(jobs, runner_id)
 
-    return {"ok": True, "job": next_job, "cancel_job_id": cancel_job_id}
+    runner_record = history.get_runner_by_id(runner_id)
+    update_to = runner_record.get("pending_update_commit") if runner_record else None
+    ray_addr = runner_record.get("ray_address") if runner_record else None
+
+    return {
+        "ok": True,
+        "job": next_job,
+        "cancel_job_id": cancel_job_id,
+        "status": runner_status,
+        "update_to_commit": update_to,
+        "ray_address": ray_addr,
+    }
 
 
 @app.get("/api/runners/{runner_id}/work")
@@ -1066,7 +1238,7 @@ async def runner_get_work(runner_id: int):
     runner = history.get_runner_by_id(runner_id)
     if not runner:
         raise HTTPException(status_code=404, detail="Runner not found")
-    if runner.get("status") == "offline":
+    if runner.get("status") in ("offline", "paused"):
         return Response(status_code=204)
     jobs = history.get_pending_jobs_for_runner(runner_id)
     job = _pick_job_for_runner(jobs, runner_id)
@@ -1480,8 +1652,13 @@ async def deploy_latest(req: DeployRequest):
         except HTTPException:
             _step("checkout remote", "checkout", f"{req.remote}/{req.branch}")
 
-    new_sha = _git_run("rev-parse", "--short", "HEAD", cwd=repo_root)
-    log_lines.append(f"Now at {new_sha} on {req.branch}")
+    new_sha_short = _git_run("rev-parse", "--short", "HEAD", cwd=repo_root)
+    new_sha_full = _git_run("rev-parse", "HEAD", cwd=repo_root)
+    log_lines.append(f"Now at {new_sha_short} on {req.branch}")
+
+    updated_count = history.set_pending_update_all_runners(new_sha_full)
+    if updated_count:
+        log_lines.append(f"Signalled {updated_count} runner(s) to update to {new_sha_short}")
 
     def _restart_after_delay():
         import time
@@ -1497,11 +1674,11 @@ async def deploy_latest(req: DeployRequest):
 
     return {
         "ok": True,
-        "new_sha": new_sha,
+        "new_sha": new_sha_short,
         "branch": req.branch,
         "remote": req.remote,
         "log": log_lines,
-        "message": f"Deployed {req.branch} ({new_sha}). Portal will restart in ~2 seconds.",
+        "message": f"Deployed {req.branch} ({new_sha_short}). Portal will restart in ~2 seconds. {updated_count} runner(s) will update.",
     }
 
 

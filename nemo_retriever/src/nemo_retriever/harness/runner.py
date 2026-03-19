@@ -112,6 +112,77 @@ def _git_checkout_commit(commit: str, ref: str | None = None) -> str | None:
         return None
 
 
+def _get_current_git_commit() -> str | None:
+    """Return the full SHA of the current HEAD, or None if not in a git repo."""
+    repo_root = _find_repo_root()
+    if repo_root is None:
+        return None
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=True,
+        )
+        return result.stdout.strip()
+    except Exception:
+        return None
+
+
+def _self_update_and_restart(commit: str, base_url: str, runner_id: int, reg_payload: dict[str, Any]) -> None:
+    """Checkout the requested commit, reinstall the package, and restart this process."""
+    repo_root = _find_repo_root()
+    if repo_root is None:
+        logger.error("Cannot find git repo root — skipping self-update")
+        return
+
+    env = dict(os.environ)
+    env["GIT_TERMINAL_PROMPT"] = "0"
+
+    def _run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            cmd, cwd=str(repo_root), capture_output=True, text=True, timeout=300, env=env, **kwargs,
+        )
+
+    logger.info("Self-update requested: updating to %s", commit[:12])
+
+    try:
+        _run(["git", "fetch", "--all", "--prune"], check=False)
+        result = _run(["git", "checkout", commit], check=True)
+        logger.info("Checked out %s", commit[:12])
+    except Exception as exc:
+        logger.error("Git checkout failed: %s", exc)
+        return
+
+    nemo_retriever_dir = repo_root / "nemo_retriever"
+    if not nemo_retriever_dir.exists():
+        logger.error("nemo_retriever directory not found at %s", nemo_retriever_dir)
+        return
+
+    logger.info("Running uv pip install -e ./nemo_retriever ...")
+    try:
+        result = _run(["uv", "pip", "install", "-e", "./nemo_retriever"], check=True)
+        if result.stdout:
+            logger.info("pip install stdout: %s", result.stdout[:500])
+        if result.stderr:
+            logger.info("pip install stderr: %s", result.stderr[:500])
+    except FileNotFoundError:
+        logger.info("uv not found, falling back to pip install -e ./nemo_retriever")
+        try:
+            _run([sys.executable, "-m", "pip", "install", "-e", "./nemo_retriever"], check=True)
+        except Exception as exc:
+            logger.error("pip install failed: %s", exc)
+            return
+    except Exception as exc:
+        logger.error("uv pip install failed: %s", exc)
+        return
+
+    logger.info("Self-update complete. Restarting runner process...")
+    os.execv(sys.executable, [sys.executable] + sys.argv)
+
+
 def _git_restore(prev_ref: str | None) -> None:
     """Restore the working tree to the previous HEAD after a job finishes."""
     if prev_ref is None:
@@ -186,6 +257,7 @@ class _JobTracker:
 
 
 _job_tracker = _JobTracker()
+_runner_ray_address: str | None = None
 
 
 class _TeeWriter:
@@ -308,12 +380,16 @@ def _execute_job_on_runner(base_url: str, job: dict[str, Any], runner_id: int = 
 
     dataset_value = job.get("dataset_path") or job["dataset"]
     overrides = job.get("dataset_overrides") or {}
+    if _runner_ray_address and "ray_address" not in overrides:
+        overrides["ray_address"] = _runner_ray_address
+        logger.info("Injecting runner ray_address=%s into job overrides", _runner_ray_address)
     logger.info(
-        "Executing job %s (dataset=%s, path=%s, preset=%s)",
+        "Executing job %s (dataset=%s, path=%s, preset=%s, ray=%s)",
         job_id,
         job.get("dataset"),
         dataset_value,
         job.get("preset"),
+        overrides.get("ray_address", "local"),
     )
 
     original_stdout = sys.stdout
@@ -365,7 +441,11 @@ def _execute_job_on_runner(base_url: str, job: dict[str, Any], runner_id: int = 
 
 
 def _build_registration_payload(
-    runner_name: str, meta: dict[str, Any], tags: list[str], heartbeat_interval: int = 30,
+    runner_name: str,
+    meta: dict[str, Any],
+    tags: list[str],
+    heartbeat_interval: int = 30,
+    ray_address: str | None = None,
 ) -> dict[str, Any]:
     """Build the JSON payload used to register (or re-register) with the portal."""
     return {
@@ -378,6 +458,8 @@ def _build_registration_payload(
         "status": "online",
         "tags": tags,
         "heartbeat_interval": heartbeat_interval,
+        "git_commit": _get_current_git_commit(),
+        "ray_address": ray_address,
         "metadata": {
             "cuda_driver": meta.get("cuda_driver"),
             "ray_version": meta.get("ray_version"),
@@ -401,6 +483,10 @@ def runner_start_command(
     manager_url: str | None = typer.Option(None, "--manager-url", help="Portal URL to register this runner with."),
     heartbeat_interval: int = typer.Option(30, "--heartbeat-interval", help="Heartbeat interval in seconds."),
     tag: list[str] = typer.Option([], "--tag", help="Runner tags. Repeatable."),
+    ray_address: str | None = typer.Option(
+        None, "--ray-address",
+        help="Ray cluster address for this runner (e.g. 'auto', 'ray://host:10001'). Omit for local Ray.",
+    ),
 ) -> None:
     """Start a harness runner and optionally register with a portal manager."""
     from nemo_retriever.harness.run import _collect_run_metadata
@@ -408,12 +494,19 @@ def runner_start_command(
     meta = _collect_run_metadata()
     runner_name = name or meta.get("host", "unknown")
 
+    current_commit = _get_current_git_commit()
+
     typer.echo(f"Runner: {runner_name}")
     typer.echo(f"  Hostname : {meta.get('host')}")
     typer.echo(f"  CPU      : {meta.get('cpu_count') or 'N/A'} cores")
     typer.echo(f"  Memory   : {meta.get('memory_gb') or 'N/A'} GB")
     typer.echo(f"  GPU      : {meta.get('gpu_type') or 'N/A'} (x{meta.get('gpu_count') or 0})")
     typer.echo(f"  Python   : {meta.get('python_version')}")
+    typer.echo(f"  Git      : {current_commit[:12] if current_commit else 'unknown'}")
+    typer.echo(f"  Ray      : {ray_address or 'local (embedded)'}")
+
+    global _runner_ray_address  # noqa: PLW0603
+    _runner_ray_address = ray_address
 
     runner_id: int | None = None
     base_url: str | None = None
@@ -421,7 +514,7 @@ def runner_start_command(
 
     if manager_url:
         base_url = manager_url.rstrip("/")
-        reg_payload = _build_registration_payload(runner_name, meta, tag or [], heartbeat_interval)
+        reg_payload = _build_registration_payload(runner_name, meta, tag or [], heartbeat_interval, ray_address=ray_address)
         typer.echo(f"\nRegistering with {base_url} ...")
         runner_id = _register_with_portal(base_url, reg_payload)
         if runner_id is not None:
@@ -491,6 +584,22 @@ def runner_start_command(
             except Exception as exc:
                 logger.debug("Heartbeat failed (%s) — portal may be restarting", exc)
                 continue
+
+            if hb_resp and "ray_address" in hb_resp:
+                portal_ray_addr = hb_resp["ray_address"]
+                if portal_ray_addr != _runner_ray_address:
+                    _runner_ray_address = portal_ray_addr
+                    logger.info("Ray address updated from portal: %s", _runner_ray_address or "local")
+
+            update_commit = hb_resp.get("update_to_commit") if hb_resp else None
+            if update_commit:
+                current_sha = _get_current_git_commit()
+                if current_sha and current_sha.startswith(update_commit[:7]):
+                    logger.info("Already at requested commit %s — skipping update", update_commit[:12])
+                elif active_job_thread is not None and active_job_thread.is_alive():
+                    logger.info("Update to %s pending — waiting for current job to finish", update_commit[:12])
+                else:
+                    _self_update_and_restart(update_commit, base_url, runner_id, reg_payload)
 
             if active_job_thread is None or not active_job_thread.is_alive():
                 active_job_thread = None

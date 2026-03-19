@@ -254,6 +254,9 @@ function IconActivity() {
 function IconPlay() {
   return <svg {...svgProps}><polygon points="5 3 19 12 5 21 5 3"/></svg>;
 }
+function IconPause() {
+  return <svg {...svgProps}><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>;
+}
 function IconDownload() {
   return <svg {...svgProps}><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>;
 }
@@ -322,6 +325,9 @@ function IconExternalLink() {
 }
 function IconFileText() {
   return <svg {...svgProps}><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>;
+}
+function IconCpu() {
+  return <svg {...svgProps}><rect x="4" y="4" width="16" height="16" rx="2" ry="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/><line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="14" x2="23" y2="14"/><line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="14" x2="4" y2="14"/></svg>;
 }
 function IconSettings() {
   return <svg {...svgProps}><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>;
@@ -504,6 +510,9 @@ function Sidebar({ activeView, onNavigate, alertBadgeCount, githubRepoUrl }) {
         </div>
         <div className={`nav-item ${activeView==='retrieval'?'active':''}`} onClick={()=>onNavigate('retrieval')}>
           <IconSearch /><span>Retrieval</span>
+        </div>
+        <div className={`nav-item ${activeView==='models'?'active':''}`} onClick={()=>onNavigate('models')}>
+          <IconCpu /><span>Models</span>
         </div>
         <div className="sidebar-section-label">System</div>
         <div className={`nav-item ${activeView==='settings'?'active':''}`} onClick={()=>onNavigate('settings')}>
@@ -1567,15 +1576,16 @@ function RunDetailModal({ run, onClose, onDelete, githubRepoUrl }) {
 
 /* ===== Runner Status Dot ===== */
 function RunnerStatusDot({ status }) {
-  const colors = { online:'#76b900', offline:'#ff5050', busy:'#fcd34d' };
+  const colors = { online:'#76b900', offline:'#ff5050', busy:'#fcd34d', paused:'#ff8c00' };
   const color = colors[status] || colors.offline;
   const isOffline = status === 'offline';
+  const isPaused = status === 'paused';
   return (
     <span style={{display:'inline-flex',alignItems:'center',gap:'6px'}}>
       <span style={{width:'8px',height:'8px',borderRadius:'50%',background:color,display:'inline-block',
-        boxShadow:status==='online'?'0 0 6px rgba(118,185,0,0.5)':isOffline?'0 0 6px rgba(255,80,80,0.4)':'none',
+        boxShadow:status==='online'?'0 0 6px rgba(118,185,0,0.5)':isOffline?'0 0 6px rgba(255,80,80,0.4)':isPaused?'0 0 6px rgba(255,140,0,0.4)':'none',
         animation:isOffline?'pulse-offline 2s ease-in-out infinite':'none'}}></span>
-      <span style={{fontSize:'12px',color,textTransform:'capitalize',fontWeight:isOffline?600:500}}>{status||'unknown'}</span>
+      <span style={{fontSize:'12px',color,textTransform:'capitalize',fontWeight:(isOffline||isPaused)?600:500}}>{status||'unknown'}</span>
     </span>
   );
 }
@@ -1593,7 +1603,7 @@ function timeSince(dateStr) {
 }
 
 /* ===== Runners View ===== */
-function RunnersView({ runners, loading, onRefresh }) {
+function RunnersView({ runners, loading, onRefresh, githubRepoUrl }) {
   const [showForm, setShowForm] = useState(false);
   const [editRunner, setEditRunner] = useState(null);
   const pg = usePagination(runners, 25);
@@ -1604,6 +1614,13 @@ function RunnersView({ runners, loading, onRefresh }) {
     if (!confirm(`Delete runner "${name}"?`)) return;
     try {
       await fetch(`/api/runners/${id}`, { method:"DELETE" });
+      onRefresh();
+    } catch {}
+  }
+  async function handleTogglePause(runner) {
+    const action = runner.status === 'paused' ? 'resume' : 'pause';
+    try {
+      await fetch(`/api/runners/${runner.id}/${action}`, { method:"POST" });
       onRefresh();
     } catch {}
   }
@@ -1619,18 +1636,18 @@ function RunnersView({ runners, loading, onRefresh }) {
           <table className="runs-table">
             <thead>
               <tr>
-                <th>Status</th><th>Name</th><th>Hostname</th><th>GPU Type</th>
+                <th>Status</th><th>Name</th><th>Hostname</th><th>Git Commit</th><th>Ray Cluster</th><th>GPU Type</th>
                 <th style={{textAlign:'right'}}>GPUs</th><th style={{textAlign:'right'}}>CPUs</th>
                 <th style={{textAlign:'right'}}>Memory (GB)</th><th>Last Heartbeat</th><th>Tags</th><th>Actions</th>
               </tr>
             </thead>
             <tbody>
               {loading ? (
-                <tr><td colSpan="10" style={{textAlign:'center',padding:'60px',color:'var(--nv-text-muted)'}}>
+                <tr><td colSpan="12" style={{textAlign:'center',padding:'60px',color:'var(--nv-text-muted)'}}>
                   <div className="spinner spinner-lg" style={{margin:'0 auto 12px'}}></div><div>Loading runners…</div>
                 </td></tr>
               ) : runners.length === 0 ? (
-                <tr><td colSpan="10" style={{textAlign:'center',padding:'60px',color:'var(--nv-text-muted)'}}>
+                <tr><td colSpan="12" style={{textAlign:'center',padding:'60px',color:'var(--nv-text-muted)'}}>
                   <div style={{marginBottom:'8px',fontSize:'15px'}}>No runners registered</div>
                   <div style={{fontSize:'12px',color:'var(--nv-text-dim)'}}>
                     Register a runner manually or use <code className="mono" style={{background:'rgba(255,255,255,0.06)',padding:'2px 6px',borderRadius:'4px'}}>retriever harness runner start --manager-url &lt;portal-url&gt;</code>
@@ -1638,12 +1655,36 @@ function RunnersView({ runners, loading, onRefresh }) {
                 </td></tr>
               ) : pg.pageData.map(r => {
                 const isOffline = r.status === 'offline';
+                const isPaused = r.status === 'paused';
                 const ago = timeSince(r.last_heartbeat);
+                const rowBg = isOffline ? 'rgba(255,80,80,0.04)' : isPaused ? 'rgba(255,140,0,0.04)' : 'transparent';
                 return (
-                <tr key={r.id} style={{cursor:'default',background:isOffline?'rgba(255,80,80,0.04)':'transparent'}}>
+                <tr key={r.id} style={{cursor:'default',background:rowBg}}>
                   <td><RunnerStatusDot status={r.status} /></td>
-                  <td style={{color:isOffline?'#ff8888':'#fff',fontWeight:500}}>{r.name}</td>
+                  <td style={{color:isOffline?'#ff8888':isPaused?'#ff8c00':'#fff',fontWeight:500}}>{r.name}</td>
                   <td style={{color:'var(--nv-text-muted)',fontSize:'12px'}}>{r.hostname || "\u2014"}</td>
+                  <td style={{fontSize:'12px'}}>
+                    {r.pending_update_commit ? (
+                      <span style={{display:'inline-flex',alignItems:'center',gap:'6px'}}>
+                        <CommitLink sha={r.git_commit} repoUrl={githubRepoUrl} />
+                        <span title={`Updating to ${r.pending_update_commit.slice(0,10)}…`}
+                          style={{color:'#ff8c00',fontSize:'11px',fontWeight:600,animation:'pulse-offline 1.5s infinite'}}>
+                          ⟳ updating
+                        </span>
+                      </span>
+                    ) : (
+                      <CommitLink sha={r.git_commit} repoUrl={githubRepoUrl} />
+                    )}
+                  </td>
+                  <td style={{fontSize:'12px'}}>
+                    {r.ray_address ? (
+                      <span className="mono" style={{color:'var(--nv-green)',fontSize:'11px',background:'rgba(118,185,0,0.08)',padding:'2px 6px',borderRadius:'4px'}}>
+                        {r.ray_address}
+                      </span>
+                    ) : (
+                      <span style={{color:'var(--nv-text-dim)',fontSize:'11px'}}>local</span>
+                    )}
+                  </td>
                   <td style={{color:'var(--nv-text-muted)',fontSize:'12px'}}>{r.gpu_type || "\u2014"}</td>
                   <td style={{textAlign:'right'}}>{r.gpu_count ?? "\u2014"}</td>
                   <td style={{textAlign:'right'}}>{r.cpu_count ?? "\u2014"}</td>
@@ -1655,6 +1696,19 @@ function RunnersView({ runners, loading, onRefresh }) {
                   <td>{(r.tags||[]).map((t,i)=><span key={i} className="tag" style={{marginRight:'4px'}}>{t}</span>)}</td>
                   <td>
                     <div style={{display:'flex',gap:'6px',flexWrap:'nowrap'}}>
+                      {r.status !== 'offline' && (
+                        r.status === 'paused' ? (
+                          <button className="btn btn-sm" onClick={()=>handleTogglePause(r)} title="Resume runner"
+                            style={{background:'rgba(118,185,0,0.1)',color:'var(--nv-green)',border:'1px solid rgba(118,185,0,0.2)'}}>
+                            <IconPlay /> Resume
+                          </button>
+                        ) : (
+                          <button className="btn btn-sm" onClick={()=>handleTogglePause(r)} title="Pause runner — stops new jobs from being dispatched"
+                            style={{background:'rgba(255,140,0,0.1)',color:'#ff8c00',border:'1px solid rgba(255,140,0,0.2)'}}>
+                            <IconPause /> Pause
+                          </button>
+                        )
+                      )}
                       <button className="btn btn-secondary btn-sm" onClick={()=>handleEdit(r)} title="Edit"><IconEdit /> Edit</button>
                       <button className="btn btn-sm" onClick={()=>handleDelete(r.id,r.name)} title="Delete" style={{background:'rgba(255,80,80,0.1)',color:'#ff5050',border:'1px solid rgba(255,80,80,0.2)'}}><IconTrash /> Delete</button>
                     </div>
@@ -1686,6 +1740,7 @@ function RunnerFormModal({ runner, onClose, onSaved }) {
     memory_gb: runner?.memory_gb ?? "",
     status: runner?.status || "online",
     tags: (runner?.tags || []).join(", "),
+    ray_address: runner?.ray_address || "",
   });
   const [saving, setSaving] = useState(false);
 
@@ -1706,6 +1761,7 @@ function RunnerFormModal({ runner, onClose, onSaved }) {
         memory_gb: form.memory_gb !== "" ? parseFloat(form.memory_gb) : null,
         status: form.status,
         tags: form.tags ? form.tags.split(",").map(t=>t.trim()).filter(Boolean) : [],
+        ray_address: form.ray_address.trim() || null,
       };
       const url = isEdit ? `/api/runners/${runner.id}` : "/api/runners";
       const res = await fetch(url, {
@@ -1771,6 +1827,39 @@ function RunnerFormModal({ runner, onClose, onSaved }) {
                   <option value="offline">Offline</option>
                   <option value="busy">Busy</option>
                 </select>
+              </div>
+            </div>
+            <div>
+              <label style={labelStyle}>Ray Cluster Address</label>
+              <div style={{display:'flex',gap:'8px',alignItems:'center'}}>
+                <input className="input" style={{flex:1}} value={form.ray_address} onChange={e=>set('ray_address',e.target.value)}
+                  placeholder="Leave empty for local Ray" />
+              </div>
+              <div style={{marginTop:'6px',display:'flex',gap:'6px',flexWrap:'wrap'}}>
+                {["auto","ray://localhost:10001","ray://head-node:10001"].map(preset => (
+                  <button key={preset} type="button" className="btn btn-sm"
+                    onClick={()=>set('ray_address',preset)}
+                    style={{fontSize:'11px',padding:'2px 8px',
+                      background: form.ray_address===preset ? 'rgba(118,185,0,0.15)' : 'rgba(255,255,255,0.04)',
+                      color: form.ray_address===preset ? 'var(--nv-green)' : 'var(--nv-text-muted)',
+                      border: form.ray_address===preset ? '1px solid rgba(118,185,0,0.3)' : '1px solid rgba(255,255,255,0.08)',
+                      borderRadius:'4px',cursor:'pointer'}}>
+                    {preset}
+                  </button>
+                ))}
+                {form.ray_address && (
+                  <button type="button" className="btn btn-sm"
+                    onClick={()=>set('ray_address','')}
+                    style={{fontSize:'11px',padding:'2px 8px',background:'rgba(255,80,80,0.08)',color:'#ff5050',
+                      border:'1px solid rgba(255,80,80,0.2)',borderRadius:'4px',cursor:'pointer'}}>
+                    Clear (local)
+                  </button>
+                )}
+              </div>
+              <div style={{marginTop:'4px',fontSize:'11px',color:'var(--nv-text-dim)'}}>
+                Use <code className="mono" style={{background:'rgba(255,255,255,0.06)',padding:'1px 4px',borderRadius:'3px'}}>auto</code> for
+                an existing local cluster, or <code className="mono" style={{background:'rgba(255,255,255,0.06)',padding:'1px 4px',borderRadius:'3px'}}>ray://host:port</code> for
+                a remote cluster. Leave empty for embedded local Ray.
               </div>
             </div>
             <div>
@@ -2077,7 +2166,7 @@ function ScheduleFormModal({ schedule, runners, onClose, onSaved }) {
 
   const labelStyle = {display:'block',fontSize:'12px',fontWeight:500,color:'var(--nv-text-muted)',marginBottom:'6px',textTransform:'uppercase',letterSpacing:'0.04em'};
   const helpStyle = {fontSize:'11px',color:'var(--nv-text-dim)',marginTop:'4px'};
-  const onlineRunners = (runners || []).filter(r => r.status === 'online');
+  const onlineRunners = (runners || []).filter(r => r.status === 'online' || r.status === 'paused');
 
   return (
     <div className="modal-overlay" onClick={onClose}>
@@ -2176,7 +2265,7 @@ function ScheduleFormModal({ schedule, runners, onClose, onSaved }) {
                 <label style={labelStyle}>Preferred Runner</label>
                 <select className="select" style={{width:'100%'}} value={form.preferred_runner_id} onChange={e=>set('preferred_runner_id',e.target.value)}>
                   <option value="">Auto-select</option>
-                  {onlineRunners.map(r=><option key={r.id} value={r.id}>{r.name} ({r.hostname || 'unknown'})</option>)}
+                  {onlineRunners.map(r=><option key={r.id} value={r.id}>{r.name} ({r.hostname || 'unknown'}){r.status==='paused'?' — paused':''}</option>)}
                 </select>
               </div>
               <div>
@@ -2972,6 +3061,11 @@ const REPORT_CHARTS = [
   { id: "trend_ingest", label: "Ingest Time Over Time", metric: "ingest_secs", type: "line" },
   { id: "bar_pps", label: "Avg Pages/sec by Dataset", metric: "pages_per_sec", type: "bar" },
   { id: "bar_recall5", label: "Avg Recall@5 by Dataset", metric: "recall_5", type: "bar" },
+  { id: "gpu_pps", label: "Pages/sec by GPU SKU (per Dataset)", metric: "pages_per_sec", type: "gpu_bar" },
+  { id: "gpu_recall5", label: "Recall@5 by GPU SKU (per Dataset)", metric: "recall_5", type: "gpu_bar" },
+  { id: "gpu_recall1", label: "Recall@1 by GPU SKU (per Dataset)", metric: "recall_1", type: "gpu_bar" },
+  { id: "gpu_recall10", label: "Recall@10 by GPU SKU (per Dataset)", metric: "recall_10", type: "gpu_bar" },
+  { id: "gpu_ingest", label: "Ingest Time by GPU SKU (per Dataset)", metric: "ingest_secs", type: "gpu_bar" },
 ];
 
 function DataExportSection({ filteredRuns, filterDataset, filterPreset, filterStatus, dateFrom, dateTo }) {
@@ -3204,6 +3298,62 @@ function ReportingView({ runs, datasets, loading }) {
           scales: {
             x: { ticks: { color: '#555', font: { size: 10 } }, grid: { color: '#eee' } },
             y: { ticks: { color: '#555', font: { size: 10 } }, grid: { color: '#eee' }, title: { display: true, text: metricLabel, color: '#666' } },
+          },
+        },
+      });
+    } else if (chartDef.type === "gpu_bar") {
+      const nested = {};
+      filteredRuns.forEach(r => {
+        const gpu = r.gpu_type || "Unknown GPU";
+        const ds = r.dataset || "unknown";
+        const val = r[chartDef.metric];
+        if (val == null) return;
+        if (!nested[gpu]) nested[gpu] = {};
+        if (!nested[gpu][ds]) nested[gpu][ds] = [];
+        nested[gpu][ds].push(val);
+      });
+      const gpuLabels = Object.keys(nested).sort();
+      const allDatasets = [...new Set(filteredRuns.map(r => r.dataset || "unknown"))].sort();
+      const chartDatasets = allDatasets.map((ds, i) => ({
+        label: ds,
+        data: gpuLabels.map(gpu => {
+          const vals = (nested[gpu] && nested[gpu][ds]) || [];
+          return vals.length > 0 ? +(vals.reduce((a,b)=>a+b,0) / vals.length).toFixed(3) : null;
+        }),
+        backgroundColor: CHART_COLORS[i % CHART_COLORS.length] + 'cc',
+        borderColor: CHART_COLORS[i % CHART_COLORS.length],
+        borderWidth: 1, borderRadius: 4,
+      }));
+      return new Chart(canvasEl, {
+        type: 'bar',
+        data: { labels: gpuLabels, datasets: chartDatasets },
+        options: {
+          responsive: true, maintainAspectRatio: false, animation: { duration: 300 },
+          plugins: {
+            legend: { position: 'top', labels: { color: '#333', font: { family: 'Inter', size: 11 }, usePointStyle: true, padding: 12 } },
+            title: { display: true, text: chartDef.label, color: '#222', font: { family: 'Inter', size: 14, weight: '600' }, padding: { bottom: 10 } },
+            tooltip: {
+              callbacks: {
+                label: function(ctx) {
+                  const v = ctx.parsed.y;
+                  return v != null ? `${ctx.dataset.label}: ${v.toFixed(2)}` : '';
+                },
+                afterBody: function(items) {
+                  if (!items.length) return '';
+                  const gpu = items[0].label;
+                  const ds = items[0].dataset.label;
+                  const vals = (nested[gpu] && nested[gpu][ds]) || [];
+                  if (vals.length <= 1) return '';
+                  return `  (${vals.length} runs)`;
+                },
+              },
+            },
+          },
+          scales: {
+            x: { ticks: { color: '#555', font: { size: 10 }, maxRotation: 45, minRotation: 0 }, grid: { color: '#eee' },
+              title: { display: true, text: 'GPU SKU', color: '#666' } },
+            y: { ticks: { color: '#555', font: { size: 10 } }, grid: { color: '#eee' },
+              title: { display: true, text: metricLabel, color: '#666' }, beginAtZero: true },
           },
         },
       });
@@ -3453,6 +3603,73 @@ function ReportingView({ runs, datasets, loading }) {
         </div>
       </div>
 
+      {/* GPU Performance Comparison Table */}
+      {(() => {
+        const gpuRows = {};
+        filteredRuns.forEach(r => {
+          const gpu = r.gpu_type || "Unknown GPU";
+          const ds = r.dataset || "unknown";
+          const key = `${gpu}|||${ds}`;
+          if (!gpuRows[key]) gpuRows[key] = { gpu, dataset: ds, pps: [], recall1: [], recall5: [], recall10: [], ingest: [], count: 0 };
+          gpuRows[key].count++;
+          if (r.pages_per_sec != null) gpuRows[key].pps.push(r.pages_per_sec);
+          if (r.recall_1 != null) gpuRows[key].recall1.push(r.recall_1);
+          if (r.recall_5 != null) gpuRows[key].recall5.push(r.recall_5);
+          if (r.recall_10 != null) gpuRows[key].recall10.push(r.recall_10);
+          if (r.ingest_secs != null) gpuRows[key].ingest.push(r.ingest_secs);
+        });
+        const rows = Object.values(gpuRows).sort((a, b) => a.gpu.localeCompare(b.gpu) || a.dataset.localeCompare(b.dataset));
+        const avg = arr => arr.length ? (arr.reduce((s,v) => s+v, 0) / arr.length) : null;
+        const fmtN = (v, d=2) => v != null ? v.toFixed(d) : "\u2014";
+        if (rows.length === 0) return null;
+        const bestPps = {};
+        rows.forEach(r => {
+          const a = avg(r.pps);
+          if (a != null && (!bestPps[r.dataset] || a > bestPps[r.dataset])) bestPps[r.dataset] = a;
+        });
+        return (
+          <div className="card" style={{padding:'16px 20px',marginBottom:'20px'}}>
+            <h3 style={{margin:'0 0 12px 0',fontSize:'14px',fontWeight:600,color:'var(--nv-text-muted)'}}>
+              GPU Performance Comparison by Dataset
+            </h3>
+            <div style={{overflowX:'auto'}}>
+              <table className="runs-table" style={{fontSize:'12px'}}>
+                <thead>
+                  <tr>
+                    <th>GPU SKU</th><th>Dataset</th><th style={{textAlign:'right'}}>Runs</th>
+                    <th style={{textAlign:'right'}}>Avg PPS</th><th style={{textAlign:'right'}}>Best PPS</th>
+                    <th style={{textAlign:'right'}}>Recall@1</th><th style={{textAlign:'right'}}>Recall@5</th>
+                    <th style={{textAlign:'right'}}>Recall@10</th><th style={{textAlign:'right'}}>Avg Ingest (s)</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((r, i) => {
+                    const avgPps = avg(r.pps);
+                    const isBest = avgPps != null && bestPps[r.dataset] === avgPps;
+                    return (
+                      <tr key={i} style={{background: isBest ? 'rgba(118,185,0,0.04)' : 'transparent'}}>
+                        <td style={{fontWeight:500,color:'#fff',whiteSpace:'nowrap'}}>{r.gpu}</td>
+                        <td><span className="tag">{r.dataset}</span></td>
+                        <td style={{textAlign:'right'}}>{r.count}</td>
+                        <td style={{textAlign:'right',fontWeight:600,color:isBest?'var(--nv-green)':'#fff'}}>
+                          {fmtN(avgPps)}
+                          {isBest && <span style={{marginLeft:'6px',fontSize:'10px',color:'var(--nv-green)'}}>BEST</span>}
+                        </td>
+                        <td style={{textAlign:'right',color:'var(--nv-text-muted)'}}>{fmtN(r.pps.length ? Math.max(...r.pps) : null)}</td>
+                        <td style={{textAlign:'right'}}>{fmtN(avg(r.recall1))}</td>
+                        <td style={{textAlign:'right'}}>{fmtN(avg(r.recall5))}</td>
+                        <td style={{textAlign:'right'}}>{fmtN(avg(r.recall10))}</td>
+                        <td style={{textAlign:'right',color:'var(--nv-text-muted)'}}>{fmtN(avg(r.ingest))}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        );
+      })()}
+
       {/* Data Export */}
       <DataExportSection filteredRuns={filteredRuns} filterDataset={filterDataset} filterPreset={filterPreset}
         filterStatus={filterStatus} dateFrom={dateFrom} dateTo={dateTo} />
@@ -3605,7 +3822,7 @@ function TriggerModal({ onClose, onTriggered }) {
     fetch("/api/runners").then(r=>r.json()).then(setRunners).catch(()=>{});
   }, []);
 
-  const onlineRunners = runners.filter(r => r.status === "online");
+  const onlineRunners = runners.filter(r => r.status === "online" || r.status === "paused");
 
   async function handleSubmit(e) {
     e.preventDefault();
@@ -3654,7 +3871,7 @@ function TriggerModal({ onClose, onTriggered }) {
               <label style={labelStyle}>Runner</label>
               <select value={runnerId} onChange={e=>setRunnerId(e.target.value)} className="select" style={{width:'100%'}}>
                 <option value="">Any available runner</option>
-                {onlineRunners.map(r=><option key={r.id} value={r.id}>{r.name} ({r.hostname || 'unknown'}) — {r.gpu_type || 'no GPU'} x{r.gpu_count||0}</option>)}
+                {onlineRunners.map(r=><option key={r.id} value={r.id}>{r.name} ({r.hostname || 'unknown'}) — {r.gpu_type || 'no GPU'} x{r.gpu_count||0}{r.status==='paused'?' [PAUSED]':''}</option>)}
               </select>
               <div style={{fontSize:'11px',color:'var(--nv-text-dim)',marginTop:'4px'}}>
                 {onlineRunners.length === 0
@@ -3795,7 +4012,7 @@ function IngestionView({ jobs, onViewLogs }) {
     return (b / (1024 * 1024)).toFixed(1) + " MB";
   }
 
-  const onlineRunners = runners.filter(r => r.status === "online");
+  const onlineRunners = runners.filter(r => r.status === "online" || r.status === "paused");
   const playgroundJobs = (jobs || []).filter(j => j.trigger_source === "playground" && (j.status === "running" || j.status === "pending" || j.status === "cancelling"));
   const labelStyle = {display:'block',fontSize:'11px',fontWeight:600,color:'var(--nv-text-dim)',textTransform:'uppercase',letterSpacing:'0.04em',marginBottom:'6px'};
 
@@ -3913,7 +4130,7 @@ function IngestionView({ jobs, onViewLogs }) {
               <label style={labelStyle}>Runner</label>
               <select className="select" style={{width:'100%'}} value={runnerId} onChange={e => setRunnerId(e.target.value)}>
                 <option value="">Any available runner</option>
-                {onlineRunners.map(r => <option key={r.id} value={r.id}>{r.name || r.hostname} — {r.gpu_type || 'no GPU'} x{r.gpu_count || 0}</option>)}
+                {onlineRunners.map(r => <option key={r.id} value={r.id}>{r.name || r.hostname} — {r.gpu_type || 'no GPU'} x{r.gpu_count || 0}{r.status==='paused'?' [PAUSED]':''}</option>)}
               </select>
               <div style={{fontSize:'11px',color:'var(--nv-text-dim)',marginTop:'4px'}}>
                 {onlineRunners.length === 0
@@ -4251,6 +4468,265 @@ function RetrievalView({ runs }) {
             Select a successful run above to load its LanceDB database, then enter natural language queries
             to test retrieval against the ingested documents.
           </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+/* ===== Models Playground View ===== */
+function ModelsView() {
+  const [models, setModels] = useState([]);
+  const [modelsLoading, setModelsLoading] = useState(true);
+  const [selectedModel, setSelectedModel] = useState(null);
+  const [activeTab, setActiveTab] = useState("embed");
+
+  const [embedTexts, setEmbedTexts] = useState("What is machine learning?");
+  const [embedPrefix, setEmbedPrefix] = useState("query: ");
+  const [embedResult, setEmbedResult] = useState(null);
+  const [embedLoading, setEmbedLoading] = useState(false);
+  const [embedError, setEmbedError] = useState(null);
+
+  const [rerankQuery, setRerankQuery] = useState("What is machine learning?");
+  const [rerankDocs, setRerankDocs] = useState("Machine learning is a subset of artificial intelligence that enables systems to learn from data.\nParis is the capital of France and is known for the Eiffel Tower.\nDeep learning uses neural networks with many layers to model complex patterns.");
+  const [rerankResult, setRerankResult] = useState(null);
+  const [rerankLoading, setRerankLoading] = useState(false);
+  const [rerankError, setRerankError] = useState(null);
+
+  const [showFullVec, setShowFullVec] = useState({});
+
+  useEffect(() => {
+    fetch("/api/models").then(r => r.json()).then(data => {
+      setModels(data);
+      if (data.length > 0) {
+        const embedModel = data.find(m => m.type === "embedding");
+        if (embedModel) setSelectedModel(embedModel.id);
+      }
+    }).catch(() => {}).finally(() => setModelsLoading(false));
+  }, []);
+
+  const embedModels = models.filter(m => m.type === "embedding");
+  const rerankModels = models.filter(m => m.type === "reranker");
+
+  async function runEmbed() {
+    const texts = embedTexts.split("\n").map(t => t.trim()).filter(Boolean);
+    if (texts.length === 0) return;
+    const modelId = selectedModel || (embedModels[0] && embedModels[0].id);
+    if (!modelId) return;
+    setEmbedLoading(true); setEmbedError(null); setEmbedResult(null);
+    try {
+      const res = await fetch("/api/models/embed", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({ model_id: modelId, texts, prefix: embedPrefix }),
+      });
+      if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.detail || `HTTP ${res.status}`); }
+      setEmbedResult(await res.json());
+    } catch (err) { setEmbedError(err.message); } finally { setEmbedLoading(false); }
+  }
+
+  async function runRerank() {
+    const docs = rerankDocs.split("\n").map(t => t.trim()).filter(Boolean);
+    if (!rerankQuery.trim() || docs.length === 0) return;
+    const modelId = rerankModels.length > 0 ? rerankModels[0].id : "nvidia/llama-nemotron-rerank-1b-v2";
+    setRerankLoading(true); setRerankError(null); setRerankResult(null);
+    try {
+      const res = await fetch("/api/models/rerank", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({ model_id: modelId, query: rerankQuery.trim(), documents: docs }),
+      });
+      if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.detail || `HTTP ${res.status}`); }
+      setRerankResult(await res.json());
+    } catch (err) { setRerankError(err.message); } finally { setRerankLoading(false); }
+  }
+
+  const labelStyle = {display:'block',fontSize:'11px',fontWeight:600,color:'var(--nv-text-dim)',textTransform:'uppercase',letterSpacing:'0.04em',marginBottom:'6px'};
+  const tabStyle = (active) => ({
+    padding:'8px 20px',fontSize:'13px',fontWeight:active?600:400,cursor:'pointer',
+    borderBottom:active?'2px solid var(--nv-green)':'2px solid transparent',
+    color:active?'var(--nv-green)':'var(--nv-text-muted)',background:'transparent',border:'none',borderBottomWidth:'2px',borderBottomStyle:'solid',
+    transition:'all 0.15s',
+  });
+
+  function scoreColor(score) {
+    if (score > 10) return '#76b900';
+    if (score > 0) return '#8bc34a';
+    if (score > -10) return '#ff8c00';
+    return '#ff5050';
+  }
+
+  if (modelsLoading) {
+    return <div style={{textAlign:'center',padding:'60px'}}><div className="spinner spinner-lg" style={{margin:'0 auto 12px'}}></div><div style={{color:'var(--nv-text-muted)'}}>Loading models…</div></div>;
+  }
+
+  return (
+    <>
+      {/* Model cards overview */}
+      <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(280px,1fr))',gap:'16px',marginBottom:'24px'}}>
+        {models.map(m => (
+          <div key={m.id} className="card" style={{padding:'16px',cursor:'pointer',
+            border: selectedModel === m.id ? '1px solid var(--nv-green)' : '1px solid var(--nv-border)',
+            background: selectedModel === m.id ? 'rgba(118,185,0,0.04)' : 'var(--nv-surface)',
+          }} onClick={() => { setSelectedModel(m.id); setActiveTab(m.type === 'reranker' ? 'rerank' : 'embed'); }}>
+            <div style={{display:'flex',alignItems:'center',gap:'8px',marginBottom:'8px'}}>
+              <IconCpu />
+              <span style={{fontSize:'14px',fontWeight:600,color:'#fff'}}>{m.name}</span>
+            </div>
+            <div style={{fontSize:'12px',color:'var(--nv-text-muted)',marginBottom:'8px',lineHeight:'1.5'}}>{m.description}</div>
+            <div style={{display:'flex',gap:'8px',flexWrap:'wrap'}}>
+              <span style={{fontSize:'10px',padding:'2px 8px',borderRadius:'4px',fontWeight:600,textTransform:'uppercase',
+                background: m.type==='embedding' ? 'rgba(118,185,0,0.1)' : 'rgba(138,43,226,0.1)',
+                color: m.type==='embedding' ? 'var(--nv-green)' : '#bb86fc',
+              }}>{m.type}</span>
+              <span className="mono" style={{fontSize:'10px',padding:'2px 8px',borderRadius:'4px',background:'rgba(255,255,255,0.04)',color:'var(--nv-text-dim)'}}>{m.id}</span>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Tab bar */}
+      <div style={{display:'flex',borderBottom:'1px solid var(--nv-border)',marginBottom:'20px'}}>
+        <button style={tabStyle(activeTab==='embed')} onClick={()=>setActiveTab('embed')}>Embedding Test</button>
+        <button style={tabStyle(activeTab==='rerank')} onClick={()=>setActiveTab('rerank')}>Reranker Test</button>
+      </div>
+
+      {/* Embedding test panel */}
+      {activeTab === 'embed' && (
+        <div className="card" style={{padding:'24px'}}>
+          <div style={{fontSize:'15px',fontWeight:600,color:'#fff',marginBottom:'16px'}}>Embedding Model Test</div>
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'16px',marginBottom:'16px'}}>
+            <div>
+              <label style={labelStyle}>Model</label>
+              <select className="select" style={{width:'100%'}} value={selectedModel || ''} onChange={e=>setSelectedModel(e.target.value)}>
+                {embedModels.map(m => <option key={m.id} value={m.id}>{m.name} ({m.id})</option>)}
+              </select>
+            </div>
+            <div>
+              <label style={labelStyle}>Query Prefix</label>
+              <input className="input" style={{width:'100%'}} value={embedPrefix} onChange={e=>setEmbedPrefix(e.target.value)} placeholder="query: " />
+              <div style={{fontSize:'10px',color:'var(--nv-text-dim)',marginTop:'4px'}}>Prepended to each text before encoding. Use "query: " for queries, "passage: " for documents.</div>
+            </div>
+          </div>
+          <div style={{marginBottom:'16px'}}>
+            <label style={labelStyle}>Input Texts (one per line)</label>
+            <textarea className="input" rows={5} style={{width:'100%',fontFamily:'var(--font-mono)',fontSize:'12px',resize:'vertical'}}
+              value={embedTexts} onChange={e=>setEmbedTexts(e.target.value)}
+              placeholder={"Enter one or more texts, each on its own line…"} />
+          </div>
+          <button className="btn btn-primary" onClick={runEmbed} disabled={embedLoading || !embedTexts.trim()}>
+            {embedLoading ? <><span className="spinner" style={{marginRight:'8px'}}></span>Embedding…</> : 'Run Embedding'}
+          </button>
+
+          {embedError && <div style={{marginTop:'16px',padding:'12px 16px',borderRadius:'6px',background:'rgba(255,80,80,0.08)',border:'1px solid rgba(255,80,80,0.2)',color:'#ff5050',fontSize:'13px'}}>{embedError}</div>}
+
+          {embedResult && (
+            <div style={{marginTop:'20px'}}>
+              <div style={{display:'flex',gap:'16px',flexWrap:'wrap',marginBottom:'16px'}}>
+                {[
+                  {label:'Model',value:embedResult.model_id},
+                  {label:'Vectors',value:embedResult.count},
+                  {label:'Dimensions',value:embedResult.embedding_dim},
+                  {label:'Load Time',value:`${embedResult.model_load_ms}ms`},
+                  {label:'Embed Time',value:`${embedResult.embed_ms}ms`},
+                ].map(s => (
+                  <div key={s.label} style={{background:'rgba(118,185,0,0.06)',border:'1px solid rgba(118,185,0,0.12)',borderRadius:'6px',padding:'8px 14px',minWidth:'100px'}}>
+                    <div style={{fontSize:'10px',color:'var(--nv-text-dim)',textTransform:'uppercase',fontWeight:600,marginBottom:'2px'}}>{s.label}</div>
+                    <div className="mono" style={{fontSize:'13px',color:'var(--nv-green)',fontWeight:600}}>{s.value}</div>
+                  </div>
+                ))}
+              </div>
+              <table className="runs-table" style={{fontSize:'12px'}}>
+                <thead><tr><th>#</th><th>Text</th><th>Dim</th><th>Norm</th><th>Vector Preview</th></tr></thead>
+                <tbody>
+                  {embedResult.results.map((r, i) => (
+                    <tr key={i}>
+                      <td>{i+1}</td>
+                      <td style={{maxWidth:'300px',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{r.text}</td>
+                      <td className="mono">{r.embedding_dim}</td>
+                      <td className="mono">{r.embedding_norm}</td>
+                      <td className="mono" style={{fontSize:'10px',color:'var(--nv-text-dim)',maxWidth:'300px',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
+                        [{r.embedding_preview.map(v => v.toFixed(4)).join(', ')}, …]
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Reranker test panel */}
+      {activeTab === 'rerank' && (
+        <div className="card" style={{padding:'24px'}}>
+          <div style={{fontSize:'15px',fontWeight:600,color:'#fff',marginBottom:'16px'}}>Reranker Model Test</div>
+          <div style={{marginBottom:'16px'}}>
+            <label style={labelStyle}>Model</label>
+            <select className="select" style={{width:'100%',maxWidth:'500px'}} value={rerankModels[0]?.id || ''} disabled={rerankModels.length <= 1}>
+              {rerankModels.map(m => <option key={m.id} value={m.id}>{m.name} ({m.id})</option>)}
+              {rerankModels.length === 0 && <option value="">No reranker models available</option>}
+            </select>
+          </div>
+          <div style={{marginBottom:'16px'}}>
+            <label style={labelStyle}>Query</label>
+            <input className="input" style={{width:'100%'}} value={rerankQuery} onChange={e=>setRerankQuery(e.target.value)}
+              placeholder="Enter your search query…" />
+          </div>
+          <div style={{marginBottom:'16px'}}>
+            <label style={labelStyle}>Documents (one per line)</label>
+            <textarea className="input" rows={6} style={{width:'100%',fontFamily:'var(--font-mono)',fontSize:'12px',resize:'vertical'}}
+              value={rerankDocs} onChange={e=>setRerankDocs(e.target.value)}
+              placeholder={"Enter candidate documents, one per line…"} />
+            <div style={{fontSize:'10px',color:'var(--nv-text-dim)',marginTop:'4px'}}>Each line is scored independently against the query. Higher scores indicate greater relevance.</div>
+          </div>
+          <button className="btn btn-primary" onClick={runRerank} disabled={rerankLoading || !rerankQuery.trim() || !rerankDocs.trim()}>
+            {rerankLoading ? <><span className="spinner" style={{marginRight:'8px'}}></span>Scoring…</> : 'Run Reranking'}
+          </button>
+
+          {rerankError && <div style={{marginTop:'16px',padding:'12px 16px',borderRadius:'6px',background:'rgba(255,80,80,0.08)',border:'1px solid rgba(255,80,80,0.2)',color:'#ff5050',fontSize:'13px'}}>{rerankError}</div>}
+
+          {rerankResult && (
+            <div style={{marginTop:'20px'}}>
+              <div style={{display:'flex',gap:'16px',flexWrap:'wrap',marginBottom:'16px'}}>
+                {[
+                  {label:'Model',value:rerankResult.model_id},
+                  {label:'Query',value:rerankResult.query.length > 40 ? rerankResult.query.slice(0,40)+'…' : rerankResult.query},
+                  {label:'Documents',value:rerankResult.count},
+                  {label:'Load Time',value:`${rerankResult.model_load_ms}ms`},
+                  {label:'Score Time',value:`${rerankResult.score_ms}ms`},
+                ].map(s => (
+                  <div key={s.label} style={{background:'rgba(138,43,226,0.06)',border:'1px solid rgba(138,43,226,0.12)',borderRadius:'6px',padding:'8px 14px',minWidth:'100px'}}>
+                    <div style={{fontSize:'10px',color:'var(--nv-text-dim)',textTransform:'uppercase',fontWeight:600,marginBottom:'2px'}}>{s.label}</div>
+                    <div className="mono" style={{fontSize:'13px',color:'#bb86fc',fontWeight:600}}>{s.value}</div>
+                  </div>
+                ))}
+              </div>
+              <div style={{fontSize:'13px',fontWeight:600,color:'#fff',marginBottom:'10px'}}>Results (sorted by relevance)</div>
+              {rerankResult.results.map((r, i) => {
+                const maxScore = Math.max(...rerankResult.results.map(x => x.score));
+                const minScore = Math.min(...rerankResult.results.map(x => x.score));
+                const range = maxScore - minScore || 1;
+                const barPct = Math.max(5, ((r.score - minScore) / range) * 100);
+                return (
+                  <div key={i} style={{marginBottom:'8px',background:'var(--nv-surface)',border:'1px solid var(--nv-border)',borderRadius:'8px',padding:'12px 16px'}}>
+                    <div style={{display:'flex',alignItems:'center',gap:'12px',marginBottom:'6px'}}>
+                      <span style={{fontSize:'18px',fontWeight:700,color:scoreColor(r.score),minWidth:'28px'}}>#{r.rank}</span>
+                      <div style={{flex:1,minWidth:0}}>
+                        <div style={{fontSize:'13px',color:'#fff',lineHeight:'1.5',wordBreak:'break-word'}}>{r.document}</div>
+                      </div>
+                      <span className="mono" style={{fontSize:'16px',fontWeight:700,color:scoreColor(r.score),whiteSpace:'nowrap'}}>
+                        {r.score > 0 ? '+' : ''}{r.score}
+                      </span>
+                    </div>
+                    <div style={{height:'4px',borderRadius:'2px',background:'rgba(255,255,255,0.04)',overflow:'hidden'}}>
+                      <div style={{height:'100%',width:`${barPct}%`,borderRadius:'2px',background:scoreColor(r.score),transition:'width 0.3s'}} />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
       )}
     </>
@@ -4703,7 +5179,7 @@ function App() {
     } catch {}
   }
 
-  const viewTitles = { runs: "Runs", analytics: "Analytics", reporting: "Reporting", datasets: "Datasets", presets: "Presets", runners: "Runners", scheduling: "Scheduling", alerts: "Alerts", ingestion: "Ingestion", retrieval: "Retrieval", settings: "Settings" };
+  const viewTitles = { runs: "Runs", analytics: "Analytics", reporting: "Reporting", datasets: "Datasets", presets: "Presets", runners: "Runners", scheduling: "Scheduling", alerts: "Alerts", ingestion: "Ingestion", retrieval: "Retrieval", models: "Models", settings: "Settings" };
 
   const activeJobCount = jobs.filter(j => j.status==="running" || j.status==="pending" || j.status==="cancelling").length;
 
@@ -4737,6 +5213,9 @@ function App() {
     if (activeView === "retrieval") {
       const successCount = runs.filter(r => r.success === 1).length;
       return `Query against LanceDB from ${successCount} successful run${successCount !== 1 ? 's' : ''}`;
+    }
+    if (activeView === "models") {
+      return "Send test payloads to HuggingFace models and inspect responses";
     }
     if (activeView === "reporting") {
       return loading ? "Loading\u2026" : `${runs.length} run${runs.length!==1?'s':''} available for reporting`;
@@ -4795,7 +5274,7 @@ function App() {
             <PresetsView managedPresets={managedPresets} yamlPresets={yamlPresets}
               loading={managedPresetsLoading} onRefresh={fetchManagedPresets} />
           )}
-          {activeView==="runners" && <RunnersView runners={runners} loading={runnersLoading} onRefresh={fetchRunners} />}
+          {activeView==="runners" && <RunnersView runners={runners} loading={runnersLoading} onRefresh={fetchRunners} githubRepoUrl={githubRepoUrl} />}
           {activeView==="scheduling" && <SchedulingView schedules={schedules} loading={schedulesLoading} onRefresh={fetchSchedules} runners={runners} />}
           {activeView==="alerts" && (
             <AlertsView alertRules={alertRules} alertEvents={alertEvents}
@@ -4811,6 +5290,9 @@ function App() {
           )}
           {activeView==="retrieval" && (
             <RetrievalView runs={runs} />
+          )}
+          {activeView==="models" && (
+            <ModelsView />
           )}
         </div>
         <Footer>

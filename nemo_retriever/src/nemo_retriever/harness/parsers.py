@@ -27,6 +27,7 @@ TOTAL_PPS_RE = re.compile(
     r"Total - Processed:\s*(?P<pages>\d+)\s+pages\s+in\s+(?P<secs>[0-9.]+)s.*@\s*(?P<pps>[0-9.]+)\s+PPS"
 )
 
+TOTAL_FILES_RE = re.compile(r"Total files processed:\s*(?P<files>\d+)")
 RECALL_RE = re.compile(r"(?P<metric>recall@\d+):\s*(?P<val>[0-9.]+)\s*$")
 
 # Recall block headers (old and new)
@@ -79,6 +80,11 @@ class StreamMetrics:
         pps_match = PAGES_PER_SEC_RE.search(line)
         if pps_match:
             self.pages_per_sec_ingest = float(pps_match.group("val"))
+
+        # print_run_summary: Total files processed: N
+        total_files_match = TOTAL_FILES_RE.search(line)
+        if total_files_match and self.files is None:
+            self.files = int(total_files_match.group("files"))
 
         # print_run_summary: Total pages processed: N
         total_pages_match = TOTAL_PAGES_RE.search(line)

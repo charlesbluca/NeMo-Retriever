@@ -198,6 +198,9 @@ _MIGRATIONS = [
     "ALTER TABLE runs ADD COLUMN recall_1 REAL",
     "ALTER TABLE runs ADD COLUMN recall_10 REAL",
     "ALTER TABLE runners ADD COLUMN heartbeat_interval INTEGER DEFAULT 30",
+    "ALTER TABLE runners ADD COLUMN git_commit TEXT",
+    "ALTER TABLE runners ADD COLUMN pending_update_commit TEXT",
+    "ALTER TABLE runners ADD COLUMN ray_address TEXT",
 ]
 
 RUNNER_MISSED_HEARTBEATS_THRESHOLD = 4
@@ -281,7 +284,7 @@ def record_run(
             "recall_1": _extract_summary_metric(result, "recall_1"),
             "recall_5": _extract_summary_metric(result, "recall_5"),
             "recall_10": _extract_summary_metric(result, "recall_10"),
-            "files": (result.get("metrics") or {}).get("files"),
+            "files": _extract_summary_metric(result, "files"),
             "tags": tags_json,
             "artifact_dir": str(artifact_dir),
             "raw_json": json.dumps(result),
@@ -758,7 +761,7 @@ def import_yaml_datasets(yaml_datasets: dict[str, dict[str, Any]], db_path: str 
 # Runner CRUD
 # ---------------------------------------------------------------------------
 
-_RUNNER_SCALAR_FIELDS = ("name", "hostname", "url", "gpu_type", "gpu_count", "cpu_count", "memory_gb", "status", "heartbeat_interval")
+_RUNNER_SCALAR_FIELDS = ("name", "hostname", "url", "gpu_type", "gpu_count", "cpu_count", "memory_gb", "status", "heartbeat_interval", "git_commit", "pending_update_commit", "ray_address")
 
 
 def _deserialize_runner_row(d: dict[str, Any]) -> dict[str, Any]:
@@ -793,10 +796,11 @@ def register_runner(data: dict[str, Any], db_path: str | None = None) -> dict[st
 
         if existing:
             runner_id = existing["id"]
+            new_git = data.get("git_commit")
             conn.execute(
                 "UPDATE runners SET name=?, url=?, gpu_type=?, gpu_count=?, cpu_count=?,"
                 " memory_gb=?, status=?, last_heartbeat=?, tags=?, metadata=?,"
-                " heartbeat_interval=? WHERE id=?",
+                " heartbeat_interval=?, git_commit=?, ray_address=? WHERE id=?",
                 (
                     data.get("name", existing["name"]),
                     data.get("url", existing["url"]),
@@ -809,9 +813,13 @@ def register_runner(data: dict[str, Any], db_path: str | None = None) -> dict[st
                     json.dumps(data["tags"]) if data.get("tags") else existing["tags"],
                     json.dumps(data["metadata"]) if data.get("metadata") else existing["metadata"],
                     data.get("heartbeat_interval", 30),
+                    new_git if new_git else existing.get("git_commit"),
+                    data.get("ray_address") if "ray_address" in data else existing.get("ray_address"),
                     runner_id,
                 ),
             )
+            if new_git and existing.get("pending_update_commit") and new_git.startswith(existing["pending_update_commit"][:7]):
+                conn.execute("UPDATE runners SET pending_update_commit = NULL WHERE id = ?", (runner_id,))
             conn.commit()
             row = conn.execute("SELECT * FROM runners WHERE id = ?", (runner_id,)).fetchone()
             return _deserialize_runner_row(dict(row))
@@ -830,6 +838,8 @@ def register_runner(data: dict[str, Any], db_path: str | None = None) -> dict[st
             "tags": json.dumps(data["tags"]) if data.get("tags") else None,
             "metadata": json.dumps(data["metadata"]) if data.get("metadata") else None,
             "heartbeat_interval": data.get("heartbeat_interval", 30),
+            "git_commit": data.get("git_commit"),
+            "ray_address": data.get("ray_address"),
         }
         columns = ", ".join(row_data.keys())
         placeholders = ", ".join("?" * len(row_data))
@@ -897,13 +907,70 @@ def delete_runner(runner_id: int, db_path: str | None = None) -> bool:
         conn.close()
 
 
-def heartbeat_runner(runner_id: int, db_path: str | None = None) -> bool:
+def heartbeat_runner(runner_id: int, db_path: str | None = None) -> str | None:
+    """Update heartbeat timestamp. Returns current status, or None if runner not found.
+
+    Preserves the ``paused`` status — heartbeats from a paused runner keep it
+    paused rather than flipping it back to online.
+    """
     now = _now_iso()
     conn = _connect(db_path)
     try:
+        row = conn.execute("SELECT status FROM runners WHERE id = ?", (runner_id,)).fetchone()
+        if row is None:
+            return None
+        current_status = row[0]
+        new_status = current_status if current_status == "paused" else "online"
+        conn.execute(
+            "UPDATE runners SET last_heartbeat = ?, status = ? WHERE id = ?",
+            (now, new_status, runner_id),
+        )
+        conn.commit()
+        return new_status
+    finally:
+        conn.close()
+
+
+def set_pending_update_all_runners(commit: str, db_path: str | None = None) -> int:
+    """Set pending_update_commit on all online/paused runners. Returns count updated."""
+    conn = _connect(db_path)
+    try:
         cursor = conn.execute(
-            "UPDATE runners SET last_heartbeat = ?, status = 'online' WHERE id = ?",
-            (now, runner_id),
+            "UPDATE runners SET pending_update_commit = ? WHERE status IN ('online', 'paused')",
+            (commit,),
+        )
+        conn.commit()
+        return cursor.rowcount
+    finally:
+        conn.close()
+
+
+def clear_pending_update(runner_id: int, db_path: str | None = None) -> None:
+    conn = _connect(db_path)
+    try:
+        conn.execute("UPDATE runners SET pending_update_commit = NULL WHERE id = ?", (runner_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def pause_runner(runner_id: int, db_path: str | None = None) -> bool:
+    conn = _connect(db_path)
+    try:
+        cursor = conn.execute(
+            "UPDATE runners SET status = 'paused' WHERE id = ?", (runner_id,)
+        )
+        conn.commit()
+        return cursor.rowcount > 0
+    finally:
+        conn.close()
+
+
+def resume_runner(runner_id: int, db_path: str | None = None) -> bool:
+    conn = _connect(db_path)
+    try:
+        cursor = conn.execute(
+            "UPDATE runners SET status = 'online' WHERE id = ?", (runner_id,)
         )
         conn.commit()
         return cursor.rowcount > 0
@@ -917,7 +984,7 @@ def mark_stale_runners_offline(db_path: str | None = None) -> list[dict[str, Any
     conn.row_factory = sqlite3.Row
     try:
         rows = conn.execute(
-            "SELECT * FROM runners WHERE status = 'online' AND last_heartbeat IS NOT NULL"
+            "SELECT * FROM runners WHERE status IN ('online', 'paused') AND last_heartbeat IS NOT NULL"
         ).fetchall()
 
         now = datetime.now(timezone.utc)

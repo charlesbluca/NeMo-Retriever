@@ -218,6 +218,7 @@ def print_run_summary(
     lancedb_write_total_time: float,
     recall_total_time: float = 0.0,
     recall_metrics: Optional[Dict[str, float]] = None,
+    processed_files: Optional[int] = None,
 ) -> None:
     if recall_metrics is None:
         recall_metrics = {}
@@ -239,6 +240,8 @@ def print_run_summary(
     print(f"\tLancedb Table: {lancedb_table_name}")
 
     print("Runtimes:")
+    if processed_files is not None:
+        print(f"\tTotal files processed: {processed_files}")
     print(f"\tTotal pages processed: {pages} from {input_path}")
     print(f"\tIngestion only time: {_fmt_time(ingest_only_total_time)}")
     print(f"\tRay dataset download time: {_fmt_time(ray_dataset_download_total_time)}")

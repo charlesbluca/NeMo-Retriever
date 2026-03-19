@@ -186,6 +186,7 @@ def _resolve_summary_metrics(
 ) -> dict[str, Any]:
     summary_metrics: dict[str, Any] = {
         "pages": metrics_payload.get("pages"),
+        "files": metrics_payload.get("files"),
         "ingest_secs": metrics_payload.get("ingest_secs"),
         "pages_per_sec_ingest": metrics_payload.get("pages_per_sec_ingest"),
         "recall_5": metrics_payload.get("recall_5"),
@@ -200,6 +201,15 @@ def _resolve_summary_metrics(
                 summary_metrics["pages"] = int(runtime_pages)
             except (TypeError, ValueError):
                 summary_metrics["pages"] = None
+
+    # Fallback: count input files from the dataset directory.
+    if summary_metrics["files"] is None:
+        try:
+            input_files = resolve_input_files(Path(cfg.dataset_dir), cfg.input_type)
+            if input_files:
+                summary_metrics["files"] = len(input_files)
+        except Exception:
+            pass
 
     if summary_metrics["pages"] is None and cfg.input_type == "pdf":
         total_pages = 0

@@ -603,6 +603,8 @@ def main(
         else:
             raise typer.BadParameter(f"Path does not exist: {input_path}")
 
+        total_input_files = sum(len(_glob.glob(p)) for p in file_patterns)
+
         ingestor = create_ingestor(
             run_mode="batch",
             params=IngestorCreateParams(
@@ -831,6 +833,7 @@ def main(
             lancedb_write_time,
             recall_total_time,
             recall_metrics,
+            processed_files=total_input_files,
         )
 
     finally:

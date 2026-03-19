@@ -716,14 +716,16 @@ def get_dataset_runner_ids(dataset_id: int, db_path: str | None = None) -> list[
 def get_runner_ids_for_dataset_name(dataset_name: str, db_path: str | None = None) -> list[int] | None:
     """Return runner IDs that have *dataset_name*, or ``None`` if no restriction.
 
-    If the dataset exists in the managed table but has **no** runners associated,
-    returns an empty list (meaning no runner can run it).  If the dataset is not
-    in the managed table at all, returns ``None`` (no restriction).
+    If the dataset is not in the managed table, or if it exists but has no
+    runners explicitly associated, returns ``None`` (no restriction — any
+    runner may run it).  Only when runners are explicitly assigned does the
+    returned list restrict which runners are eligible.
     """
     ds = get_dataset_by_name(dataset_name, db_path)
     if ds is None:
         return None
-    return get_dataset_runner_ids(ds["id"], db_path)
+    ids = get_dataset_runner_ids(ds["id"], db_path)
+    return ids if ids else None
 
 
 def import_yaml_datasets(yaml_datasets: dict[str, dict[str, Any]], db_path: str | None = None) -> int:

@@ -623,22 +623,80 @@ _AVAILABLE_MODELS = [
         "id": "nvidia/llama-nemotron-embed-1b-v2",
         "name": "Llama Nemotron Embed 1B v2",
         "type": "embedding",
+        "category": "Retrieval",
         "description": "Dense text embedding model for retrieval. Produces 4096-dim vectors.",
+        "input_type": "text",
         "max_length": 8192,
     },
     {
         "id": "nvidia/llama-nemotron-embed-vl-1b-v2",
         "name": "Llama Nemotron Embed VL 1B v2",
         "type": "embedding",
+        "category": "Retrieval",
         "description": "Vision-language embedding model for multimodal retrieval.",
+        "input_type": "text",
         "max_length": 8192,
     },
     {
         "id": "nvidia/llama-nemotron-rerank-1b-v2",
         "name": "Llama Nemotron Rerank 1B v2",
         "type": "reranker",
+        "category": "Retrieval",
         "description": "Cross-encoder reranker. Scores query-document relevance (higher = better).",
+        "input_type": "text",
         "max_length": 8192,
+    },
+    {
+        "id": "nemotron-ocr-v1",
+        "name": "Nemotron OCR v1",
+        "type": "ocr",
+        "category": "Document AI",
+        "description": "End-to-end OCR: text detection, recognition, and reading-order analysis.",
+        "input_type": "image",
+        "output_classes": ["word", "sentence", "paragraph"],
+    },
+    {
+        "id": "page_element_v3",
+        "name": "Nemotron Page Elements v3",
+        "type": "object-detection",
+        "category": "Document AI",
+        "description": "Detects document elements: tables, charts, titles, infographics, text regions, headers/footers.",
+        "input_type": "image",
+        "output_classes": ["table", "chart", "title", "infographic", "text", "header_footer"],
+    },
+    {
+        "id": "table_structure_v1",
+        "name": "Nemotron Table Structure v1",
+        "type": "object-detection",
+        "category": "Document AI",
+        "description": "Detects table structure: cells (including merged), rows, and columns from cropped table images.",
+        "input_type": "image",
+        "output_classes": ["cell", "row", "column"],
+    },
+    {
+        "id": "graphic_elements_v1",
+        "name": "Nemotron Graphic Elements v1",
+        "type": "object-detection",
+        "category": "Document AI",
+        "description": "Detects chart elements: axis titles/labels, legends, markers, value labels.",
+        "input_type": "image",
+        "output_classes": ["chart_title", "x_axis_title", "y_axis_title", "legend_title", "legend_label", "marker_label", "value_label"],
+    },
+    {
+        "id": "nvidia/NVIDIA-Nemotron-Parse-v1.2",
+        "name": "Nemotron Parse v1.2",
+        "type": "document-parser",
+        "category": "Document AI",
+        "description": "Image-to-structured-text model. Converts document images to Markdown with bounding boxes.",
+        "input_type": "image",
+    },
+    {
+        "id": "nvidia/parakeet-ctc-1.1b",
+        "name": "Parakeet CTC 1.1B",
+        "type": "asr",
+        "category": "Audio",
+        "description": "Automatic speech recognition model. Transcribes 16 kHz mono audio to text.",
+        "input_type": "audio",
     },
 ]
 
@@ -748,6 +806,98 @@ async def test_rerank_model(req: RerankTestRequest):
             "model_load_ms": round(load_time * 1000, 1),
             "score_ms": round(score_time * 1000, 1),
             "results": results,
+        }
+    except ImportError as exc:
+        raise HTTPException(status_code=500, detail=f"Missing dependency: {exc}")
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+class OCRTestRequest(BaseModel):
+    model_id: str = "nemotron-ocr-v1"
+    image_b64: str
+    merge_level: str = "paragraph"
+
+
+@app.post("/api/models/ocr")
+async def test_ocr_model(req: OCRTestRequest):
+    """Run OCR on a base64-encoded image and return extracted text."""
+    if not req.image_b64:
+        raise HTTPException(status_code=400, detail="image_b64 cannot be empty")
+    try:
+        import time as _time
+
+        from nemo_retriever.model.local.nemotron_ocr_v1 import NemotronOCRV1
+
+        t0 = _time.perf_counter()
+        model = NemotronOCRV1()
+        load_time = _time.perf_counter() - t0
+
+        img_data = req.image_b64
+        if "," in img_data:
+            img_data = img_data.split(",", 1)[1]
+
+        t1 = _time.perf_counter()
+        raw = model.invoke(img_data, merge_level=req.merge_level)
+        infer_time = _time.perf_counter() - t1
+
+        text = NemotronOCRV1._extract_text(raw)
+
+        return {
+            "model_id": req.model_id,
+            "merge_level": req.merge_level,
+            "model_load_ms": round(load_time * 1000, 1),
+            "inference_ms": round(infer_time * 1000, 1),
+            "text": text,
+            "raw_output_type": type(raw).__name__,
+        }
+    except ImportError as exc:
+        raise HTTPException(status_code=500, detail=f"Missing dependency: {exc}")
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+class ParseTestRequest(BaseModel):
+    model_id: str = "nvidia/NVIDIA-Nemotron-Parse-v1.2"
+    image_b64: str
+
+
+@app.post("/api/models/parse")
+async def test_parse_model(req: ParseTestRequest):
+    """Run Nemotron Parse on a base64-encoded image and return structured Markdown."""
+    if not req.image_b64:
+        raise HTTPException(status_code=400, detail="image_b64 cannot be empty")
+    try:
+        import base64
+        import io
+        import time as _time
+
+        from PIL import Image
+
+        from nemo_retriever.model.local.nemotron_parse_v1_2 import NemotronParseV12
+
+        img_data = req.image_b64
+        if "," in img_data:
+            img_data = img_data.split(",", 1)[1]
+
+        img_bytes = base64.b64decode(img_data)
+        pil_img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+
+        t0 = _time.perf_counter()
+        model = NemotronParseV12()
+        load_time = _time.perf_counter() - t0
+
+        t1 = _time.perf_counter()
+        result = model.invoke(pil_img)
+        infer_time = _time.perf_counter() - t1
+
+        text = result if isinstance(result, str) else str(result)
+
+        return {
+            "model_id": req.model_id,
+            "model_load_ms": round(load_time * 1000, 1),
+            "inference_ms": round(infer_time * 1000, 1),
+            "markdown": text,
         }
     except ImportError as exc:
         raise HTTPException(status_code=500, detail=f"Missing dependency: {exc}")
@@ -981,6 +1131,83 @@ async def get_job(job_id: str):
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found")
     return job
+
+
+@app.get("/api/jobs/{job_id}/diagnose")
+async def diagnose_job(job_id: str):
+    """Explain why a pending job has not yet been picked up by a runner."""
+    job = history.get_job_by_id(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.get("status") != "pending":
+        return {"job_id": job_id, "status": job["status"], "reasons": [], "summary": f"Job is {job['status']}, not pending."}
+
+    runners = history.get_runners()
+    reasons: list[dict[str, Any]] = []
+    eligible_count = 0
+
+    assigned_id = job.get("assigned_runner_id")
+    dataset_name = job.get("dataset")
+    allowed_runner_ids = history.get_runner_ids_for_dataset_name(dataset_name) if dataset_name else None
+    rejected_runners = job.get("rejected_runners") or []
+    rejected_set = {str(rid) for rid in rejected_runners}
+
+    for r in runners:
+        rid = r["id"]
+        rname = r.get("name") or r.get("hostname") or f"Runner #{rid}"
+        blockers = []
+
+        if r.get("status") == "offline":
+            blockers.append("Runner is offline")
+        elif r.get("status") == "paused":
+            blockers.append("Runner is paused (maintenance mode)")
+
+        if assigned_id is not None and assigned_id != rid:
+            blockers.append(f"Job is assigned to runner #{assigned_id}, not this runner")
+
+        if allowed_runner_ids is not None and rid not in allowed_runner_ids:
+            blockers.append(f"Dataset '{dataset_name}' restricts eligible runners — this runner is not in the allowed list")
+
+        if str(rid) in rejected_set:
+            blockers.append("Runner previously rejected this job (e.g. missing dataset on disk)")
+
+        if history.runner_has_running_job(rid):
+            blockers.append("Runner is already executing another job")
+
+        pending_update = r.get("pending_update_commit")
+        if pending_update:
+            blockers.append(f"Runner has a pending code update to {pending_update[:12]}")
+
+        if not blockers:
+            eligible_count += 1
+
+        reasons.append({
+            "runner_id": rid,
+            "runner_name": rname,
+            "status": r.get("status", "unknown"),
+            "eligible": len(blockers) == 0,
+            "blockers": blockers,
+        })
+
+    if not runners:
+        summary = "No runners are registered with the portal."
+    elif eligible_count == 0:
+        summary = f"No eligible runners out of {len(runners)} registered. All runners have blocking conditions — expand each runner below for details."
+    else:
+        summary = f"{eligible_count} of {len(runners)} runner(s) are eligible. The job should be picked up on the next heartbeat cycle."
+
+    return {
+        "job_id": job_id,
+        "status": "pending",
+        "dataset": dataset_name,
+        "assigned_runner_id": assigned_id,
+        "allowed_runner_ids": allowed_runner_ids,
+        "rejected_runners": rejected_runners,
+        "runner_count": len(runners),
+        "eligible_count": eligible_count,
+        "summary": summary,
+        "runners": reasons,
+    }
 
 
 @app.post("/api/jobs/{job_id}/claim")

@@ -1252,12 +1252,13 @@ def _resolve_dataset_config(dataset_name: str) -> tuple[str | None, dict[str, An
     managed = history.get_dataset_by_name(dataset_name)
     if managed and managed.get("path"):
         overrides: dict[str, Any] = {"dataset_dir": managed["path"]}
-        if managed.get("query_csv"):
-            overrides["query_csv"] = managed["query_csv"]
+        overrides["query_csv"] = managed.get("query_csv") or None
         if managed.get("input_type"):
             overrides["input_type"] = managed["input_type"]
         if managed.get("recall_required") is not None:
             overrides["recall_required"] = managed["recall_required"]
+        else:
+            overrides["recall_required"] = bool(overrides["query_csv"])
         if managed.get("recall_match_mode"):
             overrides["recall_match_mode"] = managed["recall_match_mode"]
         if managed.get("recall_adapter"):
@@ -1271,12 +1272,14 @@ def _resolve_dataset_config(dataset_name: str) -> tuple[str | None, dict[str, An
         ds_cfg = (cfg.get("datasets") or {}).get(dataset_name)
         if ds_cfg and isinstance(ds_cfg, dict) and ds_cfg.get("path"):
             yaml_overrides: dict[str, Any] = {"dataset_dir": str(ds_cfg["path"])}
-            if ds_cfg.get("query_csv"):
-                yaml_overrides["query_csv"] = str(ds_cfg["query_csv"])
+            csv_val = ds_cfg.get("query_csv")
+            yaml_overrides["query_csv"] = str(csv_val) if csv_val else None
             if ds_cfg.get("input_type"):
                 yaml_overrides["input_type"] = str(ds_cfg["input_type"])
             if ds_cfg.get("recall_required") is not None:
                 yaml_overrides["recall_required"] = ds_cfg["recall_required"]
+            else:
+                yaml_overrides["recall_required"] = bool(csv_val)
             if ds_cfg.get("recall_match_mode"):
                 yaml_overrides["recall_match_mode"] = str(ds_cfg["recall_match_mode"])
             if ds_cfg.get("recall_adapter"):

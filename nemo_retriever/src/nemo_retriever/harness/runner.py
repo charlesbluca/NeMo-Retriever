@@ -370,11 +370,60 @@ def _kill_child_processes() -> None:
 # ---------------------------------------------------------------------------
 
 
+def _is_playground_job(job: dict[str, Any]) -> bool:
+    return job.get("trigger_source") == "playground"
+
+
+def _download_playground_files(base_url: str, job: dict[str, Any]) -> str | None:
+    """Download playground session files from the portal and return the local directory path.
+
+    Returns the local path on success, or None on failure.
+    """
+    dataset_name = job.get("dataset") or ""
+    if not dataset_name.startswith("playground_"):
+        return None
+    session_id = dataset_name[len("playground_"):]
+    if not session_id:
+        return None
+
+    import tempfile
+    import zipfile
+
+    local_dir = Path(tempfile.gettempdir()) / "harness_playground_uploads" / session_id
+    if local_dir.is_dir() and any(local_dir.iterdir()):
+        logger.info("Playground session %s already cached at %s", session_id, local_dir)
+        return str(local_dir)
+
+    url = f"{base_url}/api/playground/sessions/{session_id}/download"
+    logger.info("Downloading playground files for session %s from %s", session_id, url)
+    try:
+        req = urllib.request.Request(url)
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            zip_bytes = resp.read()
+    except Exception as exc:
+        logger.error("Failed to download playground session %s: %s", session_id, exc)
+        return None
+
+    local_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        import io
+        with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+            zf.extractall(local_dir)
+        logger.info("Extracted %d files to %s", len(list(local_dir.iterdir())), local_dir)
+        return str(local_dir)
+    except Exception as exc:
+        logger.error("Failed to extract playground zip for session %s: %s", session_id, exc)
+        return None
+
+
 def _validate_dataset_path(job: dict[str, Any]) -> str | None:
     """Check if the dataset directory exists locally.
 
     Returns an error message if the path is missing, or ``None`` if OK.
+    Playground jobs are skipped since their files are downloaded separately.
     """
+    if _is_playground_job(job):
+        return None
     dataset_path = job.get("dataset_path")
     if not dataset_path:
         overrides = job.get("dataset_overrides") or {}
@@ -424,6 +473,21 @@ def _execute_job_on_runner(base_url: str, job: dict[str, Any], runner_id: int = 
 
     dataset_value = job.get("dataset_path") or job["dataset"]
     overrides = job.get("dataset_overrides") or {}
+
+    if _is_playground_job(job):
+        local_dir = _download_playground_files(base_url, job)
+        if local_dir:
+            dataset_value = local_dir
+            overrides["dataset_dir"] = local_dir
+            logger.info("Playground job %s: using local dataset dir %s", job_id, local_dir)
+        else:
+            _post_json(
+                f"{base_url}/api/jobs/{job_id}/complete",
+                {"success": False, "error": "Failed to download playground files from portal"},
+            )
+            _job_tracker.finish_job()
+            return
+
     if _runner_ray_address and "ray_address" not in overrides:
         overrides["ray_address"] = _runner_ray_address
         logger.info("Injecting runner ray_address=%s into job overrides", _runner_ray_address)

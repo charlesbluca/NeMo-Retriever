@@ -625,6 +625,27 @@ async def list_playground_sessions():
     return sessions
 
 
+@app.get("/api/playground/sessions/{session_id}/download")
+async def download_playground_session(session_id: str):
+    """Download all files in a playground session as a zip archive."""
+    import zipfile
+
+    session_dir = PLAYGROUND_DIR / session_id
+    if not session_dir.is_dir():
+        raise HTTPException(status_code=404, detail="Session not found")
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for f in session_dir.iterdir():
+            if f.is_file():
+                zf.write(f, f.name)
+    buf.seek(0)
+    return StreamingResponse(
+        buf,
+        media_type="application/zip",
+        headers={"Content-Disposition": f"attachment; filename=playground_{session_id}.zip"},
+    )
+
+
 @app.delete("/api/playground/sessions/{session_id}")
 async def delete_playground_session(session_id: str):
     """Delete a playground upload session and its files."""

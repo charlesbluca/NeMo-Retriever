@@ -120,6 +120,31 @@ def _collect_run_metadata() -> dict[str, Any]:
     }
 
 
+def _get_routable_ip() -> str:
+    """Return this machine's routable IP address (not 127.0.0.1).
+
+    Opens a UDP socket to a public DNS address (no data is sent) so the OS
+    selects the correct outbound interface.  Falls back to hostname resolution.
+    """
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("8.8.8.8", 80))
+            return s.getsockname()[0]
+    except Exception:
+        pass
+    try:
+        return socket.gethostbyname(socket.gethostname())
+    except Exception:
+        return "127.0.0.1"
+
+
+def _resolve_localhost(host: str) -> str:
+    """Replace loopback addresses with the machine's routable IP."""
+    if host.lower() in ("127.0.0.1", "localhost", "0.0.0.0", "::1"):
+        return _get_routable_ip()
+    return host
+
+
 def _derive_ray_dashboard_url(ray_address: str) -> str | None:
     """Best-effort derivation of the Ray dashboard URL from a cluster address.
 
@@ -129,11 +154,12 @@ def _derive_ray_dashboard_url(ray_address: str) -> str | None:
     """
     addr = ray_address.strip()
     if addr.lower() == "auto":
-        return "http://127.0.0.1:8265"
+        return f"http://{_get_routable_ip()}:8265"
     addr = re.sub(r"^ray://", "", addr, flags=re.IGNORECASE)
     host = addr.split(":")[0] if ":" in addr else addr
     if not host:
         return None
+    host = _resolve_localhost(host)
     return f"http://{host}:8265"
 
 

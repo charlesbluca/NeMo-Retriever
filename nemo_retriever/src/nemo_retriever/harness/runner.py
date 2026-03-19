@@ -57,6 +57,48 @@ def _get_json(url: str, timeout: int = 10) -> Any:
 
 
 # ---------------------------------------------------------------------------
+# Network helpers
+# ---------------------------------------------------------------------------
+
+
+def _get_routable_ip() -> str:
+    """Return this machine's routable IP address (not 127.0.0.1)."""
+    import socket
+
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("8.8.8.8", 80))
+            return s.getsockname()[0]
+    except Exception:
+        pass
+    try:
+        return socket.gethostbyname(socket.gethostname())
+    except Exception:
+        return "127.0.0.1"
+
+
+def _resolve_ray_address(addr: str | None) -> str | None:
+    """Rewrite a Ray address so loopback/localhost becomes the routable IP."""
+    if not addr:
+        return addr
+    raw = addr.strip()
+    if raw.lower() in ("auto", "local"):
+        return raw
+
+    prefix = ""
+    rest = raw
+    if rest.lower().startswith("ray://"):
+        prefix = "ray://"
+        rest = rest[6:]
+
+    host, _, port = rest.partition(":")
+    if host.lower() in ("127.0.0.1", "localhost", "0.0.0.0", "::1"):
+        host = _get_routable_ip()
+
+    return f"{prefix}{host}:{port}" if port else f"{prefix}{host}"
+
+
+# ---------------------------------------------------------------------------
 # Git helpers
 # ---------------------------------------------------------------------------
 
@@ -598,7 +640,7 @@ def _build_registration_payload(
         "tags": tags,
         "heartbeat_interval": heartbeat_interval,
         "git_commit": _get_current_git_commit(),
-        "ray_address": ray_address,
+        "ray_address": _resolve_ray_address(ray_address),
         "metadata": {
             "cuda_driver": meta.get("cuda_driver"),
             "ray_version": meta.get("ray_version"),
@@ -646,7 +688,7 @@ def runner_start_command(
     typer.echo(f"  Ray      : {ray_address or 'local (embedded)'}")
 
     global _runner_ray_address  # noqa: PLW0603
-    _runner_ray_address = ray_address
+    _runner_ray_address = _resolve_ray_address(ray_address)
 
     runner_id: int | None = None
     base_url: str | None = None
@@ -738,7 +780,7 @@ def runner_start_command(
                 continue
 
             if hb_resp and "ray_address" in hb_resp:
-                portal_ray_addr = hb_resp["ray_address"]
+                portal_ray_addr = _resolve_ray_address(hb_resp["ray_address"])
                 if portal_ray_addr != _runner_ray_address:
                     _runner_ray_address = portal_ray_addr
                     logger.info("Ray address updated from portal: %s", _runner_ray_address or "local")

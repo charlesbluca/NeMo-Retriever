@@ -1450,6 +1450,20 @@ def request_job_cancel(job_id: str, db_path: str | None = None) -> bool:
         conn.close()
 
 
+def force_delete_job(job_id: str, db_path: str | None = None) -> bool:
+    """Permanently delete a job regardless of its current status."""
+    conn = _connect(db_path)
+    try:
+        row = conn.execute("SELECT id FROM jobs WHERE id = ?", (job_id,)).fetchone()
+        if row is None:
+            return False
+        conn.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
+        conn.commit()
+        return True
+    finally:
+        conn.close()
+
+
 def update_job_log(job_id: str, log_tail: list[str], db_path: str | None = None) -> None:
     """Store the latest log tail for a running job."""
     conn = _connect(db_path)

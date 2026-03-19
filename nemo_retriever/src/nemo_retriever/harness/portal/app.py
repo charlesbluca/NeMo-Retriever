@@ -1410,6 +1410,14 @@ async def cancel_job_endpoint(job_id: str):
     return {"ok": True}
 
 
+@app.delete("/api/jobs/{job_id}")
+async def force_delete_job(job_id: str):
+    """Permanently delete a job regardless of its current status."""
+    if not history.force_delete_job(job_id):
+        raise HTTPException(status_code=404, detail="Job not found")
+    return {"ok": True}
+
+
 @app.post("/api/jobs/{job_id}/reject")
 async def reject_job_endpoint(job_id: str, req: JobRejectRequest):
     """A runner reports it cannot execute this job (e.g. missing dataset).

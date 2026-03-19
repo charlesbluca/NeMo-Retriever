@@ -697,6 +697,13 @@ function RunsView({ runs, datasets, loading, filterDataset, setFilterDataset, fi
       onRefresh();
     } catch (e) { console.error(e); }
   };
+  const handleForceDelete = async (jobId) => {
+    if (!confirm("Force delete this job? This permanently removes it and cannot be undone.")) return;
+    try {
+      await fetch(`/api/jobs/${jobId}`, { method: "DELETE" });
+      onRefresh();
+    } catch (e) { console.error(e); }
+  };
 
   return (
     <>
@@ -739,6 +746,12 @@ function RunsView({ runs, datasets, loading, filterDataset, setFilterDataset, fi
                     <button className="btn" style={{fontSize:'11px',padding:'3px 8px',background:'rgba(255,80,80,0.12)',color:'#ff5050',border:'1px solid rgba(255,80,80,0.2)'}}
                       onClick={() => handleCancel(j.id)} title="Cancel Job">
                       <IconStop /> Cancel
+                    </button>
+                  )}
+                  {j.status==="cancelling" && (
+                    <button className="btn" style={{fontSize:'11px',padding:'3px 8px',background:'rgba(255,80,80,0.2)',color:'#ff5050',border:'1px solid rgba(255,80,80,0.3)',fontWeight:700}}
+                      onClick={() => handleForceDelete(j.id)} title="Force delete this stuck job">
+                      <IconTrash /> Force Delete
                     </button>
                   )}
                   <span className="mono" style={{fontSize:'11px',color:'var(--nv-text-dim)'}}>{j.id}</span>

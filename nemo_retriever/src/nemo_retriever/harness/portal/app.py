@@ -36,7 +36,17 @@ from apscheduler.triggers.cron import CronTrigger
 from nemo_retriever.harness import history
 from nemo_retriever.harness import scheduler as sched_module
 
-STATIC_DIR = Path(__file__).parent / "static"
+STATIC_DIR = Path(__file__).resolve().parent / "static"
+if not STATIC_DIR.is_dir():
+    import importlib.resources as _pkg_res
+
+    _pkg_ref = _pkg_res.files("nemo_retriever.harness.portal").joinpath("static")
+    if hasattr(_pkg_ref, "_path"):
+        _candidate = Path(str(_pkg_ref._path))
+    else:
+        _candidate = Path(str(_pkg_ref))
+    if _candidate.is_dir():
+        STATIC_DIR = _candidate
 
 GITHUB_WEBHOOK_SECRET = os.environ.get("RETRIEVER_HARNESS_GITHUB_SECRET", "")
 GITHUB_REPO_URL_OVERRIDE = os.environ.get("RETRIEVER_HARNESS_GITHUB_REPO_URL", "")
@@ -125,7 +135,10 @@ def _import_yaml_datasets_on_startup() -> None:
 
 
 app = FastAPI(title="Harness Portal", docs_url="/api/docs", redoc_url=None, lifespan=_lifespan)
-app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+if STATIC_DIR.is_dir():
+    app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+else:
+    logger.warning("Static directory not found at %s — portal UI will not be served", STATIC_DIR)
 
 
 # ---------------------------------------------------------------------------
@@ -289,7 +302,14 @@ class AlertRuleUpdateRequest(BaseModel):
 
 @app.get("/")
 async def index():
-    return FileResponse(str(STATIC_DIR / "index.html"))
+    index_path = STATIC_DIR / "index.html"
+    if not index_path.is_file():
+        raise HTTPException(
+            status_code=500,
+            detail=f"Portal UI not found. Expected at {index_path}. "
+            "Reinstall the package with: uv pip install -e ./nemo_retriever",
+        )
+    return FileResponse(str(index_path))
 
 
 # ---------------------------------------------------------------------------

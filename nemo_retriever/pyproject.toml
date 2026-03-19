@@ -114,3 +114,6 @@ explicit = true
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"nemo_retriever.harness.portal" = ["static/**/*"]

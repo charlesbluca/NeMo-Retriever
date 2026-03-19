@@ -4645,13 +4645,36 @@ function ModelsView() {
   function handleImageUpload(e) {
     const file = e.target.files && e.target.files[0];
     if (!file) return;
-    const reader = new FileReader();
-    reader.onload = (ev) => {
-      setImageB64(ev.target.result);
-      setImagePreview(ev.target.result);
-      setVisionResult(null); setVisionError(null);
+    setVisionResult(null); setVisionError(null);
+    const img = new window.Image();
+    img.onload = () => {
+      const MAX_DIM = 2048;
+      let w = img.width, h = img.height;
+      if (w > MAX_DIM || h > MAX_DIM) {
+        const scale = MAX_DIM / Math.max(w, h);
+        w = Math.round(w * scale);
+        h = Math.round(h * scale);
+      }
+      const canvas = document.createElement("canvas");
+      canvas.width = w; canvas.height = h;
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(img, 0, 0, w, h);
+      const dataUrl = canvas.toDataURL("image/png");
+      setImageB64(dataUrl);
+      const THUMB = 600;
+      let tw = w, th = h;
+      if (tw > THUMB || th > THUMB) {
+        const ts = THUMB / Math.max(tw, th);
+        tw = Math.round(tw * ts); th = Math.round(th * ts);
+      }
+      const tc = document.createElement("canvas");
+      tc.width = tw; tc.height = th;
+      tc.getContext("2d").drawImage(img, 0, 0, tw, th);
+      setImagePreview(tc.toDataURL("image/jpeg", 0.8));
+      URL.revokeObjectURL(img.src);
     };
-    reader.readAsDataURL(file);
+    img.onerror = () => { setVisionError("Failed to load image file."); URL.revokeObjectURL(img.src); };
+    img.src = URL.createObjectURL(file);
   }
 
   function selectTab(model) {

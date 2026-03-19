@@ -3741,28 +3741,37 @@ function ReportingView({ runs, datasets, loading }) {
   const downloadPresetMatrixPng = () => {
     const { map, datasets } = presetMatrix;
     const presets = PRESET_MATRIX_PRESETS;
-    const colW = 150, rowHeaderW = 220, headerH = 70, rowH = 52, pad = 24;
-    const titleBarH = 56;
-    const w = pad * 2 + rowHeaderW + datasets.length * colW;
+    const colW = 210, rowHeaderW = 280, headerH = 60, rowH = 48, pad = 32;
+    const titleBarH = 64;
+    const tableW = rowHeaderW + datasets.length * colW;
+    const w = pad * 2 + tableW;
     const h = titleBarH + pad + headerH + presets.length * rowH + pad;
     const offscreen = document.createElement('canvas');
     offscreen.width = w;
     offscreen.height = h;
     const ctx = offscreen.getContext('2d');
 
-    ctx.fillStyle = '#ffffff';
+    const bgColor = '#0e0e0e';
+    const cardColor = '#1a1a1a';
+    const borderColor = '#262626';
+    const textColor = '#e0e0e0';
+    const textMuted = '#888888';
+    const textDim = '#555555';
+    const green = '#76b900';
+
+    ctx.fillStyle = bgColor;
     ctx.fillRect(0, 0, w, h);
 
-    ctx.fillStyle = '#76b900';
+    ctx.fillStyle = green;
     ctx.fillRect(0, 0, w, titleBarH);
-    ctx.fillStyle = '#ffffff';
-    ctx.font = 'bold 20px Inter, sans-serif';
-    ctx.fillText('Preset \u00d7 Dataset Matrix — Last Successful Run', pad, 36);
+    ctx.fillStyle = '#000000';
+    ctx.font = 'bold 22px Inter, sans-serif';
+    ctx.fillText('Preset \u00d7 Dataset Matrix \u2014 Last Successful Run', pad, 40);
     const now = new Date().toLocaleString();
-    ctx.font = '11px Inter, sans-serif';
-    ctx.fillStyle = '#ffffffcc';
+    ctx.font = '12px Inter, sans-serif';
+    ctx.fillStyle = '#000000aa';
     ctx.textAlign = 'right';
-    ctx.fillText(`Generated: ${now}`, w - pad, 36);
+    ctx.fillText(`Generated: ${now}`, w - pad, 40);
     ctx.textAlign = 'left';
 
     const tableTop = titleBarH + pad;
@@ -3778,66 +3787,62 @@ function ReportingView({ runs, datasets, loading }) {
       });
     });
 
-    ctx.fillStyle = '#f5f5f5';
-    ctx.fillRect(pad, tableTop, rowHeaderW + datasets.length * colW, headerH);
-    ctx.strokeStyle = '#ddd';
+    ctx.fillStyle = cardColor;
+    ctx.fillRect(pad, tableTop, tableW, headerH);
+    ctx.strokeStyle = borderColor;
     ctx.lineWidth = 1;
+    ctx.strokeRect(pad, tableTop, tableW, headerH);
 
-    ctx.fillStyle = '#333';
+    ctx.fillStyle = textDim;
     ctx.font = 'bold 11px Inter, sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillText('PRESET', pad + 14, tableTop + headerH / 2 + 4);
+
     ctx.textAlign = 'center';
     datasets.forEach((ds, i) => {
       const cx = pad + rowHeaderW + i * colW + colW / 2;
-      ctx.fillText(ds, cx, tableTop + 28);
-      ctx.fillStyle = '#888';
-      ctx.font = '9px Inter, sans-serif';
-      ctx.fillText('PPS / Recall@5', cx, tableTop + 46);
-      ctx.fillStyle = '#333';
-      ctx.font = 'bold 11px Inter, sans-serif';
+      ctx.fillStyle = textColor;
+      ctx.font = 'bold 13px Inter, sans-serif';
+      ctx.fillText(ds, cx, tableTop + 24);
+      ctx.fillStyle = textDim;
+      ctx.font = '10px Inter, sans-serif';
+      ctx.fillText('PPS / Recall@5', cx, tableTop + 44);
     });
-    ctx.textAlign = 'left';
-    ctx.fillStyle = '#555';
-    ctx.font = 'bold 10px Inter, sans-serif';
-    ctx.fillText('PRESET', pad + 10, tableTop + 38);
 
     presets.forEach((p, ri) => {
       const ry = tableTop + headerH + ri * rowH;
-      ctx.fillStyle = ri % 2 === 0 ? '#ffffff' : '#fafafa';
-      ctx.fillRect(pad, ry, rowHeaderW + datasets.length * colW, rowH);
+      ctx.fillStyle = ri % 2 === 0 ? cardColor : bgColor;
+      ctx.fillRect(pad, ry, tableW, rowH);
 
-      ctx.strokeStyle = '#eee';
+      ctx.strokeStyle = borderColor;
       ctx.beginPath();
       ctx.moveTo(pad, ry + rowH);
-      ctx.lineTo(pad + rowHeaderW + datasets.length * colW, ry + rowH);
+      ctx.lineTo(pad + tableW, ry + rowH);
       ctx.stroke();
 
-      ctx.fillStyle = '#222';
-      ctx.font = '11px Inter, sans-serif';
+      ctx.fillStyle = textColor;
+      ctx.font = '13px Inter, sans-serif';
       ctx.textAlign = 'left';
-      ctx.fillText(p.label, pad + 10, ry + rowH / 2 + 4);
+      ctx.fillText(p.label, pad + 14, ry + rowH / 2 + 5);
 
       datasets.forEach((ds, ci) => {
         const cell = map[`${p.key}|||${ds}`];
         const cx = pad + rowHeaderW + ci * colW + colW / 2;
         const ppsVal = cell ? cell.pps : null;
         const recallVal = cell ? cell.recall5 : null;
-        const isBestPps = ppsVal != null && ppsVal === bestPps[ds];
-        const isBestRecall = recallVal != null && recallVal === bestRecall[ds];
+        const isBest = (ppsVal != null && ppsVal === bestPps[ds]) || (recallVal != null && recallVal === bestRecall[ds]);
+        const cellText = `${fmtV(ppsVal)} / ${fmtV(recallVal)}`;
 
         ctx.textAlign = 'center';
-        ctx.fillStyle = isBestPps ? '#76b900' : '#333';
-        ctx.font = (isBestPps ? 'bold ' : '') + '12px Inter, sans-serif';
-        ctx.fillText(fmtV(ppsVal), cx, ry + 20);
-
-        ctx.fillStyle = isBestRecall ? '#76b900' : '#888';
-        ctx.font = (isBestRecall ? 'bold ' : '') + '11px Inter, sans-serif';
-        ctx.fillText(fmtV(recallVal), cx, ry + 38);
+        ctx.fillStyle = isBest ? green : textMuted;
+        ctx.font = (isBest ? 'bold ' : '') + '13px Inter, sans-serif';
+        ctx.fillText(cellText, cx, ry + rowH / 2 + 5);
       });
     });
 
-    ctx.strokeStyle = '#ccc';
+    ctx.strokeStyle = borderColor;
     ctx.lineWidth = 1;
-    ctx.strokeRect(pad, tableTop, rowHeaderW + datasets.length * colW, headerH + presets.length * rowH);
+    ctx.strokeRect(pad, tableTop, tableW, headerH + presets.length * rowH);
     for (let i = 0; i <= datasets.length; i++) {
       const x = pad + rowHeaderW + i * colW;
       ctx.beginPath();
@@ -3845,6 +3850,11 @@ function ReportingView({ runs, datasets, loading }) {
       ctx.lineTo(x, tableTop + headerH + presets.length * rowH);
       ctx.stroke();
     }
+    const rhX = pad + rowHeaderW;
+    ctx.beginPath();
+    ctx.moveTo(rhX, tableTop);
+    ctx.lineTo(rhX, tableTop + headerH + presets.length * rowH);
+    ctx.stroke();
 
     const dataUrl = offscreen.toDataURL('image/png', 1);
     const a = document.createElement('a');

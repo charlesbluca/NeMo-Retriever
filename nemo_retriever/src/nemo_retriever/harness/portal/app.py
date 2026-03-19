@@ -562,6 +562,7 @@ async def playground_ingest(req: PlaygroundIngestRequest):
         "dataset_dir": dataset_path,
         "input_type": req.input_type,
         "recall_required": False,
+        "query_csv": None,
     }
 
     job = history.create_job(
@@ -902,6 +903,149 @@ async def test_parse_model(req: ParseTestRequest):
     except ImportError as exc:
         raise HTTPException(status_code=500, detail=f"Missing dependency: {exc}")
     except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+class DetectTestRequest(BaseModel):
+    model_id: str = "page_element_v3"
+    image_b64: str
+    score_threshold: float = 0.25
+
+
+@app.post("/api/models/detect")
+async def test_detect_model(req: DetectTestRequest):
+    """Run an object-detection model on a base64-encoded image.
+
+    Returns detected boxes drawn on the original image (as base64) plus a
+    structured list of detections.
+    """
+    if not req.image_b64:
+        raise HTTPException(status_code=400, detail="image_b64 cannot be empty")
+    try:
+        import base64
+        import io
+        import time as _time
+
+        import numpy as np
+        import torch
+        from PIL import Image, ImageDraw, ImageFont
+
+        img_data = req.image_b64
+        if "," in img_data:
+            img_data = img_data.split(",", 1)[1]
+
+        img_bytes = base64.b64decode(img_data)
+        pil_img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+        orig_w, orig_h = pil_img.size
+
+        img_np = np.array(pil_img)
+        img_tensor = torch.from_numpy(img_np).permute(2, 0, 1).float()
+
+        t0 = _time.perf_counter()
+
+        if req.model_id == "page_element_v3":
+            from nemo_retriever.model.local.nemotron_page_elements_v3 import NemotronPageElementsV3
+            model = NemotronPageElementsV3()
+            label_names = ["table", "chart", "title", "infographic", "text", "header_footer"]
+        elif req.model_id == "table_structure_v1":
+            from nemo_retriever.model.local.nemotron_table_structure_v1 import NemotronTableStructureV1
+            model = NemotronTableStructureV1()
+            label_names = ["cell", "merged_cell", "row", "column"]
+        elif req.model_id == "graphic_elements_v1":
+            from nemo_retriever.model.local.nemotron_graphic_elements_v1 import NemotronGraphicElementsV1
+            model = NemotronGraphicElementsV1()
+            label_names = [
+                "chart_title", "x_axis_title", "y_axis_title", "x_tick_label",
+                "y_tick_label", "legend_title", "legend_label", "marker_label",
+                "value_label", "other_label",
+            ]
+        else:
+            raise HTTPException(status_code=400, detail=f"Unknown detection model: {req.model_id}")
+
+        load_time = _time.perf_counter() - t0
+
+        preprocessed = model.preprocess(img_tensor)
+        if hasattr(preprocessed, "ndim") and preprocessed.ndim == 3:
+            preprocessed = preprocessed.unsqueeze(0)
+
+        device = next(model.model.parameters()).device
+        preprocessed = preprocessed.to(device)
+
+        t1 = _time.perf_counter()
+        raw_preds = model.invoke(preprocessed, (orig_h, orig_w))
+        boxes_t, labels_t, scores_t = model.postprocess(raw_preds)
+        infer_time = _time.perf_counter() - t1
+
+        if isinstance(boxes_t, list):
+            boxes_t, labels_t, scores_t = boxes_t[0], labels_t[0], scores_t[0]
+
+        boxes_np = boxes_t.cpu().numpy() if hasattr(boxes_t, "cpu") else np.array(boxes_t)
+        labels_np = labels_t.cpu().numpy() if hasattr(labels_t, "cpu") else np.array(labels_t)
+        scores_np = scores_t.cpu().numpy() if hasattr(scores_t, "cpu") else np.array(scores_t)
+
+        CLASS_COLORS = [
+            (118, 185, 0), (100, 180, 255), (255, 140, 0), (187, 134, 252),
+            (255, 80, 80), (0, 212, 170), (252, 211, 77), (255, 105, 180),
+            (0, 191, 255), (144, 238, 144),
+        ]
+
+        draw_img = pil_img.copy()
+        draw = ImageDraw.Draw(draw_img)
+        try:
+            font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", max(12, min(orig_h, orig_w) // 60))
+        except Exception:
+            font = ImageFont.load_default()
+
+        detections = []
+        for i in range(len(boxes_np)):
+            score = float(scores_np[i])
+            if score < req.score_threshold:
+                continue
+            label_idx = int(labels_np[i])
+            label_str = label_names[label_idx] if label_idx < len(label_names) else f"class_{label_idx}"
+            box = boxes_np[i]
+            x1 = float(box[0]) * orig_w
+            y1 = float(box[1]) * orig_h
+            x2 = float(box[2]) * orig_w
+            y2 = float(box[3]) * orig_h
+
+            color = CLASS_COLORS[label_idx % len(CLASS_COLORS)]
+            draw.rectangle([x1, y1, x2, y2], outline=color, width=max(2, min(orig_h, orig_w) // 300))
+            txt = f"{label_str} {score:.0%}"
+            text_bbox = draw.textbbox((x1, y1), txt, font=font)
+            draw.rectangle([text_bbox[0] - 2, text_bbox[1] - 2, text_bbox[2] + 2, text_bbox[3] + 2], fill=color)
+            draw.text((x1, y1), txt, fill=(0, 0, 0), font=font)
+
+            detections.append({
+                "label": label_str,
+                "score": round(score, 4),
+                "box": [round(x1, 1), round(y1, 1), round(x2, 1), round(y2, 1)],
+                "box_normalized": [round(float(box[j]), 4) for j in range(4)],
+            })
+
+        detections.sort(key=lambda d: d["score"], reverse=True)
+
+        buf = io.BytesIO()
+        draw_img.save(buf, format="PNG")
+        annotated_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+
+        return {
+            "model_id": req.model_id,
+            "model_load_ms": round(load_time * 1000, 1),
+            "inference_ms": round(infer_time * 1000, 1),
+            "image_size": [orig_w, orig_h],
+            "detection_count": len(detections),
+            "score_threshold": req.score_threshold,
+            "detections": detections,
+            "annotated_image": f"data:image/png;base64,{annotated_b64}",
+        }
+    except ImportError as exc:
+        raise HTTPException(status_code=500, detail=f"Missing dependency: {exc}")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        import traceback
+        logger.error("Detection model error: %s\n%s", exc, traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(exc))
 
 
@@ -1460,6 +1604,46 @@ async def runner_heartbeat(runner_id: int, req: HeartbeatRequest | None = None):
         "update_to_commit": update_to,
         "ray_address": ray_addr,
     }
+
+
+class RunnerUpdateCompleteRequest(BaseModel):
+    previous_commit: str | None = None
+    new_commit: str | None = None
+
+
+@app.post("/api/runners/{runner_id}/update-complete")
+async def runner_update_complete(runner_id: int, req: RunnerUpdateCompleteRequest):
+    """Called by a runner after it restarts from a portal-triggered code update."""
+    runner = history.get_runner_by_id(runner_id)
+    if not runner:
+        raise HTTPException(status_code=404, detail="Runner not found")
+
+    rname = runner.get("name") or runner.get("hostname") or f"Runner #{runner_id}"
+    prev_short = (req.previous_commit or "unknown")[:12]
+    new_short = (req.new_commit or "unknown")[:12]
+
+    logger.info("Runner #%s (%s) completed update: %s → %s", runner_id, rname, prev_short, new_short)
+
+    history.clear_pending_update(runner_id)
+
+    try:
+        history.create_alert_event({
+            "rule_id": None,
+            "run_id": None,
+            "metric": "runner_update",
+            "metric_value": None,
+            "threshold": 0,
+            "operator": "info",
+            "message": f"Runner '{rname}' (#{runner_id}) restarted with updated code: {prev_short} → {new_short}",
+            "git_commit": req.new_commit,
+            "dataset": None,
+            "preset": None,
+            "hostname": runner.get("hostname"),
+        })
+    except Exception as exc:
+        logger.warning("Failed to create alert event for runner update: %s", exc)
+
+    return {"ok": True, "message": f"Update acknowledged: {prev_short} → {new_short}"}
 
 
 @app.get("/api/runners/{runner_id}/work")

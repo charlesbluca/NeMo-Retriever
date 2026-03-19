@@ -131,6 +131,48 @@ def _get_current_git_commit() -> str | None:
         return None
 
 
+_UPDATE_MARKER_FILE = Path("/tmp/.nemo_runner_update_marker")
+
+
+def _write_update_marker(previous_commit: str, new_commit: str) -> None:
+    """Write a marker file so the restarted process knows it came from a portal update."""
+    try:
+        _UPDATE_MARKER_FILE.write_text(
+            json_module.dumps({"previous_commit": previous_commit, "new_commit": new_commit, "ts": time.time()}),
+        )
+    except Exception as exc:
+        logger.warning("Failed to write update marker: %s", exc)
+
+
+def _read_and_clear_update_marker() -> dict[str, Any] | None:
+    """Read the update marker if present and delete it. Returns the marker dict or None."""
+    try:
+        if _UPDATE_MARKER_FILE.exists():
+            data = json_module.loads(_UPDATE_MARKER_FILE.read_text())
+            _UPDATE_MARKER_FILE.unlink(missing_ok=True)
+            return data
+    except Exception as exc:
+        logger.warning("Failed to read update marker: %s", exc)
+        _UPDATE_MARKER_FILE.unlink(missing_ok=True)
+    return None
+
+
+def _report_update_to_portal(base_url: str, runner_id: int, marker: dict[str, Any]) -> None:
+    """Notify the portal that this runner restarted after a code update."""
+    try:
+        _post_json(f"{base_url}/api/runners/{runner_id}/update-complete", {
+            "previous_commit": marker.get("previous_commit"),
+            "new_commit": marker.get("new_commit"),
+        })
+        logger.info(
+            "Reported successful update to portal: %s → %s",
+            (marker.get("previous_commit") or "?")[:12],
+            (marker.get("new_commit") or "?")[:12],
+        )
+    except Exception as exc:
+        logger.warning("Failed to report update to portal: %s", exc)
+
+
 def _self_update_and_restart(commit: str, base_url: str, runner_id: int, reg_payload: dict[str, Any]) -> None:
     """Checkout the requested commit, reinstall the package, and restart this process."""
     repo_root = _find_repo_root()
@@ -146,7 +188,8 @@ def _self_update_and_restart(commit: str, base_url: str, runner_id: int, reg_pay
             cmd, cwd=str(repo_root), capture_output=True, text=True, timeout=300, env=env, **kwargs,
         )
 
-    logger.info("Self-update requested: updating to %s", commit[:12])
+    previous_commit = _get_current_git_commit() or "unknown"
+    logger.info("Self-update requested: updating to %s (from %s)", commit[:12], previous_commit[:12])
 
     try:
         _run(["git", "fetch", "--all", "--prune"], check=False)
@@ -179,6 +222,7 @@ def _self_update_and_restart(commit: str, base_url: str, runner_id: int, reg_pay
         logger.error("uv pip install failed: %s", exc)
         return
 
+    _write_update_marker(previous_commit, commit)
     logger.info("Self-update complete. Restarting runner process...")
     os.execv(sys.executable, [sys.executable] + sys.argv)
 
@@ -519,10 +563,20 @@ def runner_start_command(
         runner_id = _register_with_portal(base_url, reg_payload)
         if runner_id is not None:
             typer.echo(f"Registered as runner #{runner_id}")
+            update_marker = _read_and_clear_update_marker()
+            if update_marker:
+                typer.echo(
+                    f"  Restarted after portal-triggered update: "
+                    f"{(update_marker.get('previous_commit') or '?')[:12]} → "
+                    f"{(update_marker.get('new_commit') or '?')[:12]}"
+                )
+                _report_update_to_portal(base_url, runner_id, update_marker)
         else:
             typer.echo("Warning: Failed to register — will retry on next heartbeat.", err=True)
+            _read_and_clear_update_marker()
     else:
         typer.echo("\nNo --manager-url provided; running in standalone mode.")
+        _read_and_clear_update_marker()
 
     typer.echo(f"\nRunner is active (heartbeat every {heartbeat_interval}s). Press Ctrl+C to stop.\n")
 

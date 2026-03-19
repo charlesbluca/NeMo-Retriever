@@ -4623,6 +4623,7 @@ function ModelsView() {
   const [imageB64, setImageB64] = useState(null);
   const [imagePreview, setImagePreview] = useState(null);
   const [ocrMerge, setOcrMerge] = useState("paragraph");
+  const [detectThreshold, setDetectThreshold] = useState(0.25);
   const [visionResult, setVisionResult] = useState(null);
   const [visionLoading, setVisionLoading] = useState(false);
   const [visionError, setVisionError] = useState(null);
@@ -4698,11 +4699,13 @@ function ModelsView() {
     setVisionLoading(true); setVisionError(null); setVisionResult(null);
     const endpoint = model.type === "ocr" ? "/api/models/ocr"
       : model.type === "document-parser" ? "/api/models/parse"
+      : model.type === "object-detection" ? "/api/models/detect"
       : null;
     if (!endpoint) { setVisionError(`No test endpoint for model type: ${model.type}`); setVisionLoading(false); return; }
     try {
       const payload = { model_id: selectedModel, image_b64: imageB64 };
       if (model.type === "ocr") payload.merge_level = ocrMerge;
+      if (model.type === "object-detection") payload.score_threshold = detectThreshold;
       const res = await fetch(endpoint, {
         method: "POST", headers: {"Content-Type": "application/json"},
         body: JSON.stringify(payload),
@@ -4899,7 +4902,7 @@ function ModelsView() {
           <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'16px',marginBottom:'16px'}}>
             <div>
               <label style={labelStyle}>Model</label>
-              <select className="select" style={{width:'100%'}} value={selectedModel || ''} onChange={e=>setSelectedModel(e.target.value)}>
+              <select className="select" style={{width:'100%'}} value={selectedModel || ''} onChange={e=>{setSelectedModel(e.target.value);setVisionResult(null);setVisionError(null);}}>
                 {visionModels.map(m => <option key={m.id} value={m.id}>{m.name} ({m.type})</option>)}
               </select>
             </div>
@@ -4912,6 +4915,18 @@ function ModelsView() {
                   <option value="paragraph">Paragraph</option>
                 </select>
                 <div style={{fontSize:'10px',color:'var(--nv-text-dim)',marginTop:'4px'}}>Controls how recognized text regions are grouped together.</div>
+              </div>
+            )}
+            {models.find(m => m.id === selectedModel)?.type === 'object-detection' && (
+              <div>
+                <label style={labelStyle}>Score Threshold</label>
+                <div style={{display:'flex',alignItems:'center',gap:'10px'}}>
+                  <input type="range" min="0" max="1" step="0.05" value={detectThreshold}
+                    onChange={e=>setDetectThreshold(parseFloat(e.target.value))}
+                    style={{flex:1,accentColor:'var(--nv-green)'}} />
+                  <span className="mono" style={{fontSize:'13px',color:'var(--nv-green)',fontWeight:600,minWidth:'40px',textAlign:'right'}}>{(detectThreshold*100).toFixed(0)}%</span>
+                </div>
+                <div style={{fontSize:'10px',color:'var(--nv-text-dim)',marginTop:'4px'}}>Only detections above this confidence score are shown.</div>
               </div>
             )}
           </div>
@@ -4937,16 +4952,6 @@ function ModelsView() {
           <button className="btn btn-primary" onClick={runVision} disabled={visionLoading || !imageB64 || !selectedModel}>
             {visionLoading ? <><span className="spinner" style={{marginRight:'8px'}}></span>Processing…</> : 'Run Model'}
           </button>
-          {(() => {
-            const sel = models.find(m => m.id === selectedModel);
-            if (sel && sel.type === 'object-detection') return (
-              <div style={{marginTop:'12px',padding:'10px 14px',borderRadius:'6px',background:'rgba(252,211,77,0.08)',border:'1px solid rgba(252,211,77,0.2)',color:'#fcd34d',fontSize:'12px'}}>
-                Object-detection models (Page Elements, Table Structure, Graphic Elements) require tensor input and are tested as part of the full pipeline.
-                Use the <strong>Ingestion</strong> playground to run these models end-to-end on your documents.
-              </div>
-            );
-            return null;
-          })()}
           {visionError && <div style={{marginTop:'16px',padding:'12px 16px',borderRadius:'6px',background:'rgba(255,80,80,0.08)',border:'1px solid rgba(255,80,80,0.2)',color:'#ff5050',fontSize:'13px'}}>{visionError}</div>}
           {visionResult && (
             <div style={{marginTop:'20px'}}>
@@ -4955,13 +4960,76 @@ function ModelsView() {
                   {label:'Model',value:visionResult.model_id},
                   {label:'Load Time',value:`${visionResult.model_load_ms}ms`},
                   {label:'Inference',value:`${visionResult.inference_ms}ms`},
-                ].filter(s=>s.value!=null).map(s => (
+                  visionResult.detection_count != null ? {label:'Detections',value:visionResult.detection_count} : null,
+                  visionResult.image_size ? {label:'Image',value:`${visionResult.image_size[0]}×${visionResult.image_size[1]}`} : null,
+                ].filter(Boolean).map(s => (
                   <div key={s.label} style={{background:'rgba(100,180,255,0.06)',border:'1px solid rgba(100,180,255,0.12)',borderRadius:'6px',padding:'8px 14px',minWidth:'100px'}}>
                     <div style={{fontSize:'10px',color:'var(--nv-text-dim)',textTransform:'uppercase',fontWeight:600,marginBottom:'2px'}}>{s.label}</div>
                     <div className="mono" style={{fontSize:'13px',color:'#64b4ff',fontWeight:600}}>{s.value}</div>
                   </div>
                 ))}
               </div>
+
+              {/* Annotated image for detection models */}
+              {visionResult.annotated_image && (
+                <div style={{marginBottom:'20px'}}>
+                  <div style={{fontSize:'13px',fontWeight:600,color:'#fff',marginBottom:'8px'}}>Annotated Image</div>
+                  <div style={{background:'var(--nv-bg)',border:'1px solid var(--nv-border)',borderRadius:'8px',padding:'12px',textAlign:'center',overflow:'auto'}}>
+                    <img src={visionResult.annotated_image} alt="annotated detections"
+                      style={{maxWidth:'100%',borderRadius:'4px',cursor:'pointer'}}
+                      onClick={(e) => {
+                        const w = window.open();
+                        if (w) { w.document.write(`<img src="${visionResult.annotated_image}" style="max-width:100%">`); w.document.title = "Detection Result"; }
+                      }}
+                      title="Click to open full-size in new tab" />
+                  </div>
+                </div>
+              )}
+
+              {/* Detections table */}
+              {visionResult.detections && visionResult.detections.length > 0 && (
+                <div>
+                  <div style={{fontSize:'13px',fontWeight:600,color:'#fff',marginBottom:'8px'}}>Detections ({visionResult.detections.length})</div>
+                  <div style={{overflowX:'auto'}}>
+                    <table className="runs-table" style={{fontSize:'12px'}}>
+                      <thead><tr><th>#</th><th>Label</th><th>Score</th><th>Box (px)</th></tr></thead>
+                      <tbody>
+                        {visionResult.detections.map((d, i) => {
+                          const DET_COLORS = {'table':'#76b900','chart':'#64b4ff','title':'#ff8c00','infographic':'#bb86fc',
+                            'text':'#ff5050','header_footer':'#00d4aa','cell':'#76b900','merged_cell':'#fcd34d','row':'#64b4ff','column':'#ff8c00',
+                            'chart_title':'#76b900','x_axis_title':'#64b4ff','y_axis_title':'#ff8c00','legend_title':'#bb86fc','legend_label':'#fcd34d',
+                            'marker_label':'#ff5050','value_label':'#00d4aa','x_tick_label':'#ff69b4','y_tick_label':'#00bfff','other_label':'#90ee90'};
+                          const color = DET_COLORS[d.label] || '#aaa';
+                          return (
+                            <tr key={i}>
+                              <td>{i+1}</td>
+                              <td>
+                                <span style={{display:'inline-flex',alignItems:'center',gap:'6px'}}>
+                                  <span style={{width:'10px',height:'10px',borderRadius:'2px',background:color,flexShrink:0}}></span>
+                                  <span style={{fontWeight:600}}>{d.label}</span>
+                                </span>
+                              </td>
+                              <td>
+                                <div style={{display:'flex',alignItems:'center',gap:'8px'}}>
+                                  <div style={{width:'50px',height:'6px',borderRadius:'3px',background:'rgba(255,255,255,0.06)',overflow:'hidden'}}>
+                                    <div style={{height:'100%',width:`${d.score*100}%`,borderRadius:'3px',background:color}} />
+                                  </div>
+                                  <span className="mono" style={{color,fontWeight:600}}>{(d.score*100).toFixed(1)}%</span>
+                                </div>
+                              </td>
+                              <td className="mono" style={{fontSize:'11px',color:'var(--nv-text-dim)'}}>
+                                [{d.box.map(v=>Math.round(v)).join(', ')}]
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              {/* OCR text */}
               {visionResult.text && (
                 <div>
                   <div style={{fontSize:'13px',fontWeight:600,color:'#fff',marginBottom:'8px'}}>Extracted Text</div>
@@ -4971,6 +5039,8 @@ function ModelsView() {
                   </pre>
                 </div>
               )}
+
+              {/* Parse markdown */}
               {visionResult.markdown && (
                 <div>
                   <div style={{fontSize:'13px',fontWeight:600,color:'#fff',marginBottom:'8px'}}>Parsed Output (Markdown)</div>

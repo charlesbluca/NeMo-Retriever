@@ -352,19 +352,6 @@ def asr_chunks_to_text(
     )
 
 
-def apply_asr_to_df(
-    batch_df: pd.DataFrame,
-    asr_params: Optional[dict] = None,
-    **kwargs: Any,
-) -> pd.DataFrame:
-    """
-    Inprocess helper: apply ASR to a DataFrame of chunk rows; returns DataFrame with text column set.
-
-    Used by tests and callers that prefer this name over asr_chunks_to_text.
-    """
-    return asr_chunks_to_text(batch_df, asr_params=asr_params, **kwargs)
-
-
 class ASRActor:
     """
     Ray Data map_batches callable: chunk rows (path/bytes) -> rows with text (transcript).

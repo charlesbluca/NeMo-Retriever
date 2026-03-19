@@ -18,7 +18,6 @@ from unittest.mock import patch
 import pandas as pd
 
 from nemo_retriever.audio.asr_actor import ASRActor
-from nemo_retriever.audio.asr_actor import apply_asr_to_df
 from nemo_retriever.audio.asr_actor import asr_chunks_to_text
 from nemo_retriever.params import ASRParams
 
@@ -159,7 +158,7 @@ def test_asr_actor_remote_segment_audio():
         assert out["metadata"].iloc[1]["segment_end"] == 2.5
 
 
-def test_apply_asr_to_df_segment_audio():
+def test_asr_chunks_to_text_remote_segment_audio():
     with patch("nemo_retriever.audio.asr_actor._get_client") as mock_get:
         mock_client = MagicMock()
         mock_client.infer.return_value = (
@@ -184,7 +183,7 @@ def test_apply_asr_to_df_segment_audio():
                 }
             ]
         )
-        out = apply_asr_to_df(
+        out = asr_chunks_to_text(
             batch,
             asr_params={"audio_endpoints": ("localhost:50051", None), "segment_audio": True},
         )

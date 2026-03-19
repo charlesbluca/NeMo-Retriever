@@ -28,11 +28,11 @@ Suggested sequence: **1 → 2, 3, 5 (any order) → 4**. Or: **1 → 3 → 4 →
 
 | File                                                                     | Changes                                                                                                                   |
 | ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------- |
-| `nemo_retriever/src/nemo_retriever/audio/asr_actor.py`                   | Extract `asr_chunks_to_text(...)`; ASRActor delegates; remote `segment_audio` fans out punctuation segments via `_build_output_rows`; `_infer_remote` returns `(segments, transcript)`; `apply_asr_to_df` = thin wrapper (compat with upstream tests / callers). |
+| `nemo_retriever/src/nemo_retriever/audio/asr_actor.py`                   | Extract `asr_chunks_to_text(...)`; ASRActor delegates; remote `segment_audio` fans out punctuation segments via `_build_output_rows`; `_infer_remote` returns `(segments, transcript)`. |
 | `nemo_retriever/src/nemo_retriever/audio/__init__.py`                    | Export `asr_chunks_to_text`.                                                                                              |
 | `nemo_retriever/src/nemo_retriever/model/local/parakeet_ctc_1_1b_asr.py` | Cap segment duration (`MAX_AUDIO_DURATION_SEC`), split long audio, concatenate segment transcripts.                       |
 | `nemo_retriever/src/nemo_retriever/audio/media_interface.py`             | Robust duration/bitrate handling when ffprobe omits `duration` or `bit_rate`.                                             |
-| `nemo_retriever/src/nemo_retriever/audio/stage.py`                       | Use `asr_chunks_to_text` instead of `apply_asr_to_df`.                                                                    |
+| `nemo_retriever/src/nemo_retriever/audio/stage.py`                       | Use `asr_chunks_to_text` for chunk → transcript.                                                                          |
 | `nemo_retriever/src/nemo_retriever/ingest_modes/inprocess.py`            | Use `asr_chunks_to_text` with model injection; add `_load_doc_to_df` / `_iter_doc_chunks` and use for all pipeline types. |
 | `nemo_retriever/tests/test_asr_actor.py`                                 | Update for `asr_chunks_to_text` / ASRActor.                                                                               |
 
@@ -128,6 +128,7 @@ Suggested sequence: **1 → 2, 3, 5 (any order) → 4**. Or: **1 → 3 → 4 →
 
 - *(Initial version: PR breakdown and merge order from branch diff vs upstream/main.)*
 - **Merge `upstream/main` into `image-extract-dev`:** `asr_actor.py` conflict with **5c5557aa** (punctuation-based remote segmenting, `ASRParams.segment_audio`, tests). Resolution keeps `asr_chunks_to_text` + model/client injection and ports `_build_output_rows` / segment fan-out from main.
+- Dropped **`apply_asr_to_df`** (was only test-compat); tests call **`asr_chunks_to_text`** directly.
 
 ---
 

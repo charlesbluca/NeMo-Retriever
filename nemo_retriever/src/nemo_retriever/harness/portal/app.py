@@ -157,6 +157,9 @@ class RunnerCreateRequest(BaseModel):
     status: str = "online"
     tags: list[str] | None = None
     metadata: dict[str, Any] | None = None
+    heartbeat_interval: int = 30
+    git_commit: str | None = None
+    ray_address: str | None = None
 
 
 class RunnerUpdateRequest(BaseModel):

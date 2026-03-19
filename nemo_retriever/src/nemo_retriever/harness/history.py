@@ -796,29 +796,31 @@ def register_runner(data: dict[str, Any], db_path: str | None = None) -> dict[st
 
         if existing:
             runner_id = existing["id"]
+            ex = dict(existing)
             new_git = data.get("git_commit")
             conn.execute(
                 "UPDATE runners SET name=?, url=?, gpu_type=?, gpu_count=?, cpu_count=?,"
                 " memory_gb=?, status=?, last_heartbeat=?, tags=?, metadata=?,"
                 " heartbeat_interval=?, git_commit=?, ray_address=? WHERE id=?",
                 (
-                    data.get("name", existing["name"]),
-                    data.get("url", existing["url"]),
-                    data.get("gpu_type", existing["gpu_type"]),
-                    data.get("gpu_count", existing["gpu_count"]),
-                    data.get("cpu_count", existing["cpu_count"]),
-                    data.get("memory_gb", existing["memory_gb"]),
+                    data.get("name", ex.get("name")),
+                    data.get("url", ex.get("url")),
+                    data.get("gpu_type", ex.get("gpu_type")),
+                    data.get("gpu_count", ex.get("gpu_count")),
+                    data.get("cpu_count", ex.get("cpu_count")),
+                    data.get("memory_gb", ex.get("memory_gb")),
                     data.get("status", "online"),
                     now,
-                    json.dumps(data["tags"]) if data.get("tags") else existing["tags"],
-                    json.dumps(data["metadata"]) if data.get("metadata") else existing["metadata"],
+                    json.dumps(data["tags"]) if data.get("tags") else ex.get("tags"),
+                    json.dumps(data["metadata"]) if data.get("metadata") else ex.get("metadata"),
                     data.get("heartbeat_interval", 30),
-                    new_git if new_git else existing.get("git_commit"),
-                    data.get("ray_address") if "ray_address" in data else existing.get("ray_address"),
+                    new_git if new_git else ex.get("git_commit"),
+                    data.get("ray_address") if "ray_address" in data else ex.get("ray_address"),
                     runner_id,
                 ),
             )
-            if new_git and existing.get("pending_update_commit") and new_git.startswith(existing["pending_update_commit"][:7]):
+            pending = ex.get("pending_update_commit")
+            if new_git and pending and new_git.startswith(pending[:7]):
                 conn.execute("UPDATE runners SET pending_update_commit = NULL WHERE id = ?", (runner_id,))
             conn.commit()
             row = conn.execute("SELECT * FROM runners WHERE id = ?", (runner_id,)).fetchone()

@@ -797,7 +797,7 @@ function RunsView({ runs, datasets, loading, filterDataset, setFilterDataset, fi
           <table className="runs-table">
             <thead>
               <tr>
-                <th>Status</th><th>Source</th><th>Timestamp</th><th>Host</th><th>Commit</th><th>Exec Commit</th><th>Dataset</th>
+                <th>Status</th><th>Source</th><th>Timestamp</th><th>Host</th><th style={{textAlign:'right'}}>GPUs</th><th>Commit</th><th>Exec Commit</th><th>Dataset</th>
                 <th>Preset</th><th style={{textAlign:'right'}}>Pages</th>
                 <th style={{textAlign:'right'}}>PPS</th><th style={{textAlign:'right'}}>Recall@5</th>
                 <th style={{textAlign:'right'}}>Ingest (s)</th>
@@ -806,11 +806,11 @@ function RunsView({ runs, datasets, loading, filterDataset, setFilterDataset, fi
             </thead>
             <tbody>
               {loading ? (
-                <tr><td colSpan="13" style={{textAlign:'center',padding:'60px',color:'var(--nv-text-muted)'}}>
+                <tr><td colSpan="14" style={{textAlign:'center',padding:'60px',color:'var(--nv-text-muted)'}}>
                   <div className="spinner spinner-lg" style={{margin:'0 auto 12px'}}></div><div>Loading runs…</div>
                 </td></tr>
               ) : runs.length === 0 ? (
-                <tr><td colSpan="13" style={{textAlign:'center',padding:'60px',color:'var(--nv-text-muted)'}}>
+                <tr><td colSpan="14" style={{textAlign:'center',padding:'60px',color:'var(--nv-text-muted)'}}>
                   <div style={{marginBottom:'8px',fontSize:'15px'}}>No runs found</div>
                   <div style={{fontSize:'12px',color:'var(--nv-text-dim)'}}>
                     Trigger a run or use <code className="mono" style={{background:'rgba(255,255,255,0.06)',padding:'2px 6px',borderRadius:'4px'}}>retriever harness backfill</code> to import existing results.
@@ -830,6 +830,7 @@ function RunsView({ runs, datasets, loading, filterDataset, setFilterDataset, fi
                       <span title="Connected to existing Ray cluster" style={{marginLeft:'6px',fontSize:'10px',color:'#64b4ff',background:'rgba(100,180,255,0.1)',padding:'1px 5px',borderRadius:'4px',border:'1px solid rgba(100,180,255,0.2)',whiteSpace:'nowrap'}}>Ray</span>
                     )}
                   </td>
+                  <td style={{textAlign:'right',color:'var(--nv-text-muted)',fontSize:'12px'}}>{run.num_gpus != null ? run.num_gpus : "\u2014"}</td>
                   <td><CommitLink sha={run.git_commit} repoUrl={githubRepoUrl} /></td>
                   <td><CommitLink sha={run.execution_commit} repoUrl={githubRepoUrl} /></td>
                   <td style={{color:'#fff',fontWeight:500}}>{run.dataset}</td>
@@ -1549,6 +1550,10 @@ function RunDetailModal({ run, onClose, onDelete, githubRepoUrl }) {
                 <div className="detail-value">{run.gpu_type || "\u2014"}</div>
               </div>
               <div className="detail-item">
+                <div className="detail-label">Num GPUs</div>
+                <div className="detail-value">{run.num_gpus != null ? run.num_gpus : "\u2014"}</div>
+              </div>
+              <div className="detail-item">
                 <div className="detail-label">Trigger Source</div>
                 <div className="detail-value"><TriggerSourceBadge source={run.trigger_source} /></div>
               </div>
@@ -1666,6 +1671,66 @@ function RunDetailModal({ run, onClose, onDelete, githubRepoUrl }) {
               </div>
             </div>
           </div>
+
+          {/* Detection Summary */}
+          {(() => {
+            const ds = (raw.detection_summary && typeof raw.detection_summary === 'object') ? raw.detection_summary : null;
+            if (!ds) return null;
+            const byLabel = ds.page_elements_v3_counts_by_label || {};
+            const labelEntries = Object.entries(byLabel).sort((a,b) => b[1] - a[1]);
+            const totalDetections = (ds.page_elements_v3_total_detections || 0)
+              + (ds.ocr_table_total_detections || 0)
+              + (ds.ocr_chart_total_detections || 0)
+              + (ds.ocr_infographic_total_detections || 0);
+            return (
+              <div style={{marginBottom:'28px'}}>
+                <div className="section-title">Detection Summary</div>
+                <div className="metric-grid">
+                  <div className="metric-card">
+                    <div className="metric-value" style={{color:'#fff'}}>{fmt(ds.pages_seen,0)}</div>
+                    <div className="metric-label">Pages Seen</div>
+                  </div>
+                  <div className="metric-card">
+                    <div className="metric-value">{fmt(totalDetections,0)}</div>
+                    <div className="metric-label">Total Detections</div>
+                  </div>
+                  <div className="metric-card">
+                    <div className="metric-value" style={{color:'#fff'}}>{fmt(ds.page_elements_v3_total_detections,0)}</div>
+                    <div className="metric-label">Page Elements v3</div>
+                  </div>
+                  <div className="metric-card">
+                    <div className="metric-value" style={{color:'#fff'}}>{fmt(ds.ocr_table_total_detections,0)}</div>
+                    <div className="metric-label">OCR Tables</div>
+                  </div>
+                  <div className="metric-card">
+                    <div className="metric-value" style={{color:'#fff'}}>{fmt(ds.ocr_chart_total_detections,0)}</div>
+                    <div className="metric-label">OCR Charts</div>
+                  </div>
+                  <div className="metric-card">
+                    <div className="metric-value" style={{color:'#fff'}}>{fmt(ds.ocr_infographic_total_detections,0)}</div>
+                    <div className="metric-label">OCR Infographics</div>
+                  </div>
+                </div>
+                {labelEntries.length > 0 && (
+                  <div style={{marginTop:'16px'}}>
+                    <div style={{fontSize:'13px',fontWeight:600,color:'rgba(255,255,255,0.7)',marginBottom:'10px'}}>Page Elements by Label</div>
+                    <div style={{
+                      display:'grid',gridTemplateColumns:'1fr auto',gap:'4px 16px',
+                      padding:'14px 18px',borderRadius:'10px',
+                      background:'rgba(255,255,255,0.02)',border:'1px solid var(--nv-border)',
+                    }}>
+                      {labelEntries.map(([label, count]) => (
+                        <React.Fragment key={label}>
+                          <span style={{fontSize:'13px',color:'rgba(255,255,255,0.8)'}}>{label}</span>
+                          <span className="mono" style={{fontSize:'13px',color:'var(--nv-green)',fontWeight:600,textAlign:'right'}}>{count.toLocaleString()}</span>
+                        </React.Fragment>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
 
           {/* Tags */}
           {run.tags && run.tags.length > 0 && (
@@ -3251,7 +3316,7 @@ function DataExportSection({ filteredRuns, filterDataset, filterPreset, filterSt
     if (filteredRuns.length === 0) return;
     const fields = ['id','timestamp','dataset','preset','success','hostname','gpu_type',
       'pages_per_sec','recall_1','recall_5','recall_10','ingest_secs','pages','files',
-      'trigger_source','git_commit','execution_commit','ray_cluster_mode','ray_dashboard_url'];
+      'trigger_source','git_commit','execution_commit','num_gpus','ray_cluster_mode','ray_dashboard_url'];
     const header = fields.join(',');
     const rows = filteredRuns.map(r =>
       fields.map(f => {
@@ -3451,7 +3516,8 @@ function ReportingView({ runs, datasets, loading }) {
     } else if (chartDef.type === "gpu_bar") {
       const nested = {};
       filteredRuns.forEach(r => {
-        const gpu = r.gpu_type || "Unknown GPU";
+        const gpuBase = r.gpu_type || "Unknown GPU";
+        const gpu = r.num_gpus != null ? `${gpuBase} (x${r.num_gpus})` : gpuBase;
         const ds = r.dataset || "unknown";
         const val = r[chartDef.metric];
         if (val == null) return;
@@ -3754,7 +3820,8 @@ function ReportingView({ runs, datasets, loading }) {
       {(() => {
         const gpuRows = {};
         filteredRuns.forEach(r => {
-          const gpu = r.gpu_type || "Unknown GPU";
+          const gpuBase = r.gpu_type || "Unknown GPU";
+          const gpu = r.num_gpus != null ? `${gpuBase} (x${r.num_gpus})` : gpuBase;
           const ds = r.dataset || "unknown";
           const key = `${gpu}|||${ds}`;
           if (!gpuRows[key]) gpuRows[key] = { gpu, dataset: ds, pps: [], recall1: [], recall5: [], recall10: [], ingest: [], count: 0 };

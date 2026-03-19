@@ -193,6 +193,7 @@ def _write_update_marker(previous_commit: str, new_commit: str) -> None:
                 "ts": time.time(),
                 "ray_address": _runner_ray_address,
                 "run_code_ref": _runner_run_code_ref,
+                "num_gpus": _runner_num_gpus,
             }),
         )
     except Exception as exc:
@@ -367,6 +368,7 @@ class _JobTracker:
 _job_tracker = _JobTracker()
 _runner_ray_address: str | None = None
 _runner_run_code_ref: str | None = None
+_runner_num_gpus: int | None = None
 
 
 class _TeeWriter:
@@ -563,6 +565,7 @@ def _execute_job_on_runner(base_url: str, job: dict[str, Any], runner_id: int = 
     if _runner_ray_address and "ray_address" not in overrides:
         overrides["ray_address"] = _runner_ray_address
         logger.info("Injecting runner ray_address=%s into job overrides", _runner_ray_address)
+    overrides.setdefault("write_detection_file", True)
     logger.info(
         "Executing job %s (dataset=%s, path=%s, preset=%s, ray=%s)",
         job_id,
@@ -596,6 +599,7 @@ def _execute_job_on_runner(base_url: str, job: dict[str, Any], runner_id: int = 
                     "error": "Cancelled by user",
                     "result": result,
                     "execution_commit": execution_commit,
+                    "num_gpus": _runner_num_gpus,
                 },
             )
             logger.info("Job %s cancelled by user", job_id)
@@ -603,7 +607,7 @@ def _execute_job_on_runner(base_url: str, job: dict[str, Any], runner_id: int = 
             success = bool(result.get("success"))
             _post_json(
                 f"{base_url}/api/jobs/{job_id}/complete",
-                {"success": success, "result": result, "execution_commit": execution_commit},
+                {"success": success, "result": result, "execution_commit": execution_commit, "num_gpus": _runner_num_gpus},
             )
             logger.info("Job %s completed (success=%s)", job_id, success)
     except Exception as exc:
@@ -615,7 +619,7 @@ def _execute_job_on_runner(base_url: str, job: dict[str, Any], runner_id: int = 
                 error_msg = "Cancelled by user"
             _post_json(
                 f"{base_url}/api/jobs/{job_id}/complete",
-                {"success": False, "error": error_msg, "execution_commit": execution_commit},
+                {"success": False, "error": error_msg, "execution_commit": execution_commit, "num_gpus": _runner_num_gpus},
             )
         except Exception:
             pass
@@ -637,13 +641,14 @@ def _build_registration_payload(
     tags: list[str],
     heartbeat_interval: int = 30,
     ray_address: str | None = None,
+    num_gpus: int | None = None,
 ) -> dict[str, Any]:
     """Build the JSON payload used to register (or re-register) with the portal."""
     return {
         "name": runner_name,
         "hostname": meta.get("host"),
         "gpu_type": meta.get("gpu_type"),
-        "gpu_count": meta.get("gpu_count"),
+        "gpu_count": num_gpus if num_gpus is not None else meta.get("gpu_count"),
         "cpu_count": meta.get("cpu_count"),
         "memory_gb": meta.get("memory_gb"),
         "status": "online",
@@ -679,6 +684,11 @@ def runner_start_command(
         "--ray-address",
         help="Ray cluster address for this runner (e.g. 'auto', 'ray://host:10001'). Omit for local Ray.",
     ),
+    num_gpus: int | None = typer.Option(
+        None,
+        "--num-gpus",
+        help="Number of GPUs to report for this runner. Overrides auto-detected count.",
+    ),
 ) -> None:
     """Start a harness runner and optionally register with a portal manager."""
     from nemo_retriever.harness.run import _collect_run_metadata
@@ -702,6 +712,10 @@ def runner_start_command(
 
     global _runner_run_code_ref  # noqa: PLW0603
 
+    global _runner_num_gpus  # noqa: PLW0603
+    _runner_num_gpus = num_gpus if num_gpus is not None else meta.get("gpu_count")
+    typer.echo(f"  Num GPUs : {_runner_num_gpus or 'auto'}")
+
     update_marker = _read_and_clear_update_marker()
     if update_marker:
         saved_ray = update_marker.get("ray_address")
@@ -711,6 +725,9 @@ def runner_start_command(
         saved_ref = update_marker.get("run_code_ref")
         if saved_ref:
             _runner_run_code_ref = saved_ref
+        saved_gpus = update_marker.get("num_gpus")
+        if saved_gpus is not None:
+            _runner_num_gpus = saved_gpus
 
     runner_id: int | None = None
     base_url: str | None = None
@@ -719,7 +736,8 @@ def runner_start_command(
     if manager_url:
         base_url = manager_url.rstrip("/")
         reg_payload = _build_registration_payload(
-            runner_name, meta, tag or [], heartbeat_interval, ray_address=_runner_ray_address,
+            runner_name, meta, tag or [], heartbeat_interval,
+            ray_address=_runner_ray_address, num_gpus=_runner_num_gpus,
         )
         typer.echo(f"\nRegistering with {base_url} ...")
         runner_id = _register_with_portal(base_url, reg_payload)

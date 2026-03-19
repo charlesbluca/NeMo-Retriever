@@ -274,6 +274,7 @@ class JobCompleteRequest(BaseModel):
     result: dict[str, Any] | None = None
     error: str | None = None
     execution_commit: str | None = None
+    num_gpus: int | None = None
 
 
 class PresetCreateRequest(BaseModel):
@@ -1586,7 +1587,7 @@ async def complete_job_endpoint(job_id: str, req: JobCompleteRequest):
     job = history.get_job_by_id(job_id)
     effective_success = req.success and not was_cancelling
     effective_error = req.error or ("Cancelled by user" if was_cancelling else None)
-    _record_run_from_job(job, effective_success, req.result, effective_error, execution_commit=req.execution_commit)
+    _record_run_from_job(job, effective_success, req.result, effective_error, execution_commit=req.execution_commit, num_gpus=req.num_gpus)
 
     return {"ok": True}
 
@@ -1597,6 +1598,7 @@ def _record_run_from_job(
     result: dict[str, Any] | None,
     error: str | None,
     execution_commit: str | None = None,
+    num_gpus: int | None = None,
 ) -> None:
     """Create a run record in the runs table from a completed job.
 
@@ -1639,6 +1641,7 @@ def _record_run_from_job(
             trigger_source=trigger_source,
             schedule_id=schedule_id,
             execution_commit=execution_commit,
+            num_gpus=num_gpus,
         )
         if run_row_id:
             run_row = history.get_run_by_id(run_row_id)

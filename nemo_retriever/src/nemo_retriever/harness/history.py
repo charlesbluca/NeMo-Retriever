@@ -209,6 +209,7 @@ _MIGRATIONS = [
     "ALTER TABLE runners ADD COLUMN pending_update_commit TEXT",
     "ALTER TABLE runners ADD COLUMN ray_address TEXT",
     "ALTER TABLE runs ADD COLUMN execution_commit TEXT",
+    "ALTER TABLE runs ADD COLUMN num_gpus INTEGER",
 ]
 
 RUNNER_MISSED_HEARTBEATS_THRESHOLD = 4
@@ -272,6 +273,7 @@ def record_run(
     trigger_source: str | None = None,
     schedule_id: int | None = None,
     execution_commit: str | None = None,
+    num_gpus: int | None = None,
 ) -> int:
     """Insert a single run result into the history database. Returns the row id."""
     conn = _connect(db_path)
@@ -305,6 +307,7 @@ def record_run(
             "ray_cluster_mode": run_meta.get("ray_cluster_mode"),
             "ray_dashboard_url": run_meta.get("ray_dashboard_url"),
             "execution_commit": execution_commit,
+            "num_gpus": num_gpus,
         }
 
         columns = ", ".join(row.keys())
@@ -334,7 +337,7 @@ def get_runs(
             " failure_reason, pages, ingest_secs, pages_per_sec, recall_1, recall_5,"
             " recall_10, files, tags,"
             " artifact_dir, hostname, gpu_type, trigger_source, schedule_id,"
-            " ray_cluster_mode, ray_dashboard_url, execution_commit"
+            " ray_cluster_mode, ray_dashboard_url, execution_commit, num_gpus"
             " FROM runs WHERE 1=1"
         )
         params: list[Any] = []

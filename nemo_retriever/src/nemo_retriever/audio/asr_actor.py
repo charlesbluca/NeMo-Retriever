@@ -13,12 +13,16 @@ Model injection happens there; inprocess and GPU pool pass a ParakeetCTC1B1ASR i
 ASRActor is a thin wrapper that holds _model/_client and delegates to asr_chunks_to_text.
 
 Consumes chunk rows (path, bytes, source_path, duration, chunk_index, metadata)
-and produces rows with text (transcript) for downstream embed/VDB.
+and produces rows with text (transcript) for downstream embed/VDB. For now,
+``segment_audio=True`` only fans out rows when using a hosted/remote Parakeet
+client, because the local Hugging Face Parakeet model does not emit
+punctuation-aware transcripts that can be segmented into sentences.
 """
 
 from __future__ import annotations
 
 import base64
+import copy
 import logging
 import tempfile
 from pathlib import Path
@@ -120,15 +124,17 @@ def _get_client(params: ASRParams):  # noqa: ANN201
     )
 
 
-def _transcribe_remote_with_client(client: Any, raw: bytes, path: Optional[str]) -> Optional[str]:
-    """Use remote gRPC client to transcribe audio bytes."""
+def _infer_remote(client: Any, raw: bytes, path: Optional[str]) -> Optional[tuple[List[Dict[str, Any]], str]]:
+    """Use remote Parakeet client to transcribe audio bytes; return (segments, transcript)."""
     audio_b64 = base64.b64encode(raw).decode("ascii")
     try:
         segments, transcript = client.infer(
             audio_b64,
             model_name="parakeet",
         )
-        return transcript if transcript else ""
+        safe_segments = segments if isinstance(segments, list) else []
+        safe_transcript = transcript if isinstance(transcript, str) else ""
+        return safe_segments, safe_transcript
     except Exception as e:
         logger.warning("Parakeet infer failed for path=%s: %s", path, e)
         return None
@@ -143,6 +149,71 @@ def _asr_out_columns() -> List[str]:
         "metadata",
         "page_number",
         "text",
+    ]
+
+
+def _build_output_rows(
+    row: pd.Series,
+    transcript: str,
+    *,
+    segment_audio: bool,
+    segments: Optional[List[Dict[str, Any]]] = None,
+) -> List[Dict[str, Any]]:
+    """Build one or more output rows for a chunk, optionally exploding remote punctuation segments."""
+    path = row.get("path")
+    source_path = row.get("source_path", path)
+    duration = row.get("duration")
+    chunk_index = row.get("chunk_index", 0)
+    metadata = row.get("metadata")
+    if not isinstance(metadata, dict):
+        metadata = {"source_path": source_path, "chunk_index": chunk_index, "duration": duration}
+    else:
+        metadata = copy.deepcopy(metadata)
+    metadata.setdefault("source_path", source_path)
+    metadata.setdefault("chunk_index", chunk_index)
+    metadata.setdefault("duration", duration)
+    page_number = row.get("page_number", chunk_index)
+
+    if segment_audio and segments:
+        out_rows: List[Dict[str, Any]] = []
+        segment_count = len(segments)
+        for segment_index, segment in enumerate(segments):
+            if not isinstance(segment, dict):
+                continue
+            segment_text = str(segment.get("text") or "").strip()
+            if not segment_text:
+                continue
+            segment_metadata = copy.deepcopy(metadata)
+            segment_metadata["segment_index"] = segment_index
+            segment_metadata["segment_count"] = segment_count
+            if segment.get("start") is not None:
+                segment_metadata["segment_start"] = segment.get("start")
+            if segment.get("end") is not None:
+                segment_metadata["segment_end"] = segment.get("end")
+            out_rows.append(
+                {
+                    "path": path,
+                    "source_path": source_path,
+                    "duration": duration,
+                    "chunk_index": chunk_index,
+                    "metadata": segment_metadata,
+                    "page_number": page_number,
+                    "text": segment_text,
+                }
+            )
+        if out_rows:
+            return out_rows
+
+    return [
+        {
+            "path": path,
+            "source_path": source_path,
+            "duration": duration,
+            "chunk_index": chunk_index,
+            "metadata": metadata,
+            "page_number": page_number,
+            "text": transcript,
+        }
     ]
 
 
@@ -163,6 +234,9 @@ def asr_chunks_to_text(
 
     If both model and client are None, builds ASRActor(asr_params) and delegates
     with model=actor._model, client=actor._client.
+
+    When ``params.segment_audio`` is enabled for remote Parakeet, punctuation-delimited
+    segments are emitted as multiple rows per chunk.
     """
     if not isinstance(batch_df, pd.DataFrame) or batch_df.empty:
         return pd.DataFrame(columns=_asr_out_columns())
@@ -224,24 +298,13 @@ def asr_chunks_to_text(
 
         out_rows: List[Dict[str, Any]] = []
         for row, transcript in zip(rows_list, transcripts):
-            path = row.get("path")
-            source_path = row.get("source_path", path)
-            duration = row.get("duration")
-            chunk_index = row.get("chunk_index", 0)
-            metadata = row.get("metadata")
-            if not isinstance(metadata, dict):
-                metadata = {"source_path": source_path, "chunk_index": chunk_index, "duration": duration}
-            page_number = row.get("page_number", chunk_index)
-            out_rows.append(
-                {
-                    "path": path,
-                    "source_path": source_path,
-                    "duration": duration,
-                    "chunk_index": chunk_index,
-                    "metadata": metadata,
-                    "page_number": page_number,
-                    "text": transcript or "",
-                }
+            out_rows.extend(
+                _build_output_rows(
+                    row,
+                    transcript or "",
+                    segment_audio=params.segment_audio,
+                    segments=None,
+                )
             )
         if not out_rows:
             return pd.DataFrame(columns=_asr_out_columns())
@@ -249,7 +312,7 @@ def asr_chunks_to_text(
 
     # Remote path: client is set
     if client is not None:
-        out_rows = []
+        out_rows: List[Dict[str, Any]] = []
         for _, row in batch_df.iterrows():
             raw = row.get("bytes")
             path = row.get("path")
@@ -262,26 +325,17 @@ def asr_chunks_to_text(
                     continue
             if raw is None:
                 continue
-            transcript = _transcribe_remote_with_client(client, raw, path)
-            if transcript is None:
+            remote_result = _infer_remote(client, raw, path)
+            if remote_result is None:
                 continue
-            source_path = row.get("source_path", path)
-            duration = row.get("duration")
-            chunk_index = row.get("chunk_index", 0)
-            metadata = row.get("metadata")
-            if not isinstance(metadata, dict):
-                metadata = {"source_path": source_path, "chunk_index": chunk_index, "duration": duration}
-            page_number = row.get("page_number", chunk_index)
-            out_rows.append(
-                {
-                    "path": path,
-                    "source_path": source_path,
-                    "duration": duration,
-                    "chunk_index": chunk_index,
-                    "metadata": metadata,
-                    "page_number": page_number,
-                    "text": transcript,
-                }
+            segments, transcript = remote_result
+            out_rows.extend(
+                _build_output_rows(
+                    row,
+                    transcript,
+                    segment_audio=params.segment_audio,
+                    segments=segments,
+                )
             )
         if not out_rows:
             return pd.DataFrame(columns=_asr_out_columns())
@@ -298,13 +352,28 @@ def asr_chunks_to_text(
     )
 
 
+def apply_asr_to_df(
+    batch_df: pd.DataFrame,
+    asr_params: Optional[dict] = None,
+    **kwargs: Any,
+) -> pd.DataFrame:
+    """
+    Inprocess helper: apply ASR to a DataFrame of chunk rows; returns DataFrame with text column set.
+
+    Used by tests and callers that prefer this name over asr_chunks_to_text.
+    """
+    return asr_chunks_to_text(batch_df, asr_params=asr_params, **kwargs)
+
+
 class ASRActor:
     """
     Ray Data map_batches callable: chunk rows (path/bytes) -> rows with text (transcript).
 
     When audio_endpoints are set, uses Parakeet (Riva ASR) via gRPC. When both are
     null/empty, uses local HuggingFace/NeMo Parakeet (nvidia/parakeet-ctc-1.1b).
-    Output rows have path, text, page_number, metadata for downstream embed.
+    Output rows have path, text, page_number, metadata for downstream embed. When
+    ``params.segment_audio`` is enabled for remote Parakeet, punctuation-delimited
+    segments are emitted as multiple rows per chunk.
     """
 
     def __init__(self, params: ASRParams | None = None) -> None:

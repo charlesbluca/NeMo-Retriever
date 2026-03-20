@@ -282,6 +282,7 @@ def main(
         EmbedParams(
             model_name=str(embed_model_name),
             embed_invoke_url=embed_invoke_url,
+            embed_use_vllm=embed_use_vllm,
             embed_modality=embed_modality,
             text_elements_modality=text_elements_modality,
             structured_elements_modality=structured_elements_modality,

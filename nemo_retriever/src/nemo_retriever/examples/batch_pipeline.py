@@ -867,6 +867,7 @@ def main(
                 ks=tuple(beir_k) if beir_k else (1, 3, 5, 10),
                 embedding_http_endpoint=embed_invoke_url,
                 embedding_api_key=embed_remote_api_key or "",
+                use_vllm=embed_use_vllm,
                 hybrid=hybrid,
                 reranker=bool(reranker),
                 reranker_model_name=str(reranker_model_name),

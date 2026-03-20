@@ -12,6 +12,7 @@ import pty
 import re
 import select
 import shlex
+import shutil
 import socket
 import subprocess
 import sys
@@ -530,6 +531,13 @@ def _run_single(
     skip_local_history: bool = False,
 ) -> dict[str, Any]:
     cmd, runtime_dir, detection_summary_file, effective_query_csv = _build_command(cfg, artifact_dir, run_id)
+
+    lancedb_path = Path(_resolve_lancedb_uri(cfg, artifact_dir))
+    if lancedb_path.is_dir():
+        typer.echo(f"Removing stale LanceDB directory: {lancedb_path}")
+        shutil.rmtree(lancedb_path)
+    lancedb_path.mkdir(parents=True, exist_ok=True)
+
     command_text = " ".join(shlex.quote(token) for token in cmd)
     (artifact_dir / "command.txt").write_text(command_text + "\n", encoding="utf-8")
 

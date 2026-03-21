@@ -785,7 +785,9 @@ def runner_start_command(
 
             heartbeat_job = None
 
-            hb_payload: dict[str, Any] = {}
+            hb_payload: dict[str, Any] = {
+                "git_commit": _get_current_git_commit(),
+            }
             current_jid = _job_tracker.get_current_job_id()
             if current_jid:
                 hb_payload["current_job_id"] = current_jid
@@ -806,6 +808,7 @@ def runner_start_command(
                         "Portal returned 404 for runner #%s — re-registering",
                         runner_id,
                     )
+                    reg_payload["git_commit"] = _get_current_git_commit()
                     runner_id = _register_with_portal(base_url, reg_payload)
                     if runner_id is not None:
                         logger.info("Re-registered as runner #%s", runner_id)

@@ -1764,11 +1764,15 @@ class JobRejectRequest(BaseModel):
 class HeartbeatRequest(BaseModel):
     current_job_id: str | None = None
     log_tail: list[str] | None = None
+    git_commit: str | None = None
 
 
 @app.post("/api/runners/{runner_id}/heartbeat")
 async def runner_heartbeat(runner_id: int, req: HeartbeatRequest | None = None):
-    runner_status = history.heartbeat_runner(runner_id)
+    runner_status = history.heartbeat_runner(
+        runner_id,
+        git_commit=req.git_commit if req else None,
+    )
     if runner_status is None:
         raise HTTPException(status_code=404, detail="Runner not found")
 

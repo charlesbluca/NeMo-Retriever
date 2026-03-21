@@ -982,7 +982,7 @@ def delete_runner(runner_id: int, db_path: str | None = None) -> bool:
         conn.close()
 
 
-def heartbeat_runner(runner_id: int, db_path: str | None = None) -> str | None:
+def heartbeat_runner(runner_id: int, db_path: str | None = None, git_commit: str | None = None) -> str | None:
     """Update heartbeat timestamp. Returns current status, or None if runner not found.
 
     Preserves the ``paused`` status — heartbeats from a paused runner keep it
@@ -996,10 +996,16 @@ def heartbeat_runner(runner_id: int, db_path: str | None = None) -> str | None:
             return None
         current_status = row[0]
         new_status = current_status if current_status == "paused" else "online"
-        conn.execute(
-            "UPDATE runners SET last_heartbeat = ?, status = ? WHERE id = ?",
-            (now, new_status, runner_id),
-        )
+        if git_commit:
+            conn.execute(
+                "UPDATE runners SET last_heartbeat = ?, status = ?, git_commit = ? WHERE id = ?",
+                (now, new_status, git_commit, runner_id),
+            )
+        else:
+            conn.execute(
+                "UPDATE runners SET last_heartbeat = ?, status = ? WHERE id = ?",
+                (now, new_status, runner_id),
+            )
         conn.commit()
         return new_status
     finally:

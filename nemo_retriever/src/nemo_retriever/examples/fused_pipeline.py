@@ -177,7 +177,12 @@ def main(
     embed_use_vllm: bool = typer.Option(
         False,
         "--embed-use-vllm/--no-embed-use-vllm",
-        help="Use vLLM Python API for embedding (docs and recall queries). Requires [embed-vllm] extra.",
+        help="Use vLLM Python API for embedding ingested documents. Requires [embed-vllm] extra.",
+    ),
+    recall_use_vllm: bool = typer.Option(
+        False,
+        "--recall-use-vllm/--no-recall-use-vllm",
+        help="Use vLLM Python API for embedding recall queries. Defaults to False (uses local HF). Requires [embed-vllm] extra.",  # noqa: E501
     ),
 ) -> None:
     log_handle, original_stdout, original_stderr = _configure_logging(log_file)
@@ -299,7 +304,7 @@ def main(
             lancedb_uri=str(lancedb_uri),
             lancedb_table=str(LANCEDB_TABLE),
             embedding_model="nvidia/llama-3.2-nv-embedqa-1b-v2",
-            use_vllm=embed_use_vllm,
+            use_vllm=recall_use_vllm,
             top_k=10,
             ks=(1, 5, 10),
         )

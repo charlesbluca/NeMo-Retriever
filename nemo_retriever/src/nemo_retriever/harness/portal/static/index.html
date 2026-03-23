@@ -1339,6 +1339,13 @@ function PresetsView({ managedPresets, yamlPresets, loading, onRefresh, presetMa
                               </div>
                             </div>
                           </div>
+                          {(m.preferred_runner_id || m.gpu_type_filter) && (
+                            <div style={{marginTop:'8px',padding:'8px 12px',borderRadius:'8px',background:'rgba(118,185,0,0.04)',border:'1px solid rgba(118,185,0,0.15)',fontSize:'12px',display:'flex',gap:'20px',flexWrap:'wrap'}}>
+                              <span style={{color:'var(--nv-text-dim)'}}>Runner Targeting:</span>
+                              {m.preferred_runner_id && <span style={{color:'#fff'}}><span style={{color:'var(--nv-green)',fontWeight:600}}>Preferred Runner:</span> #{m.preferred_runner_id}</span>}
+                              {m.gpu_type_filter && <span style={{color:'#fff'}}><span style={{color:'var(--nv-green)',fontWeight:600}}>GPU Type:</span> {m.gpu_type_filter}</span>}
+                            </div>
+                          )}
                           {(m.tags || []).length > 0 && (
                             <div style={{marginTop:'8px',padding:'8px 12px',borderRadius:'8px',background:'var(--nv-bg)',border:'1px solid var(--nv-border)',fontSize:'12px'}}>
                               <span style={{color:'var(--nv-text-dim)',marginRight:'8px'}}>Tags:</span>
@@ -1547,6 +1554,10 @@ function PresetMatrixFormModal({ matrix, onClose, onSaved }) {
   const [selectedPresets, setSelectedPresets] = useState(new Set(matrix?.preset_names || []));
   const [availableDatasets, setAvailableDatasets] = useState([]);
   const [availablePresets, setAvailablePresets] = useState([]);
+  const [runnersList, setRunnersList] = useState([]);
+  const [gpuTypes, setGpuTypes] = useState([]);
+  const [preferredRunnerId, setPreferredRunnerId] = useState(matrix?.preferred_runner_id || "");
+  const [gpuTypeFilter, setGpuTypeFilter] = useState(matrix?.gpu_type_filter || "");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
@@ -1554,6 +1565,12 @@ function PresetMatrixFormModal({ matrix, onClose, onSaved }) {
     fetch("/api/config").then(r=>r.json()).then(cfg => {
       setAvailableDatasets(cfg.datasets || []);
       setAvailablePresets(cfg.presets || []);
+    }).catch(()=>{});
+    fetch("/api/runners").then(r=>r.json()).then(runners => {
+      setRunnersList(runners || []);
+    }).catch(()=>{});
+    fetch("/api/runners/gpu-types").then(r=>r.json()).then(types => {
+      setGpuTypes(types || []);
     }).catch(()=>{});
   }, []);
 
@@ -1575,6 +1592,8 @@ function PresetMatrixFormModal({ matrix, onClose, onSaved }) {
       dataset_names: [...selectedDatasets],
       preset_names: [...selectedPresets],
       tags: tags ? tags.split(",").map(t=>t.trim()).filter(Boolean) : [],
+      preferred_runner_id: preferredRunnerId ? Number(preferredRunnerId) : null,
+      gpu_type_filter: gpuTypeFilter || null,
     };
     try {
       const url = isEdit ? `/api/preset-matrices/${matrix.id}` : "/api/preset-matrices";
@@ -1655,6 +1674,27 @@ function PresetMatrixFormModal({ matrix, onClose, onSaved }) {
                 {selectedDatasets.size} dataset{selectedDatasets.size!==1?'s':''} &times; {selectedPresets.size} preset{selectedPresets.size!==1?'s':''} = {jobCount} job{jobCount!==1?'s':''}
               </span>
               <div style={{fontSize:'11px',color:'var(--nv-text-dim)',marginTop:'4px'}}>Each trigger will create {jobCount} job{jobCount!==1?'s':''} in the queue</div>
+            </div>
+
+            <div style={{padding:'12px 16px',borderRadius:'8px',background:'rgba(255,255,255,0.02)',border:'1px solid var(--nv-border)'}}>
+              <div style={{fontSize:'11px',fontWeight:600,color:'var(--nv-text-muted)',textTransform:'uppercase',letterSpacing:'0.04em',marginBottom:'10px'}}>Runner Targeting (optional)</div>
+              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'12px'}}>
+                <div>
+                  <label style={labelStyle}>Preferred Runner</label>
+                  <select className="input" style={{width:'100%'}} value={preferredRunnerId} onChange={e=>{setPreferredRunnerId(e.target.value); if(e.target.value) setGpuTypeFilter("");}}>
+                    <option value="">Any runner</option>
+                    {runnersList.map(r => <option key={r.id} value={r.id}>#{r.id} — {r.name}{r.gpu_type ? ` (${r.gpu_type})` : ''}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label style={labelStyle}>GPU Type Filter</label>
+                  <select className="input" style={{width:'100%'}} value={gpuTypeFilter} disabled={!!preferredRunnerId} onChange={e=>setGpuTypeFilter(e.target.value)}>
+                    <option value="">Any GPU</option>
+                    {gpuTypes.map(g => <option key={g} value={g}>{g}</option>)}
+                  </select>
+                  {preferredRunnerId && <div style={{fontSize:'10px',color:'var(--nv-text-dim)',marginTop:'4px'}}>Disabled when a preferred runner is selected</div>}
+                </div>
+              </div>
             </div>
 
             <div>

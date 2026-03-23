@@ -225,6 +225,8 @@ _MIGRATIONS = [
     "ALTER TABLE runs ADD COLUMN num_gpus INTEGER",
     "ALTER TABLE presets ADD COLUMN overrides TEXT",
     "ALTER TABLE schedules ADD COLUMN preset_matrix TEXT",
+    "ALTER TABLE preset_matrices ADD COLUMN preferred_runner_id INTEGER",
+    "ALTER TABLE preset_matrices ADD COLUMN gpu_type_filter TEXT",
 ]
 
 RUNNER_MISSED_HEARTBEATS_THRESHOLD = 4
@@ -635,14 +637,17 @@ def create_preset_matrix(data: dict[str, Any], db_path: str | None = None) -> di
     try:
         now = _now_iso()
         conn.execute(
-            "INSERT INTO preset_matrices (name, description, dataset_names, preset_names, tags, created_at, updated_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO preset_matrices (name, description, dataset_names, preset_names, tags,"
+            " preferred_runner_id, gpu_type_filter, created_at, updated_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 data["name"],
                 data.get("description"),
                 json.dumps(data.get("dataset_names") or []),
                 json.dumps(data.get("preset_names") or []),
                 json.dumps(data.get("tags") or []),
+                data.get("preferred_runner_id"),
+                data.get("gpu_type_filter"),
                 now,
                 now,
             ),
@@ -704,6 +709,12 @@ def update_preset_matrix(matrix_id: int, data: dict[str, Any], db_path: str | No
         if "tags" in data:
             sets.append("tags = ?")
             vals.append(json.dumps(data["tags"] if isinstance(data["tags"], list) else []))
+        if "preferred_runner_id" in data:
+            sets.append("preferred_runner_id = ?")
+            vals.append(data["preferred_runner_id"])
+        if "gpu_type_filter" in data:
+            sets.append("gpu_type_filter = ?")
+            vals.append(data["gpu_type_filter"])
         if not sets:
             return get_preset_matrix_by_id(matrix_id, db_path)
         sets.append("updated_at = ?")

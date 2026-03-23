@@ -246,13 +246,16 @@ def _dispatch_schedule_matrix(
     merged_tags = list(dict.fromkeys(schedule_tags + matrix_tags))
     first_job = None
 
+    effective_preferred_runner = matrix.get("preferred_runner_id") or schedule.get("preferred_runner_id")
+    effective_gpu_type = matrix.get("gpu_type_filter") or schedule.get("gpu_type_pattern")
+
     for ds_name in dataset_names:
         runner = match_runner(
             min_gpu_count=schedule.get("min_gpu_count"),
-            gpu_type_pattern=schedule.get("gpu_type_pattern"),
+            gpu_type_pattern=effective_gpu_type,
             min_cpu_count=schedule.get("min_cpu_count"),
             min_memory_gb=schedule.get("min_memory_gb"),
-            preferred_runner_id=schedule.get("preferred_runner_id"),
+            preferred_runner_id=effective_preferred_runner,
             dataset_name=ds_name,
         )
         dataset_path, dataset_overrides = _resolve_dataset_config(ds_name)

@@ -317,6 +317,8 @@ class PresetMatrixCreateRequest(BaseModel):
     dataset_names: list[str]
     preset_names: list[str]
     tags: list[str] | None = None
+    preferred_runner_id: int | None = None
+    gpu_type_filter: str | None = None
 
 
 class PresetMatrixUpdateRequest(BaseModel):
@@ -325,6 +327,8 @@ class PresetMatrixUpdateRequest(BaseModel):
     dataset_names: list[str] | None = None
     preset_names: list[str] | None = None
     tags: list[str] | None = None
+    preferred_runner_id: int | None = None
+    gpu_type_filter: str | None = None
 
 
 class MatrixTriggerResponse(BaseModel):
@@ -1412,6 +1416,8 @@ async def delete_preset_matrix(matrix_id: int):
 
 @app.post("/api/preset-matrices/{matrix_id}/trigger", response_model=MatrixTriggerResponse)
 async def trigger_preset_matrix(matrix_id: int):
+    from nemo_retriever.harness.scheduler import match_runner
+
     matrix = history.get_preset_matrix_by_id(matrix_id)
     if matrix is None:
         raise HTTPException(status_code=404, detail="Preset matrix not found")
@@ -1421,11 +1427,18 @@ async def trigger_preset_matrix(matrix_id: int):
     if not dataset_names or not preset_names:
         raise HTTPException(status_code=400, detail="Matrix must have at least one dataset and one preset")
 
+    preferred_runner_id = matrix.get("preferred_runner_id")
+    gpu_type_filter = matrix.get("gpu_type_filter")
     matrix_tags = matrix.get("tags") or []
     job_ids: list[str] = []
     for ds_name in dataset_names:
+        runner = match_runner(
+            gpu_type_pattern=gpu_type_filter,
+            preferred_runner_id=preferred_runner_id,
+            dataset_name=ds_name,
+        )
+        dataset_path, dataset_overrides = _resolve_dataset_config(ds_name)
         for pr_name in preset_names:
-            dataset_path, dataset_overrides = _resolve_dataset_config(ds_name)
             preset_overrides = _resolve_preset_overrides(pr_name)
             merged_overrides = {**(dataset_overrides or {}), **preset_overrides}
             job = history.create_job(
@@ -1435,6 +1448,7 @@ async def trigger_preset_matrix(matrix_id: int):
                     "dataset_path": dataset_path,
                     "dataset_overrides": merged_overrides if merged_overrides else None,
                     "preset": pr_name,
+                    "assigned_runner_id": runner["id"] if runner else None,
                     "tags": matrix_tags,
                 }
             )
@@ -1819,6 +1833,17 @@ def _record_run_from_job(
 @app.get("/api/runners")
 async def list_runners():
     return history.get_runners()
+
+
+@app.get("/api/runners/gpu-types")
+async def list_gpu_types():
+    runners = history.get_runners()
+    gpu_types: set[str] = set()
+    for r in runners:
+        gt = r.get("gpu_type")
+        if gt:
+            gpu_types.add(gt)
+    return sorted(gpu_types)
 
 
 @app.post("/api/runners")

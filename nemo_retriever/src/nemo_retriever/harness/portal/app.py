@@ -137,8 +137,6 @@ async def _runner_health_check_loop():
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
-    _import_yaml_datasets_on_startup()
-    _import_yaml_presets_on_startup()
     _seed_default_run_code_ref()
     sched_module.start_scheduler()
     global _runner_health_task
@@ -160,36 +158,6 @@ def _seed_default_run_code_ref() -> None:
         if current != default_ref:
             history.set_portal_setting("run_code_ref", default_ref)
             logger.info("Auto-configured run_code_ref to %s", default_ref)
-
-
-def _import_yaml_datasets_on_startup() -> None:
-    """Seed the managed datasets table with entries from test_configs.yaml."""
-    try:
-        from nemo_retriever.harness.config import DEFAULT_TEST_CONFIG_PATH, _read_yaml_mapping
-
-        cfg = _read_yaml_mapping(DEFAULT_TEST_CONFIG_PATH)
-        yaml_datasets = cfg.get("datasets") or {}
-        if yaml_datasets:
-            count = history.import_yaml_datasets(yaml_datasets)
-            if count:
-                logger.info("Imported %d YAML dataset(s) into managed datasets", count)
-    except Exception as exc:
-        logger.warning("Failed to import YAML datasets on startup: %s", exc)
-
-
-def _import_yaml_presets_on_startup() -> None:
-    """Seed the managed presets table with entries from test_configs.yaml."""
-    try:
-        from nemo_retriever.harness.config import DEFAULT_TEST_CONFIG_PATH, _read_yaml_mapping
-
-        cfg = _read_yaml_mapping(DEFAULT_TEST_CONFIG_PATH)
-        yaml_presets = cfg.get("presets") or {}
-        if yaml_presets:
-            count = history.import_yaml_presets(yaml_presets)
-            if count:
-                logger.info("Imported %d YAML preset(s) into managed presets", count)
-    except Exception as exc:
-        logger.warning("Failed to import YAML presets on startup: %s", exc)
 
 
 app = FastAPI(title="Harness Portal", docs_url="/api/docs", redoc_url=None, lifespan=_lifespan)
@@ -215,6 +183,10 @@ class TriggerRequest(BaseModel):
 class TriggerResponse(BaseModel):
     job_id: str
     status: str
+
+
+class RerunRequest(BaseModel):
+    runner_id: int | None = None
 
 
 class RunnerCreateRequest(BaseModel):
@@ -456,6 +428,17 @@ async def download_run_zip(run_id: int):
     row = history.get_run_by_id(run_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Run not found")
+
+    dataset = row.get("dataset", "unknown")
+
+    uploaded_zip = history.portal_artifacts_dir() / f"run_{run_id}.zip"
+    if uploaded_zip.is_file():
+        return FileResponse(
+            path=str(uploaded_zip),
+            media_type="application/zip",
+            filename=f"run_{run_id}_{dataset}.zip",
+        )
+
     artifact_dir = row.get("artifact_dir")
     if not artifact_dir or not Path(artifact_dir).is_dir():
         raise HTTPException(status_code=404, detail="Artifact directory not found")
@@ -468,12 +451,33 @@ async def download_run_zip(run_id: int):
                 zf.write(file_path, file_path.relative_to(artifact_path))
     buf.seek(0)
 
-    dataset = row.get("dataset", "unknown")
     return StreamingResponse(
         buf,
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="run_{run_id}_{dataset}.zip"'},
     )
+
+
+@app.post("/api/runs/{run_id}/upload-artifacts")
+async def upload_run_artifacts(run_id: int, file: UploadFile = File(...)):
+    row = history.get_run_by_id(run_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    dest = history.portal_artifacts_dir() / f"run_{run_id}.zip"
+    try:
+        with open(dest, "wb") as f:
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                f.write(chunk)
+    except Exception as exc:
+        if dest.is_file():
+            dest.unlink()
+        raise HTTPException(status_code=500, detail=f"Failed to save artifacts: {exc}")
+
+    return {"ok": True, "size_bytes": dest.stat().st_size}
 
 
 @app.get("/api/runs/{run_id}/command")
@@ -507,6 +511,107 @@ async def delete_runs_bulk(req: BulkDeleteRunsRequest):
     """Delete multiple runs in one request."""
     count = history.delete_runs_bulk(req.run_ids)
     return {"ok": True, "deleted": count}
+
+
+@app.get("/api/runs/{run_id}/rerun-info")
+async def get_rerun_info(run_id: int):
+    """Return the information needed to re-run: original hostname and runner match status."""
+    row = history.get_run_by_id(run_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    raw = row.get("raw_json") or {}
+    run_meta = raw.get("run_metadata") or {}
+    original_hostname = run_meta.get("host") or row.get("hostname")
+    original_commit = row.get("execution_commit") or row.get("git_commit") or (raw.get("latest_commit"))
+
+    runners = history.get_runners()
+    online_runners = [r for r in runners if r.get("status") == "online"]
+
+    original_runner = None
+    if original_hostname:
+        for r in online_runners:
+            if (r.get("hostname") or "").lower() == original_hostname.lower():
+                original_runner = r
+                break
+
+    return {
+        "original_hostname": original_hostname,
+        "original_commit": original_commit,
+        "original_runner": original_runner,
+        "online_runners": [{"id": r["id"], "name": r["name"], "hostname": r.get("hostname"), "gpu_type": r.get("gpu_type")} for r in online_runners],
+    }
+
+
+@app.post("/api/runs/{run_id}/rerun")
+async def rerun_run(run_id: int, req: RerunRequest | None = None):
+    """Create a new job that reproduces the exact configuration of a previous run."""
+    row = history.get_run_by_id(run_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    raw = row.get("raw_json") or {}
+    test_config = raw.get("test_config") or {}
+    run_meta = raw.get("run_metadata") or {}
+
+    original_hostname = run_meta.get("host") or row.get("hostname")
+    original_commit = row.get("execution_commit") or row.get("git_commit") or raw.get("latest_commit")
+
+    overrides: dict[str, Any] = {}
+    if test_config.get("dataset_dir"):
+        overrides["dataset_dir"] = test_config["dataset_dir"]
+    if test_config.get("query_csv"):
+        overrides["query_csv"] = test_config["query_csv"]
+    if test_config.get("input_type"):
+        overrides["input_type"] = test_config["input_type"]
+    if test_config.get("recall_required") is not None:
+        overrides["recall_required"] = test_config["recall_required"]
+    if test_config.get("recall_match_mode"):
+        overrides["recall_match_mode"] = test_config["recall_match_mode"]
+    if test_config.get("recall_adapter"):
+        overrides["recall_adapter"] = test_config["recall_adapter"]
+    if test_config.get("ray_address"):
+        overrides["ray_address"] = test_config["ray_address"]
+    if test_config.get("hybrid") is not None:
+        overrides["hybrid"] = test_config["hybrid"]
+    if test_config.get("embed_model_name"):
+        overrides["embed_model_name"] = test_config["embed_model_name"]
+    if test_config.get("write_detection_file") is not None:
+        overrides["write_detection_file"] = test_config["write_detection_file"]
+    tuning = test_config.get("tuning") or {}
+    for k, v in tuning.items():
+        overrides[k] = v
+
+    runner_id = req.runner_id if req else None
+    if not runner_id and original_hostname:
+        runners = history.get_runners()
+        for r in runners:
+            if r.get("status") == "online" and (r.get("hostname") or "").lower() == original_hostname.lower():
+                runner_id = r["id"]
+                break
+
+    original_tags = row.get("tags") or []
+    rerun_tags = [t for t in original_tags if not t.startswith("rerun:")]
+    rerun_tags.append(f"rerun:of_run_{run_id}")
+
+    job = history.create_job({
+        "trigger_source": "rerun",
+        "dataset": row.get("dataset") or test_config.get("dataset_label", "unknown"),
+        "dataset_path": test_config.get("dataset_dir"),
+        "dataset_overrides": overrides if overrides else None,
+        "preset": None,
+        "assigned_runner_id": runner_id,
+        "git_commit": original_commit,
+        "git_ref": original_commit,
+        "tags": rerun_tags,
+    })
+
+    return {
+        "job_id": job["id"],
+        "status": "pending",
+        "assigned_runner_id": runner_id,
+        "git_commit": original_commit,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1227,26 +1332,13 @@ async def list_datasets():
 
 @app.get("/api/config")
 async def get_config():
-    """Return merged dataset and preset names from YAML config + managed entries."""
-    yaml_datasets: list[str] = []
-    yaml_presets: list[str] = []
-    try:
-        from nemo_retriever.harness.config import DEFAULT_TEST_CONFIG_PATH, _read_yaml_mapping
-
-        cfg = _read_yaml_mapping(DEFAULT_TEST_CONFIG_PATH)
-        yaml_datasets = list((cfg.get("datasets") or {}).keys())
-        yaml_presets = list((cfg.get("presets") or {}).keys())
-    except Exception:
-        pass
-
+    """Return dataset and preset names from the managed database entries."""
     managed_dataset_names = history.get_dataset_names()
     managed_preset_names = history.get_preset_names()
-    all_datasets = sorted(set(yaml_datasets + managed_dataset_names))
-    all_presets = sorted(set(yaml_presets + managed_preset_names))
     matrices = history.get_all_preset_matrices()
     return {
-        "datasets": all_datasets,
-        "presets": all_presets,
+        "datasets": sorted(managed_dataset_names),
+        "presets": sorted(managed_preset_names),
         "preset_matrices": [{"id": m["id"], "name": m["name"]} for m in matrices],
         "github_repo_url": _detect_github_repo_url(),
     }
@@ -1254,18 +1346,8 @@ async def get_config():
 
 @app.get("/api/yaml-config")
 async def get_yaml_config():
-    """Return the full dataset and preset definitions from test_configs.yaml."""
-    try:
-        from nemo_retriever.harness.config import DEFAULT_TEST_CONFIG_PATH, _read_yaml_mapping
-
-        cfg = _read_yaml_mapping(DEFAULT_TEST_CONFIG_PATH)
-        return {
-            "datasets": cfg.get("datasets") or {},
-            "presets": cfg.get("presets") or {},
-            "active": cfg.get("active") or {},
-        }
-    except Exception:
-        return {"datasets": {}, "presets": {}, "active": {}}
+    """Legacy endpoint — returns empty config since YAML seeding is disabled."""
+    return {"datasets": {}, "presets": {}, "active": {}}
 
 
 # ---------------------------------------------------------------------------
@@ -1489,28 +1571,6 @@ def _resolve_dataset_config(dataset_name: str) -> tuple[str | None, dict[str, An
             overrides["recall_adapter"] = managed["recall_adapter"]
         return managed["path"], overrides
 
-    try:
-        from nemo_retriever.harness.config import DEFAULT_TEST_CONFIG_PATH, _read_yaml_mapping
-
-        cfg = _read_yaml_mapping(DEFAULT_TEST_CONFIG_PATH)
-        ds_cfg = (cfg.get("datasets") or {}).get(dataset_name)
-        if ds_cfg and isinstance(ds_cfg, dict) and ds_cfg.get("path"):
-            yaml_overrides: dict[str, Any] = {"dataset_dir": str(ds_cfg["path"])}
-            csv_val = ds_cfg.get("query_csv")
-            yaml_overrides["query_csv"] = str(csv_val) if csv_val else None
-            if ds_cfg.get("input_type"):
-                yaml_overrides["input_type"] = str(ds_cfg["input_type"])
-            if ds_cfg.get("recall_required") is not None:
-                yaml_overrides["recall_required"] = ds_cfg["recall_required"]
-            else:
-                yaml_overrides["recall_required"] = bool(csv_val)
-            if ds_cfg.get("recall_match_mode"):
-                yaml_overrides["recall_match_mode"] = str(ds_cfg["recall_match_mode"])
-            if ds_cfg.get("recall_adapter"):
-                yaml_overrides["recall_adapter"] = str(ds_cfg["recall_adapter"])
-            return str(ds_cfg["path"]), yaml_overrides
-    except Exception:
-        pass
     return None, None
 
 
@@ -1752,9 +1812,9 @@ async def complete_job_endpoint(job_id: str, req: JobCompleteRequest):
     job = history.get_job_by_id(job_id)
     effective_success = req.success and not was_cancelling
     effective_error = req.error or ("Cancelled by user" if was_cancelling else None)
-    _record_run_from_job(job, effective_success, req.result, effective_error, execution_commit=req.execution_commit, num_gpus=req.num_gpus)
+    run_id = _record_run_from_job(job, effective_success, req.result, effective_error, execution_commit=req.execution_commit, num_gpus=req.num_gpus)
 
-    return {"ok": True}
+    return {"ok": True, "run_id": run_id}
 
 
 def _record_run_from_job(
@@ -1764,15 +1824,17 @@ def _record_run_from_job(
     error: str | None,
     execution_commit: str | None = None,
     num_gpus: int | None = None,
-) -> None:
+) -> int | None:
     """Create a run record in the runs table from a completed job.
 
     When the runner sends back a full ``result`` dict (from ``_run_entry``),
     use that directly.  Otherwise synthesise a minimal result so that failed
     jobs still appear in the Runs view.
+
+    Returns the newly created run row id, or ``None`` on failure.
     """
     if job is None:
-        return
+        return None
 
     if result and isinstance(result, dict) and result.get("timestamp"):
         run_result = result
@@ -1821,8 +1883,10 @@ def _record_run_from_job(
                     history.evaluate_alerts_for_run(run_row)
                 except Exception as alert_exc:
                     logger.error("Alert evaluation failed for run %s: %s", run_row_id, alert_exc)
+        return run_row_id
     except Exception as exc:
         logger.error("Failed to record run for job %s: %s", job.get("id"), exc)
+        return None
 
 
 # ---------------------------------------------------------------------------

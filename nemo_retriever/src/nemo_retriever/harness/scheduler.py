@@ -99,26 +99,6 @@ def _resolve_dataset_config(dataset_name: str) -> tuple[str | None, dict[str, An
             overrides["recall_adapter"] = managed["recall_adapter"]
         return managed["path"], overrides
 
-    try:
-        from nemo_retriever.harness.config import DEFAULT_TEST_CONFIG_PATH, _read_yaml_mapping
-
-        cfg = _read_yaml_mapping(DEFAULT_TEST_CONFIG_PATH)
-        ds_cfg = (cfg.get("datasets") or {}).get(dataset_name)
-        if ds_cfg and isinstance(ds_cfg, dict) and ds_cfg.get("path"):
-            yaml_overrides: dict[str, Any] = {"dataset_dir": str(ds_cfg["path"])}
-            if ds_cfg.get("query_csv"):
-                yaml_overrides["query_csv"] = str(ds_cfg["query_csv"])
-            if ds_cfg.get("input_type"):
-                yaml_overrides["input_type"] = str(ds_cfg["input_type"])
-            if ds_cfg.get("recall_required") is not None:
-                yaml_overrides["recall_required"] = ds_cfg["recall_required"]
-            if ds_cfg.get("recall_match_mode"):
-                yaml_overrides["recall_match_mode"] = str(ds_cfg["recall_match_mode"])
-            if ds_cfg.get("recall_adapter"):
-                yaml_overrides["recall_adapter"] = str(ds_cfg["recall_adapter"])
-            return str(ds_cfg["path"]), yaml_overrides
-    except Exception:
-        pass
     return None, None
 
 

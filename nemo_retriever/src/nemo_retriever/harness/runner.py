@@ -56,6 +56,46 @@ def _get_json(url: str, timeout: int = 10) -> Any:
         return json_module.loads(resp.read().decode("utf-8"))
 
 
+_ARTIFACT_UPLOAD_EXCLUDES = {"lancedb"}
+
+
+def _upload_artifacts(base_url: str, run_id: int, artifact_dir: str, timeout: int = 120) -> None:
+    """Zip the artifact directory (excluding large data like lancedb) and upload to the portal."""
+    import io as _io
+    import zipfile as _zipfile
+
+    art_path = Path(artifact_dir)
+    if not art_path.is_dir():
+        logger.warning("Artifact directory %s does not exist — skipping upload", artifact_dir)
+        return
+
+    buf = _io.BytesIO()
+    with _zipfile.ZipFile(buf, "w", _zipfile.ZIP_DEFLATED) as zf:
+        for fp in sorted(art_path.rglob("*")):
+            if fp.is_file() and not any(excl in fp.parts for excl in _ARTIFACT_UPLOAD_EXCLUDES):
+                zf.write(fp, fp.relative_to(art_path))
+    raw = buf.getvalue()
+    logger.info("Uploading %d bytes of artifacts for run %d", len(raw), run_id)
+
+    boundary = f"----RunnerUpload{run_id}"
+    body = (
+        f"--{boundary}\r\n"
+        f'Content-Disposition: form-data; name="file"; filename="artifacts.zip"\r\n'
+        f"Content-Type: application/zip\r\n\r\n"
+    ).encode("utf-8") + raw + f"\r\n--{boundary}--\r\n".encode("utf-8")
+
+    url = f"{base_url}/api/runs/{run_id}/upload-artifacts"
+    req = urllib.request.Request(
+        url,
+        data=body,
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        result = json_module.loads(resp.read().decode("utf-8"))
+    logger.info("Artifact upload complete for run %d: %s", run_id, result)
+
+
 # ---------------------------------------------------------------------------
 # Network helpers
 # ---------------------------------------------------------------------------
@@ -592,7 +632,7 @@ def _execute_job_on_runner(base_url: str, job: dict[str, Any], runner_id: int = 
         )
 
         if _job_tracker.is_cancel_requested():
-            _post_json(
+            complete_resp = _post_json(
                 f"{base_url}/api/jobs/{job_id}/complete",
                 {
                     "success": False,
@@ -605,11 +645,26 @@ def _execute_job_on_runner(base_url: str, job: dict[str, Any], runner_id: int = 
             logger.info("Job %s cancelled by user", job_id)
         else:
             success = bool(result.get("success"))
-            _post_json(
+            complete_resp = _post_json(
                 f"{base_url}/api/jobs/{job_id}/complete",
                 {"success": success, "result": result, "execution_commit": execution_commit, "num_gpus": _runner_num_gpus},
             )
             logger.info("Job %s completed (success=%s)", job_id, success)
+
+        resp_run_id = complete_resp.get("run_id") if isinstance(complete_resp, dict) else None
+        if resp_run_id and result:
+            artifacts = result.get("artifacts") or {}
+            art_dir = artifacts.get("runtime_metrics_dir")
+            if art_dir:
+                art_dir = str(Path(art_dir).parent)
+            else:
+                cmd_file = artifacts.get("command_file", "")
+                art_dir = str(Path(cmd_file).parent) if cmd_file else None
+            if art_dir:
+                try:
+                    _upload_artifacts(base_url, resp_run_id, art_dir)
+                except Exception as upload_exc:
+                    logger.warning("Failed to upload artifacts for run %d: %s", resp_run_id, upload_exc)
     except Exception as exc:
         tb = traceback.format_exc()
         logger.error("Job %s failed: %s\n%s", job_id, exc, tb)

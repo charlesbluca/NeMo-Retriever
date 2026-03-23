@@ -240,6 +240,14 @@ def _db_path() -> str:
     return os.environ.get("RETRIEVER_HARNESS_HISTORY_DB") or str(DEFAULT_DB_PATH)
 
 
+def portal_artifacts_dir() -> Path:
+    """Return (and create) the directory where uploaded run artifact ZIPs are stored."""
+    base = Path(os.environ.get("RETRIEVER_HARNESS_HISTORY_DB") or str(DEFAULT_DB_PATH)).parent
+    d = base / "artifacts"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
 def _connect(db_path: str | None = None) -> sqlite3.Connection:
     path = db_path or _db_path()
     Path(path).parent.mkdir(parents=True, exist_ok=True)

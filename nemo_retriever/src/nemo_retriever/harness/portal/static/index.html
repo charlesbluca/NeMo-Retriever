@@ -1725,6 +1725,9 @@ function RunDetailModal({ run, onClose, onDelete, githubRepoUrl }) {
   const [commandText, setCommandText] = useState(null);
   const [commandLoading, setCommandLoading] = useState(false);
   const [linkCopied, setLinkCopied] = useState(false);
+  const [rerunState, setRerunState] = useState(null);
+  const [rerunSubmitting, setRerunSubmitting] = useState(false);
+  const [rerunSelectedRunner, setRerunSelectedRunner] = useState("");
   const raw = run.raw_json && typeof run.raw_json === 'object' && Object.keys(run.raw_json).length > 0 ? run.raw_json : run;
 
   useEffect(() => {
@@ -1755,6 +1758,42 @@ function RunDetailModal({ run, onClose, onDelete, githubRepoUrl }) {
     ta.select();
     try { document.execCommand("copy"); onSuccess(); } catch {}
     document.body.removeChild(ta);
+  }
+
+  async function handleRerunClick() {
+    try {
+      const res = await fetch(`/api/runs/${run.id}/rerun-info`);
+      const info = await res.json();
+      if (info.original_runner) {
+        setRerunSelectedRunner(String(info.original_runner.id));
+      } else {
+        setRerunSelectedRunner("");
+      }
+      setRerunState(info);
+    } catch (err) {
+      alert("Failed to fetch re-run info: " + err.message);
+    }
+  }
+
+  async function submitRerun() {
+    setRerunSubmitting(true);
+    try {
+      const payload = {};
+      if (rerunSelectedRunner) payload.runner_id = Number(rerunSelectedRunner);
+      const res = await fetch(`/api/runs/${run.id}/rerun`, {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) { const d = await res.json().catch(()=>({})); throw new Error(d.detail || `HTTP ${res.status}`); }
+      const data = await res.json();
+      alert(`Re-run queued as job ${data.job_id}` + (data.git_commit ? ` (commit ${data.git_commit.slice(0, 12)})` : ""));
+      setRerunState(null);
+    } catch (err) {
+      alert("Re-run failed: " + err.message);
+    } finally {
+      setRerunSubmitting(false);
+    }
   }
 
   return (
@@ -2079,6 +2118,9 @@ function RunDetailModal({ run, onClose, onDelete, githubRepoUrl }) {
           <a href={`/api/runs/${run.id}/download/zip`} download className="btn btn-primary">
             <IconPackage /> Download Artifacts ZIP
           </a>
+          <button className="btn btn-secondary" onClick={handleRerunClick} title="Re-run with the exact same configuration and git commit">
+            <IconRefresh /> Re-Run
+          </button>
           <div style={{flex:1}}></div>
           {onDelete && (
             <button className="btn btn-sm" onClick={() => {
@@ -2089,6 +2131,55 @@ function RunDetailModal({ run, onClose, onDelete, githubRepoUrl }) {
             </button>
           )}
         </div>
+
+        {rerunState && (
+          <div style={{position:'absolute',inset:0,background:'rgba(0,0,0,0.7)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:100,borderRadius:'16px'}} onClick={()=>setRerunState(null)}>
+            <div style={{background:'var(--nv-surface)',border:'1px solid var(--nv-border)',borderRadius:'12px',padding:'24px',maxWidth:'500px',width:'90%'}} onClick={e=>e.stopPropagation()}>
+              <h3 style={{fontSize:'16px',fontWeight:700,color:'#fff',marginBottom:'16px'}}>Re-Run #{run.id}</h3>
+
+              <div style={{display:'grid',gridTemplateColumns:'140px 1fr',gap:'8px 12px',fontSize:'13px',marginBottom:'16px'}}>
+                <span style={{color:'var(--nv-text-muted)',fontWeight:500}}>Dataset</span>
+                <span style={{color:'#fff'}}>{run.dataset}</span>
+                <span style={{color:'var(--nv-text-muted)',fontWeight:500}}>Git Commit</span>
+                <span className="mono" style={{color:'var(--nv-green)',fontSize:'12px'}}>{rerunState.original_commit ? rerunState.original_commit.slice(0,12) : "none (latest)"}</span>
+                <span style={{color:'var(--nv-text-muted)',fontWeight:500}}>Original Host</span>
+                <span style={{color:'#fff'}}>{rerunState.original_hostname || "unknown"}</span>
+              </div>
+
+              {rerunState.original_runner ? (
+                <div style={{padding:'12px 16px',borderRadius:'8px',background:'rgba(118,185,0,0.06)',border:'1px solid rgba(118,185,0,0.2)',fontSize:'13px',marginBottom:'16px'}}>
+                  <span style={{color:'var(--nv-green)',fontWeight:600}}>Original runner is online:</span>{' '}
+                  <span style={{color:'#fff'}}>#{rerunState.original_runner.id} — {rerunState.original_runner.name}</span>
+                </div>
+              ) : (
+                <div style={{padding:'12px 16px',borderRadius:'8px',background:'rgba(255,180,50,0.08)',border:'1px solid rgba(255,180,50,0.25)',fontSize:'13px',marginBottom:'16px'}}>
+                  <div style={{color:'#ffb432',fontWeight:600,marginBottom:'6px'}}>Original runner is not available</div>
+                  <div style={{color:'var(--nv-text-muted)'}}>The runner on <strong style={{color:'#fff'}}>{rerunState.original_hostname || "unknown"}</strong> is offline. Select another runner below.</div>
+                </div>
+              )}
+
+              <div style={{marginBottom:'16px'}}>
+                <label style={{display:'block',fontSize:'11px',fontWeight:500,color:'var(--nv-text-muted)',marginBottom:'4px',textTransform:'uppercase',letterSpacing:'0.04em'}}>Target Runner</label>
+                <select className="input" style={{width:'100%'}} value={rerunSelectedRunner} onChange={e=>setRerunSelectedRunner(e.target.value)}>
+                  <option value="">Any available runner</option>
+                  {(rerunState.online_runners || []).map(r => (
+                    <option key={r.id} value={r.id}>
+                      #{r.id} — {r.name}{r.hostname ? ` (${r.hostname})` : ''}{r.gpu_type ? ` [${r.gpu_type}]` : ''}
+                      {rerunState.original_runner && r.id === rerunState.original_runner.id ? ' ★ original' : ''}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div style={{display:'flex',gap:'8px',justifyContent:'flex-end'}}>
+                <button className="btn btn-secondary" onClick={()=>setRerunState(null)}>Cancel</button>
+                <button className="btn btn-primary" onClick={submitRerun} disabled={rerunSubmitting}>
+                  {rerunSubmitting ? <><span className="spinner" style={{marginRight:'8px'}}></span>Submitting…</> : <><IconPlay /> Queue Re-Run</>}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

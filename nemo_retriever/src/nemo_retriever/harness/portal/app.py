@@ -1432,13 +1432,13 @@ async def trigger_preset_matrix(matrix_id: int):
     matrix_tags = matrix.get("tags") or []
     job_ids: list[str] = []
     for ds_name in dataset_names:
-        runner = match_runner(
-            gpu_type_pattern=gpu_type_filter,
-            preferred_runner_id=preferred_runner_id,
-            dataset_name=ds_name,
-        )
         dataset_path, dataset_overrides = _resolve_dataset_config(ds_name)
         for pr_name in preset_names:
+            runner = match_runner(
+                gpu_type_pattern=gpu_type_filter,
+                preferred_runner_id=preferred_runner_id,
+                dataset_name=ds_name,
+            )
             preset_overrides = _resolve_preset_overrides(pr_name)
             merged_overrides = {**(dataset_overrides or {}), **preset_overrides}
             job = history.create_job(

@@ -24,6 +24,9 @@ GITHUB_POLL_SECS = int(os.environ.get("RETRIEVER_HARNESS_GITHUB_POLL_SECS", "60"
 GITHUB_TOKEN = os.environ.get("RETRIEVER_HARNESS_GITHUB_TOKEN", "")
 
 
+_round_robin_index: int = 0
+
+
 def match_runner(
     *,
     min_gpu_count: int | None = None,
@@ -33,7 +36,13 @@ def match_runner(
     preferred_runner_id: int | None = None,
     dataset_name: str | None = None,
 ) -> dict[str, Any] | None:
-    """Find the best matching online runner for the given resource requirements."""
+    """Find the best matching online runner for the given resource requirements.
+
+    When multiple candidates match, jobs are distributed across them in
+    round-robin order so that a batch of jobs doesn't all land on the same
+    machine.
+    """
+    global _round_robin_index
     runners = history.get_runners()
     online = [r for r in runners if r.get("status") == "online"]
 
@@ -67,8 +76,10 @@ def match_runner(
     if not candidates:
         return None
 
-    candidates.sort(key=lambda r: r.get("last_heartbeat") or "", reverse=True)
-    return candidates[0]
+    candidates.sort(key=lambda r: r.get("id", 0))
+    chosen = candidates[_round_robin_index % len(candidates)]
+    _round_robin_index += 1
+    return chosen
 
 
 def _resolve_dataset_config(dataset_name: str) -> tuple[str | None, dict[str, Any] | None]:
@@ -250,17 +261,17 @@ def _dispatch_schedule_matrix(
     effective_gpu_type = matrix.get("gpu_type_filter") or schedule.get("gpu_type_pattern")
 
     for ds_name in dataset_names:
-        runner = match_runner(
-            min_gpu_count=schedule.get("min_gpu_count"),
-            gpu_type_pattern=effective_gpu_type,
-            min_cpu_count=schedule.get("min_cpu_count"),
-            min_memory_gb=schedule.get("min_memory_gb"),
-            preferred_runner_id=effective_preferred_runner,
-            dataset_name=ds_name,
-        )
         dataset_path, dataset_overrides = _resolve_dataset_config(ds_name)
 
         for pr_name in preset_names:
+            runner = match_runner(
+                min_gpu_count=schedule.get("min_gpu_count"),
+                gpu_type_pattern=effective_gpu_type,
+                min_cpu_count=schedule.get("min_cpu_count"),
+                min_memory_gb=schedule.get("min_memory_gb"),
+                preferred_runner_id=effective_preferred_runner,
+                dataset_name=ds_name,
+            )
             preset_overrides = _resolve_preset_overrides(pr_name)
             merged_overrides = {**(dataset_overrides or {}), **preset_overrides}
 

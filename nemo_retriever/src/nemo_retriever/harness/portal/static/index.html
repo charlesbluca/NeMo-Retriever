@@ -323,6 +323,9 @@ function IconAlertTriangle() {
 function IconExternalLink() {
   return <svg {...svgProps}><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>;
 }
+function IconLink() {
+  return <svg {...svgProps}><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>;
+}
 function IconFileText() {
   return <svg {...svgProps}><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>;
 }
@@ -1721,6 +1724,7 @@ function RunDetailModal({ run, onClose, onDelete, githubRepoUrl }) {
   const [showCommand, setShowCommand] = useState(false);
   const [commandText, setCommandText] = useState(null);
   const [commandLoading, setCommandLoading] = useState(false);
+  const [linkCopied, setLinkCopied] = useState(false);
   const raw = run.raw_json && typeof run.raw_json === 'object' && Object.keys(run.raw_json).length > 0 ? run.raw_json : run;
 
   useEffect(() => {
@@ -1734,6 +1738,14 @@ function RunDetailModal({ run, onClose, onDelete, githubRepoUrl }) {
     }
   }, [showCommand, commandText, commandLoading, run.id]);
 
+  function copyRunLink() {
+    const url = `${window.location.origin}${window.location.pathname}#runs/${run.id}`;
+    navigator.clipboard.writeText(url).then(() => {
+      setLinkCopied(true);
+      setTimeout(() => setLinkCopied(false), 2000);
+    }).catch(() => {});
+  }
+
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal-content" onClick={e=>e.stopPropagation()}>
@@ -1745,7 +1757,12 @@ function RunDetailModal({ run, onClose, onDelete, githubRepoUrl }) {
               <span style={{fontSize:'13px',color:'var(--nv-green)'}}>{run.dataset}</span>
             </div>
           </div>
-          <button className="btn btn-ghost btn-icon" onClick={onClose} style={{borderRadius:'50%'}}><IconX /></button>
+          <div style={{display:'flex',alignItems:'center',gap:'6px'}}>
+            <button className="btn btn-ghost btn-sm" onClick={copyRunLink} title="Copy link to this run" style={{fontSize:'12px',color:linkCopied?'var(--nv-green)':'var(--nv-text-muted)'}}>
+              {linkCopied ? <><IconCheck /> Copied</> : <><IconLink /> Copy Link</>}
+            </button>
+            <button className="btn btn-ghost btn-icon" onClick={onClose} style={{borderRadius:'50%'}}><IconX /></button>
+          </div>
         </div>
         <div className="modal-body">
           {/* Failure Banner */}
@@ -6100,8 +6117,17 @@ function SettingsView() {
 }
 
 /* ===== App ===== */
+function _parseHash() {
+  const h = window.location.hash.replace(/^#/, "");
+  if (!h) return { view: "runs", runId: null };
+  const parts = h.split("/");
+  return { view: parts[0] || "runs", runId: parts[1] || null };
+}
+
 function App() {
-  const [activeView, setActiveView] = useState("runs");
+  const initial = _parseHash();
+  const [activeView, setActiveView] = useState(initial.view);
+  const [pendingDeepLinkRunId, setPendingDeepLinkRunId] = useState(initial.runId);
   const [runs, setRuns] = useState([]);
   const [datasets, setDatasets] = useState([]);
   const [filterDataset, setFilterDataset] = useState("");
@@ -6214,6 +6240,39 @@ function App() {
 
   useEffect(() => { fetchRuns(); fetchDatasets(); fetchJobs(); fetchRunners(); fetchSchedules(); fetchManagedDatasets(); fetchManagedPresets(); fetchPresetMatrices(); fetchAlertRules(); fetchAlertEvents(); }, [fetchRuns, fetchDatasets, fetchJobs, fetchRunners, fetchSchedules, fetchManagedDatasets, fetchManagedPresets, fetchPresetMatrices, fetchAlertRules, fetchAlertEvents]);
 
+  // Sync URL hash <-> activeView & deep-link run modal
+  useEffect(() => {
+    function onHashChange() {
+      const { view, runId } = _parseHash();
+      setActiveView(view);
+      if (view === "runs" && runId) {
+        fetch(`/api/runs/${runId}`).then(r => r.json()).then(setSelectedRun).catch(() => {});
+      } else {
+        setSelectedRun(null);
+      }
+    }
+    window.addEventListener("hashchange", onHashChange);
+    return () => window.removeEventListener("hashchange", onHashChange);
+  }, []);
+
+  // Push hash when activeView changes (but not on initial mount from hash)
+  const isFirstRender = useRef(true);
+  useEffect(() => {
+    if (isFirstRender.current) { isFirstRender.current = false; return; }
+    const currentHash = _parseHash();
+    if (currentHash.view !== activeView) {
+      window.history.pushState(null, "", `#${activeView}`);
+    }
+  }, [activeView]);
+
+  // Open deep-linked run after initial data load
+  useEffect(() => {
+    if (pendingDeepLinkRunId && !loading) {
+      openDetail(pendingDeepLinkRunId);
+      setPendingDeepLinkRunId(null);
+    }
+  }, [pendingDeepLinkRunId, loading]);
+
   // Auto-refresh the active view every 10 seconds
   useEffect(() => {
     const interval = setInterval(() => {
@@ -6240,14 +6299,24 @@ function App() {
   async function openDetail(id) {
     try {
       const res = await fetch(`/api/runs/${id}`);
-      setSelectedRun(await res.json());
+      const run = await res.json();
+      setSelectedRun(run);
+      const runId = run.run_id || run.id || id;
+      if (window.location.hash !== `#runs/${runId}`) {
+        window.history.pushState(null, "", `#runs/${runId}`);
+      }
     } catch {}
+  }
+
+  function closeDetail() {
+    setSelectedRun(null);
+    window.history.pushState(null, "", "#runs");
   }
 
   async function deleteRun(id) {
     try {
       await fetch(`/api/runs/${id}`, { method: "DELETE" });
-      setSelectedRun(null);
+      closeDetail();
       fetchRuns();
     } catch {}
   }
@@ -6376,7 +6445,7 @@ function App() {
           <span>Harness Portal</span>
         </Footer>
       </div>
-      {selectedRun && <RunDetailModal run={selectedRun} onClose={()=>setSelectedRun(null)} onDelete={deleteRun} githubRepoUrl={githubRepoUrl} />}
+      {selectedRun && <RunDetailModal run={selectedRun} onClose={closeDetail} onDelete={deleteRun} githubRepoUrl={githubRepoUrl} />}
       {showTrigger && <TriggerModal onClose={()=>setShowTrigger(false)} onTriggered={()=>{fetchJobs();setTimeout(fetchJobs,1000);}} />}
       {logViewerJobId && <LogViewerModal jobId={logViewerJobId} onClose={()=>setLogViewerJobId(null)} />}
     </div>

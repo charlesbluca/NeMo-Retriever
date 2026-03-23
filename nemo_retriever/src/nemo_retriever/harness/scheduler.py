@@ -34,6 +34,7 @@ def match_runner(
     min_cpu_count: int | None = None,
     min_memory_gb: float | None = None,
     preferred_runner_id: int | None = None,
+    preferred_runner_ids: list[int] | None = None,
     dataset_name: str | None = None,
 ) -> dict[str, Any] | None:
     """Find the best matching online runner for the given resource requirements.
@@ -41,6 +42,10 @@ def match_runner(
     When multiple candidates match, jobs are distributed across them in
     round-robin order so that a batch of jobs doesn't all land on the same
     machine.
+
+    ``preferred_runner_ids`` (list) takes precedence over the legacy scalar
+    ``preferred_runner_id``.  When a list is provided the search is limited
+    to those runners (round-robin among the online ones).
     """
     global _round_robin_index
     runners = history.get_runners()
@@ -52,12 +57,25 @@ def match_runner(
         if ids is not None:
             allowed_runner_ids = set(ids)
 
-    if preferred_runner_id:
+    pref_set: set[int] | None = None
+    if preferred_runner_ids:
+        pref_set = set(preferred_runner_ids)
+    elif preferred_runner_id:
+        pref_set = {preferred_runner_id}
+
+    if pref_set:
+        pref_candidates = []
         for r in online:
-            if r["id"] == preferred_runner_id:
-                if allowed_runner_ids is not None and r["id"] not in allowed_runner_ids:
-                    continue
-                return r
+            if r["id"] not in pref_set:
+                continue
+            if allowed_runner_ids is not None and r["id"] not in allowed_runner_ids:
+                continue
+            pref_candidates.append(r)
+        if pref_candidates:
+            pref_candidates.sort(key=lambda r: r.get("id", 0))
+            chosen = pref_candidates[_round_robin_index % len(pref_candidates)]
+            _round_robin_index += 1
+            return chosen
 
     candidates = []
     for r in online:
@@ -170,6 +188,7 @@ def _dispatch_schedule(
         min_cpu_count=schedule.get("min_cpu_count"),
         min_memory_gb=schedule.get("min_memory_gb"),
         preferred_runner_id=schedule.get("preferred_runner_id"),
+        preferred_runner_ids=schedule.get("preferred_runner_ids"),
         dataset_name=schedule.get("dataset"),
     )
 
@@ -238,6 +257,7 @@ def _dispatch_schedule_matrix(
     first_job = None
 
     effective_preferred_runner = matrix.get("preferred_runner_id") or schedule.get("preferred_runner_id")
+    effective_preferred_runners = schedule.get("preferred_runner_ids") or []
     effective_gpu_type = matrix.get("gpu_type_filter") or schedule.get("gpu_type_pattern")
 
     for ds_name in dataset_names:
@@ -250,6 +270,7 @@ def _dispatch_schedule_matrix(
                 min_cpu_count=schedule.get("min_cpu_count"),
                 min_memory_gb=schedule.get("min_memory_gb"),
                 preferred_runner_id=effective_preferred_runner,
+                preferred_runner_ids=effective_preferred_runners or None,
                 dataset_name=ds_name,
             )
             preset_overrides = _resolve_preset_overrides(pr_name)

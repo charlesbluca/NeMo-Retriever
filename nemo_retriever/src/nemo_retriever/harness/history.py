@@ -227,6 +227,7 @@ _MIGRATIONS = [
     "ALTER TABLE schedules ADD COLUMN preset_matrix TEXT",
     "ALTER TABLE preset_matrices ADD COLUMN preferred_runner_id INTEGER",
     "ALTER TABLE preset_matrices ADD COLUMN gpu_type_filter TEXT",
+    "ALTER TABLE schedules ADD COLUMN preferred_runner_ids TEXT",
 ]
 
 RUNNER_MISSED_HEARTBEATS_THRESHOLD = 4
@@ -1346,6 +1347,8 @@ _SCHEDULE_SCALAR_FIELDS = (
     "enabled",
 )
 
+_SCHEDULE_JSON_FIELDS = ("preferred_runner_ids",)
+
 
 def _deserialize_schedule_row(d: dict[str, Any]) -> dict[str, Any]:
     if d.get("tags"):
@@ -1355,6 +1358,14 @@ def _deserialize_schedule_row(d: dict[str, Any]) -> dict[str, Any]:
             d["tags"] = []
     else:
         d["tags"] = []
+    for jf in _SCHEDULE_JSON_FIELDS:
+        if d.get(jf):
+            try:
+                d[jf] = json.loads(d[jf])
+            except (json.JSONDecodeError, TypeError):
+                d[jf] = []
+        else:
+            d[jf] = []
     d["enabled"] = bool(d.get("enabled", 0))
     return d
 
@@ -1365,6 +1376,8 @@ def create_schedule(data: dict[str, Any], db_path: str | None = None) -> dict[st
         now = _now_iso()
         row: dict[str, Any] = {k: data.get(k) for k in _SCHEDULE_SCALAR_FIELDS}
         row["tags"] = json.dumps(data["tags"]) if data.get("tags") else None
+        for jf in _SCHEDULE_JSON_FIELDS:
+            row[jf] = json.dumps(data[jf]) if data.get(jf) else None
         row["created_at"] = now
         row["updated_at"] = now
         row.setdefault("enabled", 1)
@@ -1416,6 +1429,9 @@ def update_schedule(schedule_id: int, data: dict[str, Any], db_path: str | None 
                 updates[key] = val
         if "tags" in data:
             updates["tags"] = json.dumps(data["tags"]) if data["tags"] else None
+        for jf in _SCHEDULE_JSON_FIELDS:
+            if jf in data:
+                updates[jf] = json.dumps(data[jf]) if data[jf] else None
         updates["updated_at"] = _now_iso()
         if not updates:
             return get_schedule_by_id(schedule_id, db_path)

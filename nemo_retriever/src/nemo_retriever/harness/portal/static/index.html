@@ -2562,6 +2562,8 @@ function SchedulingView({ schedules, loading, onRefresh, runners }) {
     if (s.gpu_type_pattern) parts.push(s.gpu_type_pattern);
     if (s.min_cpu_count) parts.push(`${s.min_cpu_count} CPU`);
     if (s.min_memory_gb) parts.push(`${s.min_memory_gb} GB RAM`);
+    const prIds = s.preferred_runner_ids || [];
+    if (prIds.length > 0) parts.push(`${prIds.length} runner${prIds.length!==1?'s':''}`);
     return parts.length > 0 ? parts.join(", ") : "\u2014";
   }
 
@@ -2710,7 +2712,9 @@ function ScheduleFormModal({ schedule, runners, onClose, onSaved }) {
   const [datasets, setDatasets] = useState([]);
   const [presets, setPresets] = useState([]);
   const [presetMatricesList, setPresetMatricesList] = useState([]);
+  const [gpuTypes, setGpuTypes] = useState([]);
   const [useMatrix, setUseMatrix] = useState(!!schedule?.preset_matrix);
+  const [selectedRunnerIds, setSelectedRunnerIds] = useState(new Set((schedule?.preferred_runner_ids || []).map(Number)));
   const [form, setForm] = useState({
     name: schedule?.name || "",
     description: schedule?.description || "",
@@ -2726,7 +2730,6 @@ function ScheduleFormModal({ schedule, runners, onClose, onSaved }) {
     gpu_type_pattern: schedule?.gpu_type_pattern || "",
     min_cpu_count: schedule?.min_cpu_count ?? "",
     min_memory_gb: schedule?.min_memory_gb ?? "",
-    preferred_runner_id: schedule?.preferred_runner_id ?? "",
     enabled: schedule?.enabled ?? true,
     tags: (schedule?.tags || []).join(", "),
   });
@@ -2739,6 +2742,7 @@ function ScheduleFormModal({ schedule, runners, onClose, onSaved }) {
       setPresetMatricesList(cfg.preset_matrices || []);
       if (!useMatrix && !form.dataset && cfg.datasets?.length) setForm(f=>({...f, dataset: cfg.datasets[0]}));
     });
+    fetch("/api/runners/gpu-types").then(r=>r.json()).then(t => setGpuTypes(t || [])).catch(()=>{});
   }, []);
 
   function set(field, val) { setForm(f=>({...f,[field]:val})); }
@@ -2762,10 +2766,11 @@ function ScheduleFormModal({ schedule, runners, onClose, onSaved }) {
         github_repo: form.trigger_type === "github_push" ? form.github_repo.trim() || null : null,
         github_branch: form.trigger_type === "github_push" ? form.github_branch.trim() || "main" : null,
         min_gpu_count: form.min_gpu_count !== "" ? parseInt(form.min_gpu_count, 10) : null,
-        gpu_type_pattern: form.gpu_type_pattern.trim() || null,
+        gpu_type_pattern: form.gpu_type_pattern || null,
         min_cpu_count: form.min_cpu_count !== "" ? parseInt(form.min_cpu_count, 10) : null,
         min_memory_gb: form.min_memory_gb !== "" ? parseFloat(form.min_memory_gb) : null,
-        preferred_runner_id: form.preferred_runner_id !== "" ? parseInt(form.preferred_runner_id, 10) : null,
+        preferred_runner_id: null,
+        preferred_runner_ids: selectedRunnerIds.size > 0 ? [...selectedRunnerIds] : null,
         enabled: form.enabled,
         tags: form.tags ? form.tags.split(",").map(t=>t.trim()).filter(Boolean) : [],
       };
@@ -2889,7 +2894,10 @@ function ScheduleFormModal({ schedule, runners, onClose, onSaved }) {
                 </div>
                 <div>
                   <label style={labelStyle}>GPU Type</label>
-                  <input className="input" style={{width:'100%'}} value={form.gpu_type_pattern} onChange={e=>set('gpu_type_pattern',e.target.value)} placeholder="e.g. A100" />
+                  <select className="select" style={{width:'100%'}} value={form.gpu_type_pattern} onChange={e=>set('gpu_type_pattern',e.target.value)}>
+                    <option value="">Any GPU</option>
+                    {gpuTypes.map(g=><option key={g} value={g}>{g}</option>)}
+                  </select>
                 </div>
                 <div>
                   <label style={labelStyle}>Min CPUs</label>
@@ -2902,18 +2910,29 @@ function ScheduleFormModal({ schedule, runners, onClose, onSaved }) {
               </div>
             </div>
 
-            {/* Preferred Runner */}
-            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'14px'}}>
-              <div>
-                <label style={labelStyle}>Preferred Runner</label>
-                <select className="select" style={{width:'100%'}} value={form.preferred_runner_id} onChange={e=>set('preferred_runner_id',e.target.value)}>
-                  <option value="">Auto-select</option>
-                  {onlineRunners.map(r=><option key={r.id} value={r.id}>{r.name} ({r.hostname || 'unknown'}){r.status==='paused'?' — paused':''}</option>)}
-                </select>
-              </div>
-              <div>
-                <label style={labelStyle}>Tags (comma-separated)</label>
-                <input className="input" style={{width:'100%'}} value={form.tags} onChange={e=>set('tags',e.target.value)} placeholder="e.g. nightly, regression" />
+            {/* Preferred Runners */}
+            <div style={{borderTop:'1px solid var(--nv-border)',paddingTop:'16px'}}>
+              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'14px'}}>
+                <div>
+                  <label style={labelStyle}>Preferred Runners <span style={{color:'var(--nv-green)',fontWeight:700}}>({selectedRunnerIds.size} selected)</span></label>
+                  <div style={{border:'1px solid var(--nv-border)',borderRadius:'8px',maxHeight:'160px',overflowY:'auto',padding:'4px'}}>
+                    {onlineRunners.length === 0 ? (
+                      <div style={{padding:'12px',textAlign:'center',color:'var(--nv-text-dim)',fontSize:'12px'}}>No runners online</div>
+                    ) : onlineRunners.map(r => (
+                      <label key={r.id} style={{display:'flex',alignItems:'center',gap:'8px',padding:'5px 8px',cursor:'pointer',borderRadius:'4px',fontSize:'13px',color:selectedRunnerIds.has(r.id)?'#fff':'var(--nv-text-muted)',background:selectedRunnerIds.has(r.id)?'rgba(118,185,0,0.08)':'transparent'}}>
+                        <input type="checkbox" checked={selectedRunnerIds.has(r.id)} onChange={()=>{
+                          setSelectedRunnerIds(prev => { const s = new Set(prev); s.has(r.id) ? s.delete(r.id) : s.add(r.id); return s; });
+                        }} style={{accentColor:'var(--nv-green)'}} />
+                        #{r.id} — {r.name}{r.gpu_type ? ` [${r.gpu_type}]` : ''}{r.status==='paused'?' (paused)':''}
+                      </label>
+                    ))}
+                  </div>
+                  <div style={{fontSize:'11px',color:'var(--nv-text-dim)',marginTop:'4px'}}>Leave empty to auto-select based on requirements above</div>
+                </div>
+                <div>
+                  <label style={labelStyle}>Tags (comma-separated)</label>
+                  <input className="input" style={{width:'100%'}} value={form.tags} onChange={e=>set('tags',e.target.value)} placeholder="e.g. nightly, regression" />
+                </div>
               </div>
             </div>
 

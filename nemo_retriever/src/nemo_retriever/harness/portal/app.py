@@ -235,6 +235,7 @@ class ScheduleCreateRequest(BaseModel):
     min_cpu_count: int | None = None
     min_memory_gb: float | None = None
     preferred_runner_id: int | None = None
+    preferred_runner_ids: list[int] | None = None
     enabled: bool = True
     tags: list[str] | None = None
 
@@ -255,6 +256,7 @@ class ScheduleUpdateRequest(BaseModel):
     min_cpu_count: int | None = None
     min_memory_gb: float | None = None
     preferred_runner_id: int | None = None
+    preferred_runner_ids: list[int] | None = None
     enabled: bool | None = None
     tags: list[str] | None = None
 

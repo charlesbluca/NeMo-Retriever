@@ -180,6 +180,7 @@ class TriggerRequest(BaseModel):
     tags: list[str] | None = None
     runner_id: int | None = None
     pr_number: int | None = None
+    git_ref: str | None = None  # branch/SHA/ref passed directly, bypasses GitHub API
     extra_packages: list[str] | None = None
 
 
@@ -1611,14 +1612,23 @@ async def _resolve_pr_to_git_ref(pr_number: int) -> tuple[str, str]:
     git_commit is set to the remote tracking ref (e.g. ``refs/pull/123/head``)
     so the runner can fetch it directly via ``git fetch origin
     refs/pull/<n>/head``.  git_ref carries the human-readable label.
+
+    Reads GITHUB_TOKEN from the environment if set, to avoid rate limits.
     """
     url = f"https://api.github.com/repos/NVIDIA/NeMo-Retriever/pulls/{pr_number}"
+    headers: dict[str, str] = {"Accept": "application/vnd.github+json"}
+    token = os.environ.get("GITHUB_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
     async with httpx.AsyncClient(timeout=10) as client:
-        resp = await client.get(url, headers={"Accept": "application/vnd.github+json"})
+        resp = await client.get(url, headers=headers)
     if resp.status_code == 404:
         raise HTTPException(status_code=404, detail=f"PR #{pr_number} not found in NVIDIA/NeMo-Retriever")
     if resp.status_code != 200:
-        raise HTTPException(status_code=502, detail=f"GitHub API error {resp.status_code} resolving PR #{pr_number}")
+        raise HTTPException(
+            status_code=502,
+            detail=f"GitHub API error {resp.status_code} resolving PR #{pr_number}: {resp.text[:200]}",
+        )
     data = resp.json()
     head = data.get("head", {})
     sha = head.get("sha", "")
@@ -1641,6 +1651,9 @@ async def trigger_run(req: TriggerRequest):
     git_ref: str | None = None
     if req.pr_number is not None:
         git_commit, git_ref = await _resolve_pr_to_git_ref(req.pr_number)
+    elif req.git_ref is not None:
+        git_commit = req.git_ref
+        git_ref = req.git_ref.split("/")[-1] if "/" in req.git_ref else req.git_ref
 
     job = history.create_job(
         {

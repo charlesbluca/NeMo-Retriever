@@ -4692,6 +4692,7 @@ function TriggerModal({ onClose, onTriggered }) {
   const [preset, setPreset] = useState("");
   const [runnerId, setRunnerId] = useState("");
   const [prNumber, setPrNumber] = useState("");
+  const [gitRef, setGitRef] = useState("");
   const [extraPackages, setExtraPackages] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
@@ -4718,6 +4719,7 @@ function TriggerModal({ onClose, onTriggered }) {
         preset: preset || null,
         runner_id: runnerId ? parseInt(runnerId, 10) : null,
         pr_number: prNumber ? parseInt(prNumber, 10) : null,
+        git_ref: gitRef.trim() || null,
         extra_packages: pkgs.length ? pkgs : null,
       };
       const res = await fetch("/api/runs/trigger", {
@@ -4783,6 +4785,17 @@ function TriggerModal({ onClose, onTriggered }) {
               <div style={{fontSize:'11px',color:'var(--nv-text-dim)',marginTop:'4px'}}>
                 Run against a NVIDIA/NeMo-Retriever PR. Resolved to a git ref via the GitHub API.
               </div>
+            </div>
+            <div>
+              <label style={labelStyle}>Git Ref <span style={{textTransform:'none',fontWeight:400,color:'var(--nv-text-dim)'}}>(optional, bypasses GitHub API)</span></label>
+              <input
+                type="text"
+                placeholder="e.g. origin/feat/my-branch or a commit SHA"
+                value={gitRef}
+                onChange={e => setGitRef(e.target.value)}
+                className="input"
+                style={{width:'100%',fontFamily:'monospace',fontSize:'12px'}}
+              />
             </div>
             <div>
               <label style={labelStyle}>Extra Packages <span style={{textTransform:'none',fontWeight:400,color:'var(--nv-text-dim)'}}>(optional)</span></label>

@@ -75,6 +75,10 @@ class EmbeddingModelConfig:
     normalize: bool = True
     max_length: int = 8192
     model_id: Optional[str] = None
+    use_vllm: bool = False
+    gpu_memory_utilization: float = 0.45
+    enforce_eager: bool = False
+    compile_cache_dir: Optional[str] = None
 
     def create(self) -> Any:
         from nemo_retriever.model import create_local_embedder
@@ -85,6 +89,10 @@ class EmbeddingModelConfig:
             hf_cache_dir=self.hf_cache_dir,
             normalize=self.normalize,
             max_length=self.max_length,
+            use_vllm=self.use_vllm,
+            gpu_memory_utilization=self.gpu_memory_utilization,
+            enforce_eager=self.enforce_eager,
+            compile_cache_dir=self.compile_cache_dir,
         )
 
 
@@ -159,6 +167,10 @@ def _extract_model_config(func: Callable, kwargs: dict[str, Any]) -> Any:
             normalize=getattr(model, "normalize", True),
             max_length=getattr(model, "max_length", 8192),
             model_id=getattr(model, "model_id", None),
+            use_vllm=getattr(model, "use_vllm", False),
+            gpu_memory_utilization=getattr(model, "gpu_memory_utilization", 0.45),
+            enforce_eager=getattr(model, "enforce_eager", False),
+            compile_cache_dir=getattr(model, "compile_cache_dir", None),
         )
 
     if func is explode_content_to_rows:

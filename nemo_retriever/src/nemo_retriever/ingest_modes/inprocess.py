@@ -1408,11 +1408,20 @@ class InProcessIngestor(Ingestor):
                 LlamaNemotronEmbedVL1BV2Embedder,
             )
 
-            embed_kwargs["model"] = LlamaNemotronEmbedVL1BV2Embedder(
-                device=str(device) if device is not None else None,
-                hf_cache_dir=str(hf_cache_dir) if hf_cache_dir is not None else None,
-                model_id=model_id,
-            )
+            vl_kwargs: dict[str, Any] = {"model_id": model_id}
+            if embed_use_vllm:
+                vl_kwargs.update(
+                    use_vllm=True,
+                    gpu_memory_utilization=float(embed_kwargs.get("gpu_memory_utilization", 0.45)),
+                    enforce_eager=bool(embed_kwargs.get("enforce_eager", False)),
+                    compile_cache_dir=embed_kwargs.get("compile_cache_dir"),
+                )
+            else:
+                vl_kwargs.update(
+                    device=str(device) if device is not None else None,
+                    hf_cache_dir=str(hf_cache_dir) if hf_cache_dir is not None else None,
+                )
+            embed_kwargs["model"] = LlamaNemotronEmbedVL1BV2Embedder(**vl_kwargs)
         else:
             embedder_kwargs: dict[str, Any] = {"model_id": model_id}
             if embed_use_vllm:

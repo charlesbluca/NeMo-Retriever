@@ -61,6 +61,7 @@ def _default_compile_cache_dir() -> Optional[str]:
 def create_vllm_llm(
     model: str,
     *,
+    revision: Optional[str] = None,
     dimensions: Optional[int] = None,
     tensor_parallel_size: int = 1,
     trust_remote_code: bool = True,
@@ -68,6 +69,7 @@ def create_vllm_llm(
     gpu_memory_utilization: float = 0.45,
     enforce_eager: bool = False,
     compile_cache_dir: Optional[str] = None,
+    hf_overrides: Optional[dict] = None,
 ) -> Any:
     """
     Create and return a vLLM LLM instance for embedding (pooling runner).
@@ -112,8 +114,12 @@ def create_vllm_llm(
         "enforce_eager": enforce_eager,
         "attention_backend": VLLM_ATTENTION_BACKEND,
     }
+    if revision is not None:
+        kwargs["revision"] = revision
     if max_model_len is not None:
         kwargs["max_model_len"] = max_model_len
+    if hf_overrides is not None:
+        kwargs["hf_overrides"] = hf_overrides
     if pooler_config is not None:
         kwargs["pooler_config"] = pooler_config
 

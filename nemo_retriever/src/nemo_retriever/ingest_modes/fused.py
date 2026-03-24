@@ -59,9 +59,8 @@ class _FusedModelActor:
     def __init__(self, **kwargs: Any) -> None:
         _assert_no_remote_endpoints(dict(kwargs), context="actor init")
 
-        from nemo_retriever.model import resolve_embed_model
+        from nemo_retriever.model import is_vl_embed_model, resolve_embed_model
         from nemo_retriever.model.local import NemotronOCRV1, NemotronPageElementsV3
-        from nemo_retriever.model.local.llama_nemotron_embed_1b_v2_embedder import LlamaNemotronEmbed1BV2Embedder
 
         self._detect_kwargs = {
             "inference_batch_size": int(kwargs.get("inference_batch_size", 8)),
@@ -123,16 +122,27 @@ class _FusedModelActor:
                 gpu_memory_utilization=float(kwargs.get("gpu_memory_utilization", 0.45)),
                 enforce_eager=bool(kwargs.get("enforce_eager", False)),
                 compile_cache_dir=kwargs.get("compile_cache_dir"),
-                dimensions=kwargs.get("dimensions"),
             )
         else:
             embedder_kwargs.update(
                 device=str(device) if device else None,
                 hf_cache_dir=str(hf_cache_dir) if hf_cache_dir else None,
-                normalize=normalize,
-                max_length=max_length,
             )
-        self._embed_model = LlamaNemotronEmbed1BV2Embedder(**embedder_kwargs)
+
+        if is_vl_embed_model(model_name_raw):
+            from nemo_retriever.model.local.llama_nemotron_embed_vl_1b_v2_embedder import (
+                LlamaNemotronEmbedVL1BV2Embedder,
+            )
+
+            self._embed_model = LlamaNemotronEmbedVL1BV2Embedder(**embedder_kwargs)
+        else:
+            from nemo_retriever.model.local.llama_nemotron_embed_1b_v2_embedder import LlamaNemotronEmbed1BV2Embedder
+
+            if not embed_use_vllm:
+                embedder_kwargs.update(normalize=normalize, max_length=max_length)
+            else:
+                embedder_kwargs["dimensions"] = kwargs.get("dimensions")
+            self._embed_model = LlamaNemotronEmbed1BV2Embedder(**embedder_kwargs)
 
     def __call__(self, batch_df: Any) -> Any:
         detected = detect_page_elements_v3(

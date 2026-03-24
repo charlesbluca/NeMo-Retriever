@@ -42,6 +42,10 @@ def create_local_embedder(
     hf_cache_dir: str | None = None,
     normalize: bool = True,
     max_length: int = 8192,
+    use_vllm: bool = False,
+    gpu_memory_utilization: float = 0.45,
+    enforce_eager: bool = False,
+    compile_cache_dir: str | None = None,
 ):
     """Create the appropriate local embedding model (VL or non-VL).
 
@@ -56,6 +60,14 @@ def create_local_embedder(
             LlamaNemotronEmbedVL1BV2Embedder,
         )
 
+        if use_vllm:
+            return LlamaNemotronEmbedVL1BV2Embedder(
+                model_id=model_id,
+                use_vllm=True,
+                gpu_memory_utilization=gpu_memory_utilization,
+                enforce_eager=enforce_eager,
+                compile_cache_dir=compile_cache_dir,
+            )
         return LlamaNemotronEmbedVL1BV2Embedder(
             device=device,
             hf_cache_dir=hf_cache_dir,

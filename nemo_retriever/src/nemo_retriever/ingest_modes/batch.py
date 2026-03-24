@@ -188,13 +188,22 @@ class _BatchEmbedActor:
                 LlamaNemotronEmbedVL1BV2Embedder,
             )
 
-            device = self._kwargs.get("device")
-            hf_cache_dir = self._kwargs.get("hf_cache_dir")
-            self._model = LlamaNemotronEmbedVL1BV2Embedder(
-                device=str(device) if device else None,
-                hf_cache_dir=str(hf_cache_dir) if hf_cache_dir else None,
-                model_id=model_id,
-            )
+            vl_kwargs: dict[str, Any] = {"model_id": model_id}
+            if self._kwargs.get("embed_use_vllm"):
+                vl_kwargs.update(
+                    use_vllm=True,
+                    gpu_memory_utilization=float(self._kwargs.get("gpu_memory_utilization", 0.45)),
+                    enforce_eager=bool(self._kwargs.get("enforce_eager", False)),
+                    compile_cache_dir=self._kwargs.get("compile_cache_dir"),
+                )
+            else:
+                device = self._kwargs.get("device")
+                hf_cache_dir = self._kwargs.get("hf_cache_dir")
+                vl_kwargs.update(
+                    device=str(device) if device else None,
+                    hf_cache_dir=str(hf_cache_dir) if hf_cache_dir else None,
+                )
+            self._model = LlamaNemotronEmbedVL1BV2Embedder(**vl_kwargs)
             return
 
         # Single constructor: vLLM branch only controls which kwargs are passed.

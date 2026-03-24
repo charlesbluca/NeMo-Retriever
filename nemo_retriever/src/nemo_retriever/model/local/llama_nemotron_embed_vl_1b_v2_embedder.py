@@ -28,17 +28,44 @@ class LlamaNemotronEmbedVL1BV2Embedder:
     The VL model exposes ``encode_queries()`` and ``encode_documents()``
     instead of the standard tokenizer + forward pass used by the embedqa
     model.  This class supports text, image, and text+image modalities.
+
+    When use_vllm=True, uses vLLM's Python API for the text modality only
+    (embed() and embed_queries()). Image and text_image modalities are not
+    supported via vLLM and will raise NotImplementedError.
     """
 
     device: Optional[str] = None
     hf_cache_dir: Optional[str] = None
     model_id: Optional[str] = None
+    use_vllm: bool = False
+    gpu_memory_utilization: float = 0.45
+    enforce_eager: bool = False
+    compile_cache_dir: Optional[str] = None
 
     # Populated in __post_init__
     _model: Any = field(default=None, init=False, repr=False)
     _device: Any = field(default=None, init=False, repr=False)
+    _llm: Any = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
+        if self.use_vllm:
+            try:
+                from nemo_retriever.text_embed.vllm import create_vllm_llm
+            except ImportError as e:
+                raise RuntimeError(
+                    "vLLM embedding requires the embed-vllm extra. "
+                    "Install with: uv pip install -e '.[embed-vllm]' or pip install -e '.[embed-vllm]'"
+                ) from e
+            model_id = self.model_id or "nvidia/llama-nemotron-embed-vl-1b-v2"
+            self._llm = create_vllm_llm(
+                str(model_id),
+                revision=get_hf_revision(model_id),
+                gpu_memory_utilization=self.gpu_memory_utilization,
+                enforce_eager=self.enforce_eager,
+                compile_cache_dir=self.compile_cache_dir,
+            )
+            return
+
         from transformers import AutoModel
 
         model_id = self.model_id or "nvidia/llama-nemotron-embed-vl-1b-v2"
@@ -88,6 +115,18 @@ class LlamaNemotronEmbedVL1BV2Embedder:
         texts_list = [str(t) for t in texts if str(t).strip()]
         if not texts_list:
             return torch.empty((0, 2048), dtype=torch.float32)
+        if self.use_vllm and self._llm is not None:
+            from nemo_retriever.text_embed.vllm import embed_with_vllm_llm
+
+            vectors = embed_with_vllm_llm(
+                texts_list,
+                self._llm,
+                batch_size=max(1, int(batch_size)),
+                prefix="passage: ",
+            )
+            if not vectors:
+                return torch.empty((0, 2048), dtype=torch.float32)
+            return torch.tensor(vectors, dtype=torch.float32)
         with torch.inference_mode(), warnings.catch_warnings():
             warnings.filterwarnings("ignore", message="`input_embeds` is deprecated", category=FutureWarning)
             self._set_p_max_length("text")
@@ -101,6 +140,18 @@ class LlamaNemotronEmbedVL1BV2Embedder:
         texts_list = [str(t) for t in texts]
         if not texts_list:
             return torch.empty((0, 2048), dtype=torch.float32)
+        if self.use_vllm and self._llm is not None:
+            from nemo_retriever.text_embed.vllm import embed_with_vllm_llm
+
+            vectors = embed_with_vllm_llm(
+                texts_list,
+                self._llm,
+                batch_size=max(1, int(batch_size)),
+                prefix="query: ",
+            )
+            if not vectors:
+                return torch.empty((0, 2048), dtype=torch.float32)
+            return torch.tensor(vectors, dtype=torch.float32)
         with torch.inference_mode(), warnings.catch_warnings():
             warnings.filterwarnings("ignore", message="`input_embeds` is deprecated", category=FutureWarning)
             out = self._model.encode_queries(texts_list)
@@ -114,6 +165,11 @@ class LlamaNemotronEmbedVL1BV2Embedder:
         Entries where the image is None/empty are skipped; the returned tensor
         only contains embeddings for valid images.
         """
+        if self.use_vllm:
+            raise NotImplementedError(
+                "Image embedding is not supported via vLLM for the VL model. "
+                "Use --no-embed-use-vllm (HuggingFace backend) for 'image' or 'text_image' modalities."
+            )
         image_dicts = [{"base64": b64} for b64 in images_b64 if b64]
         if not image_dicts:
             return torch.empty((0, 2048), dtype=torch.float32)
@@ -134,6 +190,11 @@ class LlamaNemotronEmbedVL1BV2Embedder:
         image is None/empty are skipped; the returned tensor only contains
         embeddings for valid pairs.
         """
+        if self.use_vllm:
+            raise NotImplementedError(
+                "Text+image embedding is not supported via vLLM for the VL model. "
+                "Use --no-embed-use-vllm (HuggingFace backend) for 'image' or 'text_image' modalities."
+            )
         paired_texts: list[str] = []
         paired_images: list[dict[str, str]] = []
         for t, b64 in zip(texts, images_b64):

@@ -64,6 +64,7 @@ class LlamaNemotronEmbed1BV2Embedder:
             model_id = self.model_id or _DEFAULT_EMBED_MODEL
             self._llm = create_vllm_llm(
                 str(model_id),
+                revision=get_hf_revision(model_id),
                 dimensions=self.dimensions,
                 gpu_memory_utilization=self.gpu_memory_utilization,
                 enforce_eager=self.enforce_eager,

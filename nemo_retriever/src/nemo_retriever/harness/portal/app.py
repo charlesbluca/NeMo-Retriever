@@ -31,6 +31,7 @@ from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+import httpx
 from apscheduler.triggers.cron import CronTrigger
 
 from nemo_retriever.harness import history
@@ -178,6 +179,8 @@ class TriggerRequest(BaseModel):
     config: str | None = None
     tags: list[str] | None = None
     runner_id: int | None = None
+    pr_number: int | None = None
+    extra_packages: list[str] | None = None
 
 
 class TriggerResponse(BaseModel):
@@ -541,7 +544,10 @@ async def get_rerun_info(run_id: int):
         "original_hostname": original_hostname,
         "original_commit": original_commit,
         "original_runner": original_runner,
-        "online_runners": [{"id": r["id"], "name": r["name"], "hostname": r.get("hostname"), "gpu_type": r.get("gpu_type")} for r in online_runners],
+        "online_runners": [
+            {"id": r["id"], "name": r["name"], "hostname": r.get("hostname"), "gpu_type": r.get("gpu_type")}
+            for r in online_runners
+        ],
     }
 
 
@@ -596,17 +602,19 @@ async def rerun_run(run_id: int, req: RerunRequest | None = None):
     rerun_tags = [t for t in original_tags if not t.startswith("rerun:")]
     rerun_tags.append(f"rerun:of_run_{run_id}")
 
-    job = history.create_job({
-        "trigger_source": "rerun",
-        "dataset": row.get("dataset") or test_config.get("dataset_label", "unknown"),
-        "dataset_path": test_config.get("dataset_dir"),
-        "dataset_overrides": overrides if overrides else None,
-        "preset": None,
-        "assigned_runner_id": runner_id,
-        "git_commit": original_commit,
-        "git_ref": original_commit,
-        "tags": rerun_tags,
-    })
+    job = history.create_job(
+        {
+            "trigger_source": "rerun",
+            "dataset": row.get("dataset") or test_config.get("dataset_label", "unknown"),
+            "dataset_path": test_config.get("dataset_dir"),
+            "dataset_overrides": overrides if overrides else None,
+            "preset": None,
+            "assigned_runner_id": runner_id,
+            "git_commit": original_commit,
+            "git_ref": original_commit,
+            "tags": rerun_tags,
+        }
+    )
 
     return {
         "job_id": job["id"],
@@ -1597,11 +1605,43 @@ def _resolve_preset_overrides(preset_name: str | None) -> dict[str, Any]:
     return result
 
 
+async def _resolve_pr_to_git_ref(pr_number: int) -> tuple[str, str]:
+    """Return (git_commit, git_ref) for a NVIDIA/NeMo-Retriever PR number.
+
+    git_commit is set to the remote tracking ref (e.g. ``refs/pull/123/head``)
+    so the runner can fetch it directly via ``git fetch origin
+    refs/pull/<n>/head``.  git_ref carries the human-readable label.
+    """
+    url = f"https://api.github.com/repos/NVIDIA/NeMo-Retriever/pulls/{pr_number}"
+    async with httpx.AsyncClient(timeout=10) as client:
+        resp = await client.get(url, headers={"Accept": "application/vnd.github+json"})
+    if resp.status_code == 404:
+        raise HTTPException(status_code=404, detail=f"PR #{pr_number} not found in NVIDIA/NeMo-Retriever")
+    if resp.status_code != 200:
+        raise HTTPException(status_code=502, detail=f"GitHub API error {resp.status_code} resolving PR #{pr_number}")
+    data = resp.json()
+    head = data.get("head", {})
+    sha = head.get("sha", "")
+    branch = head.get("ref", f"pr-{pr_number}")
+    if not sha:
+        raise HTTPException(status_code=502, detail=f"Could not resolve SHA for PR #{pr_number}")
+    # Use the fetchable refs/pull/<n>/head ref so the runner doesn't need the
+    # source fork as a configured remote — it only needs origin.
+    git_commit = f"refs/pull/{pr_number}/head"
+    return git_commit, branch
+
+
 @app.post("/api/runs/trigger", response_model=TriggerResponse)
 async def trigger_run(req: TriggerRequest):
     dataset_path, dataset_overrides = _resolve_dataset_config(req.dataset)
     preset_overrides = _resolve_preset_overrides(req.preset)
     merged_overrides = {**(dataset_overrides or {}), **preset_overrides}
+
+    git_commit: str | None = None
+    git_ref: str | None = None
+    if req.pr_number is not None:
+        git_commit, git_ref = await _resolve_pr_to_git_ref(req.pr_number)
+
     job = history.create_job(
         {
             "trigger_source": "manual",
@@ -1612,6 +1652,10 @@ async def trigger_run(req: TriggerRequest):
             "config": req.config,
             "assigned_runner_id": req.runner_id,
             "tags": req.tags or [],
+            "pr_number": req.pr_number,
+            "git_commit": git_commit,
+            "git_ref": git_ref,
+            "extra_packages": req.extra_packages or [],
         }
     )
     return TriggerResponse(job_id=job["id"], status="pending")
@@ -1814,7 +1858,14 @@ async def complete_job_endpoint(job_id: str, req: JobCompleteRequest):
     job = history.get_job_by_id(job_id)
     effective_success = req.success and not was_cancelling
     effective_error = req.error or ("Cancelled by user" if was_cancelling else None)
-    run_id = _record_run_from_job(job, effective_success, req.result, effective_error, execution_commit=req.execution_commit, num_gpus=req.num_gpus)
+    run_id = _record_run_from_job(
+        job,
+        effective_success,
+        req.result,
+        effective_error,
+        execution_commit=req.execution_commit,
+        num_gpus=req.num_gpus,
+    )
 
     return {"ok": True, "run_id": run_id}
 

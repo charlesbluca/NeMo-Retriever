@@ -4691,6 +4691,8 @@ function TriggerModal({ onClose, onTriggered }) {
   const [dataset, setDataset] = useState("");
   const [preset, setPreset] = useState("");
   const [runnerId, setRunnerId] = useState("");
+  const [prNumber, setPrNumber] = useState("");
+  const [extraPackages, setExtraPackages] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
@@ -4710,7 +4712,14 @@ function TriggerModal({ onClose, onTriggered }) {
     if (!dataset) return;
     setSubmitting(true);
     try {
-      const payload = { dataset, preset: preset || null, runner_id: runnerId ? parseInt(runnerId, 10) : null };
+      const pkgs = extraPackages.split('\n').map(s => s.trim()).filter(Boolean);
+      const payload = {
+        dataset,
+        preset: preset || null,
+        runner_id: runnerId ? parseInt(runnerId, 10) : null,
+        pr_number: prNumber ? parseInt(prNumber, 10) : null,
+        extra_packages: pkgs.length ? pkgs : null,
+      };
       const res = await fetch("/api/runs/trigger", {
         method: "POST", headers: {"Content-Type":"application/json"},
         body: JSON.stringify(payload),
@@ -4758,6 +4767,35 @@ function TriggerModal({ onClose, onTriggered }) {
                 {onlineRunners.length === 0
                   ? "No runners online. The job will wait until a runner becomes available."
                   : `${onlineRunners.length} runner${onlineRunners.length!==1?'s':''} online`}
+              </div>
+            </div>
+            <div>
+              <label style={labelStyle}>PR Number <span style={{textTransform:'none',fontWeight:400,color:'var(--nv-text-dim)'}}>(optional)</span></label>
+              <input
+                type="number"
+                min="1"
+                placeholder="e.g. 1234"
+                value={prNumber}
+                onChange={e => setPrNumber(e.target.value)}
+                className="input"
+                style={{width:'100%'}}
+              />
+              <div style={{fontSize:'11px',color:'var(--nv-text-dim)',marginTop:'4px'}}>
+                Run against a NVIDIA/NeMo-Retriever PR. Resolved to a git ref via the GitHub API.
+              </div>
+            </div>
+            <div>
+              <label style={labelStyle}>Extra Packages <span style={{textTransform:'none',fontWeight:400,color:'var(--nv-text-dim)'}}>(optional)</span></label>
+              <textarea
+                placeholder={"somepackage>=1.0\n/path/to/local.whl\ngit+https://github.com/org/repo"}
+                value={extraPackages}
+                onChange={e => setExtraPackages(e.target.value)}
+                className="input"
+                rows={3}
+                style={{width:'100%',resize:'vertical',fontFamily:'monospace',fontSize:'12px'}}
+              />
+              <div style={{fontSize:'11px',color:'var(--nv-text-dim)',marginTop:'4px'}}>
+                One package spec per line. Accepts PyPI names, version specifiers, local wheel paths, or VCS URLs.
               </div>
             </div>
           </div>

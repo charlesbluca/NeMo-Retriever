@@ -228,6 +228,8 @@ _MIGRATIONS = [
     "ALTER TABLE preset_matrices ADD COLUMN preferred_runner_id INTEGER",
     "ALTER TABLE preset_matrices ADD COLUMN gpu_type_filter TEXT",
     "ALTER TABLE schedules ADD COLUMN preferred_runner_ids TEXT",
+    "ALTER TABLE jobs ADD COLUMN pr_number INTEGER",
+    "ALTER TABLE jobs ADD COLUMN extra_packages TEXT",
 ]
 
 RUNNER_MISSED_HEARTBEATS_THRESHOLD = 4
@@ -1519,6 +1521,13 @@ def _deserialize_job_row(d: dict[str, Any]) -> dict[str, Any]:
             d["rejected_runners"] = []
     else:
         d["rejected_runners"] = []
+    if d.get("extra_packages"):
+        try:
+            d["extra_packages"] = json.loads(d["extra_packages"])
+        except (json.JSONDecodeError, TypeError):
+            d["extra_packages"] = []
+    else:
+        d["extra_packages"] = []
     return d
 
 
@@ -1541,6 +1550,8 @@ def create_job(data: dict[str, Any], db_path: str | None = None) -> dict[str, An
             "status": data.get("status", "pending"),
             "git_commit": data.get("git_commit"),
             "git_ref": data.get("git_ref"),
+            "pr_number": data.get("pr_number"),
+            "extra_packages": json.dumps(data["extra_packages"]) if data.get("extra_packages") else None,
             "created_at": _now_iso(),
             "started_at": None,
             "completed_at": None,

@@ -79,10 +79,14 @@ def _upload_artifacts(base_url: str, run_id: int, artifact_dir: str, timeout: in
 
     boundary = f"----RunnerUpload{run_id}"
     body = (
-        f"--{boundary}\r\n"
-        f'Content-Disposition: form-data; name="file"; filename="artifacts.zip"\r\n'
-        f"Content-Type: application/zip\r\n\r\n"
-    ).encode("utf-8") + raw + f"\r\n--{boundary}--\r\n".encode("utf-8")
+        (
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="file"; filename="artifacts.zip"\r\n'
+            f"Content-Type: application/zip\r\n\r\n"
+        ).encode("utf-8")
+        + raw
+        + f"\r\n--{boundary}--\r\n".encode("utf-8")
+    )
 
     url = f"{base_url}/api/runs/{run_id}/upload-artifacts"
     req = urllib.request.Request(
@@ -183,12 +187,20 @@ def _git_checkout_commit(commit: str, ref: str | None = None) -> str | None:
         prev = None
 
     try:
-        if "/" in commit and not commit.startswith("origin/"):
-            remote_name = commit.split("/")[0]
-            _run_git("fetch", remote_name, "--prune", check=False)
-        _run_git("fetch", "--all", "--prune", check=False)
-        logger.info("Checking out %s in %s", commit, repo_root)
-        _run_git("checkout", commit)
+        if commit.startswith("refs/pull/"):
+            # PR ref from GitHub (refs/pull/<n>/head) — fetch via origin into a
+            # temporary local ref then checkout by the resolved SHA.
+            _run_git("fetch", "origin", commit, check=True)
+            sha = _run_git("rev-parse", "FETCH_HEAD").stdout.strip()
+            logger.info("Checking out PR ref %s (%s) in %s", commit, sha[:12], repo_root)
+            _run_git("checkout", sha)
+        else:
+            if "/" in commit and not commit.startswith("origin/"):
+                remote_name = commit.split("/")[0]
+                _run_git("fetch", remote_name, "--prune", check=False)
+            _run_git("fetch", "--all", "--prune", check=False)
+            logger.info("Checking out %s in %s", commit, repo_root)
+            _run_git("checkout", commit)
         actual = _run_git("rev-parse", "HEAD").stdout.strip()
         logger.info("HEAD is now at %s", actual[:12])
         return prev
@@ -227,14 +239,16 @@ def _write_update_marker(previous_commit: str, new_commit: str) -> None:
     """
     try:
         _UPDATE_MARKER_FILE.write_text(
-            json_module.dumps({
-                "previous_commit": previous_commit,
-                "new_commit": new_commit,
-                "ts": time.time(),
-                "ray_address": _runner_ray_address,
-                "run_code_ref": _runner_run_code_ref,
-                "num_gpus": _runner_num_gpus,
-            }),
+            json_module.dumps(
+                {
+                    "previous_commit": previous_commit,
+                    "new_commit": new_commit,
+                    "ts": time.time(),
+                    "ray_address": _runner_ray_address,
+                    "run_code_ref": _runner_run_code_ref,
+                    "num_gpus": _runner_num_gpus,
+                }
+            ),
         )
     except Exception as exc:
         logger.warning("Failed to write update marker: %s", exc)
@@ -583,6 +597,29 @@ def _execute_job_on_runner(base_url: str, job: dict[str, Any], runner_id: int = 
         logger.info("Job %s requests commit %s (ref=%s) — pulling latest code", job_id, git_commit[:12], git_ref)
         prev_head = _git_checkout_commit(git_commit, git_ref)
 
+    extra_packages = job.get("extra_packages") or []
+    if extra_packages:
+        logger.info("Job %s — installing extra packages: %s", job_id, extra_packages)
+        try:
+            subprocess.run(
+                [sys.executable, "-m", "uv", "pip", "install", *extra_packages],
+                check=True,
+                timeout=300,
+            )
+        except subprocess.CalledProcessError as exc:
+            logger.error("Job %s — extra_packages install failed: %s", job_id, exc)
+            try:
+                _post_json(
+                    f"{base_url}/api/jobs/{job_id}/complete",
+                    {"success": False, "error": f"extra_packages install failed: {exc}"},
+                )
+            except Exception:
+                pass
+            _job_tracker.finish_job()
+            if prev_head:
+                _git_restore(prev_head)
+            return
+
     execution_commit = _get_current_git_commit()
 
     dataset_value = job.get("dataset_path") or job["dataset"]
@@ -647,7 +684,12 @@ def _execute_job_on_runner(base_url: str, job: dict[str, Any], runner_id: int = 
             success = bool(result.get("success"))
             complete_resp = _post_json(
                 f"{base_url}/api/jobs/{job_id}/complete",
-                {"success": success, "result": result, "execution_commit": execution_commit, "num_gpus": _runner_num_gpus},
+                {
+                    "success": success,
+                    "result": result,
+                    "execution_commit": execution_commit,
+                    "num_gpus": _runner_num_gpus,
+                },
             )
             logger.info("Job %s completed (success=%s)", job_id, success)
 
@@ -674,7 +716,12 @@ def _execute_job_on_runner(base_url: str, job: dict[str, Any], runner_id: int = 
                 error_msg = "Cancelled by user"
             _post_json(
                 f"{base_url}/api/jobs/{job_id}/complete",
-                {"success": False, "error": error_msg, "execution_commit": execution_commit, "num_gpus": _runner_num_gpus},
+                {
+                    "success": False,
+                    "error": error_msg,
+                    "execution_commit": execution_commit,
+                    "num_gpus": _runner_num_gpus,
+                },
             )
         except Exception:
             pass
@@ -791,8 +838,12 @@ def runner_start_command(
     if manager_url:
         base_url = manager_url.rstrip("/")
         reg_payload = _build_registration_payload(
-            runner_name, meta, tag or [], heartbeat_interval,
-            ray_address=_runner_ray_address, num_gpus=_runner_num_gpus,
+            runner_name,
+            meta,
+            tag or [],
+            heartbeat_interval,
+            ray_address=_runner_ray_address,
+            num_gpus=_runner_num_gpus,
         )
         typer.echo(f"\nRegistering with {base_url} ...")
         runner_id = _register_with_portal(base_url, reg_payload)

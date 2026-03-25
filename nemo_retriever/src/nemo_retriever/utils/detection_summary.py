@@ -206,6 +206,18 @@ def _fmt_time(seconds: float) -> str:
     return f"{seconds:.2f}s / {h}:{m:02d}:{s:02d}.{millis:03d}"
 
 
+def _evaluation_metric_sort_key(item: tuple[str, float]) -> tuple[str, int, str]:
+    """Sort metrics like ndcg@1, ndcg@3, ..., recall@1, recall@3, ... ."""
+    key, _value = item
+    metric_name, sep, suffix = str(key).partition("@")
+    if sep:
+        try:
+            return metric_name, int(suffix), str(key)
+        except ValueError:
+            pass
+    return metric_name, 0, str(key)
+
+
 def print_run_summary(
     processed_pages: Optional[int],
     input_path: Path,
@@ -219,10 +231,15 @@ def print_run_summary(
     recall_total_time: float = 0.0,
     recall_metrics: Optional[Dict[str, float]] = None,
     processed_files: Optional[int] = None,
+    evaluation_label: str = "Recall",
+    evaluation_count: Optional[int] = None,
 ) -> None:
     if recall_metrics is None:
         recall_metrics = {}
     pages = processed_pages if processed_pages is not None else 0
+    ingest_only_pps = processed_pages / ingest_only_total_time
+    ingest_and_lancedb_write_pps = processed_pages / (ingest_only_total_time + lancedb_write_total_time)
+    total_pps = processed_pages / total_time
     utc_now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
 
     ingest_only_pps = pages / ingest_only_total_time if ingest_only_total_time > 0 else 0
@@ -248,6 +265,7 @@ def print_run_summary(
     print(f"\tLanceDB Write Time: {_fmt_time(lancedb_write_total_time)}")
     if recall_total_time > 0:
         print(f"\tRecall time: {_fmt_time(recall_total_time)}")
+    print(f"\t{evaluation_label} time: {_fmt_time(evaluation_total_time)}")
 
     print("PPS:")
     print(f"\tIngestion only PPS: {ingest_only_pps:.2f}")
@@ -262,3 +280,8 @@ def print_run_summary(
             print(f"  {k}: {v:.4f}")
     else:
         print("Recall metrics: skipped (no query CSV configured)")
+
+    if evaluation_metrics:
+        print(f"{evaluation_label} metrics:")
+        for k, v in sorted(evaluation_metrics.items(), key=_evaluation_metric_sort_key):
+            print(f"  {k}: {v:.4f}")

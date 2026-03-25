@@ -320,6 +320,18 @@ class DatasetCreateRequest(BaseModel):
     recall_required: bool = False
     recall_match_mode: str = "pdf_page"
     recall_adapter: str = "none"
+    evaluation_mode: str = "recall"
+    beir_loader: str | None = None
+    beir_dataset_name: str | None = None
+    beir_split: str = "test"
+    beir_query_language: str | None = None
+    beir_doc_id_field: str = "pdf_basename"
+    beir_ks: list[int] | None = None
+    embed_model_name: str | None = None
+    embed_modality: str = "text"
+    embed_granularity: str = "element"
+    extract_page_as_image: bool = False
+    extract_infographics: bool = False
     description: str | None = None
     tags: list[str] | None = None
     runner_ids: list[int] | None = None
@@ -333,6 +345,18 @@ class DatasetUpdateRequest(BaseModel):
     recall_required: bool | None = None
     recall_match_mode: str | None = None
     recall_adapter: str | None = None
+    evaluation_mode: str | None = None
+    beir_loader: str | None = None
+    beir_dataset_name: str | None = None
+    beir_split: str | None = None
+    beir_query_language: str | None = None
+    beir_doc_id_field: str | None = None
+    beir_ks: list[int] | None = None
+    embed_model_name: str | None = None
+    embed_modality: str | None = None
+    embed_granularity: str | None = None
+    extract_page_as_image: bool | None = None
+    extract_infographics: bool | None = None
     description: str | None = None
     tags: list[str] | None = None
     runner_ids: list[int] | None = None
@@ -576,8 +600,30 @@ async def rerun_run(run_id: int, req: RerunRequest | None = None):
         overrides["ray_address"] = test_config["ray_address"]
     if test_config.get("hybrid") is not None:
         overrides["hybrid"] = test_config["hybrid"]
+    if test_config.get("evaluation_mode"):
+        overrides["evaluation_mode"] = test_config["evaluation_mode"]
+    if test_config.get("beir_loader"):
+        overrides["beir_loader"] = test_config["beir_loader"]
+    if test_config.get("beir_dataset_name"):
+        overrides["beir_dataset_name"] = test_config["beir_dataset_name"]
+    if test_config.get("beir_split"):
+        overrides["beir_split"] = test_config["beir_split"]
+    if test_config.get("beir_query_language"):
+        overrides["beir_query_language"] = test_config["beir_query_language"]
+    if test_config.get("beir_doc_id_field"):
+        overrides["beir_doc_id_field"] = test_config["beir_doc_id_field"]
+    if test_config.get("beir_ks"):
+        overrides["beir_ks"] = test_config["beir_ks"]
     if test_config.get("embed_model_name"):
         overrides["embed_model_name"] = test_config["embed_model_name"]
+    if test_config.get("embed_modality"):
+        overrides["embed_modality"] = test_config["embed_modality"]
+    if test_config.get("embed_granularity"):
+        overrides["embed_granularity"] = test_config["embed_granularity"]
+    if test_config.get("extract_page_as_image") is not None:
+        overrides["extract_page_as_image"] = test_config["extract_page_as_image"]
+    if test_config.get("extract_infographics") is not None:
+        overrides["extract_infographics"] = test_config["extract_infographics"]
     if test_config.get("write_detection_file") is not None:
         overrides["write_detection_file"] = test_config["write_detection_file"]
     tuning = test_config.get("tuning") or {}
@@ -1571,6 +1617,34 @@ def _resolve_dataset_config(dataset_name: str) -> tuple[str | None, dict[str, An
             overrides["recall_match_mode"] = managed["recall_match_mode"]
         if managed.get("recall_adapter"):
             overrides["recall_adapter"] = managed["recall_adapter"]
+
+        eval_mode = managed.get("evaluation_mode")
+        if eval_mode:
+            overrides["evaluation_mode"] = eval_mode
+        if managed.get("beir_loader"):
+            overrides["beir_loader"] = managed["beir_loader"]
+        if managed.get("beir_dataset_name"):
+            overrides["beir_dataset_name"] = managed["beir_dataset_name"]
+        if managed.get("beir_split"):
+            overrides["beir_split"] = managed["beir_split"]
+        if managed.get("beir_query_language"):
+            overrides["beir_query_language"] = managed["beir_query_language"]
+        if managed.get("beir_doc_id_field"):
+            overrides["beir_doc_id_field"] = managed["beir_doc_id_field"]
+        beir_ks = managed.get("beir_ks")
+        if beir_ks and isinstance(beir_ks, list):
+            overrides["beir_ks"] = beir_ks
+        if managed.get("embed_model_name"):
+            overrides["embed_model_name"] = managed["embed_model_name"]
+        if managed.get("embed_modality"):
+            overrides["embed_modality"] = managed["embed_modality"]
+        if managed.get("embed_granularity"):
+            overrides["embed_granularity"] = managed["embed_granularity"]
+        if managed.get("extract_page_as_image") is not None:
+            overrides["extract_page_as_image"] = managed["extract_page_as_image"]
+        if managed.get("extract_infographics") is not None:
+            overrides["extract_infographics"] = managed["extract_infographics"]
+
         return managed["path"], overrides
 
     return None, None

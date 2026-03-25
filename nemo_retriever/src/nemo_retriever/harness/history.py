@@ -228,6 +228,18 @@ _MIGRATIONS = [
     "ALTER TABLE preset_matrices ADD COLUMN preferred_runner_id INTEGER",
     "ALTER TABLE preset_matrices ADD COLUMN gpu_type_filter TEXT",
     "ALTER TABLE schedules ADD COLUMN preferred_runner_ids TEXT",
+    "ALTER TABLE datasets ADD COLUMN evaluation_mode TEXT DEFAULT 'recall'",
+    "ALTER TABLE datasets ADD COLUMN beir_loader TEXT",
+    "ALTER TABLE datasets ADD COLUMN beir_dataset_name TEXT",
+    "ALTER TABLE datasets ADD COLUMN beir_split TEXT DEFAULT 'test'",
+    "ALTER TABLE datasets ADD COLUMN beir_query_language TEXT",
+    "ALTER TABLE datasets ADD COLUMN beir_doc_id_field TEXT DEFAULT 'pdf_basename'",
+    "ALTER TABLE datasets ADD COLUMN beir_ks TEXT",
+    "ALTER TABLE datasets ADD COLUMN embed_model_name TEXT",
+    "ALTER TABLE datasets ADD COLUMN embed_modality TEXT DEFAULT 'text'",
+    "ALTER TABLE datasets ADD COLUMN embed_granularity TEXT DEFAULT 'element'",
+    "ALTER TABLE datasets ADD COLUMN extract_page_as_image INTEGER DEFAULT 0",
+    "ALTER TABLE datasets ADD COLUMN extract_infographics INTEGER DEFAULT 0",
 ]
 
 RUNNER_MISSED_HEARTBEATS_THRESHOLD = 4
@@ -758,6 +770,18 @@ _DATASET_FIELDS = (
     "recall_required",
     "recall_match_mode",
     "recall_adapter",
+    "evaluation_mode",
+    "beir_loader",
+    "beir_dataset_name",
+    "beir_split",
+    "beir_query_language",
+    "beir_doc_id_field",
+    "beir_ks",
+    "embed_model_name",
+    "embed_modality",
+    "embed_granularity",
+    "extract_page_as_image",
+    "extract_infographics",
     "description",
 )
 
@@ -765,6 +789,15 @@ _DATASET_FIELDS = (
 def _deserialize_dataset_row(row: sqlite3.Row) -> dict[str, Any]:
     d = dict(row)
     d["recall_required"] = bool(d.get("recall_required"))
+    d["extract_page_as_image"] = bool(d.get("extract_page_as_image"))
+    d["extract_infographics"] = bool(d.get("extract_infographics"))
+    if d.get("beir_ks"):
+        try:
+            d["beir_ks"] = json.loads(d["beir_ks"])
+        except (json.JSONDecodeError, TypeError):
+            d["beir_ks"] = [1, 3, 5, 10]
+    else:
+        d["beir_ks"] = [1, 3, 5, 10]
     if d.get("tags"):
         try:
             d["tags"] = json.loads(d["tags"])
@@ -780,10 +813,16 @@ def create_dataset(data: dict[str, Any], db_path: str | None = None) -> dict[str
     try:
         now = _now_iso()
         tags = json.dumps(data.get("tags") or [])
+        beir_ks = data.get("beir_ks")
+        beir_ks_json = json.dumps(beir_ks) if beir_ks is not None else None
         conn.execute(
             "INSERT INTO datasets (name, path, query_csv, input_type, recall_required,"
-            " recall_match_mode, recall_adapter, description, tags, created_at, updated_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " recall_match_mode, recall_adapter, evaluation_mode, beir_loader,"
+            " beir_dataset_name, beir_split, beir_query_language, beir_doc_id_field,"
+            " beir_ks, embed_model_name, embed_modality, embed_granularity,"
+            " extract_page_as_image, extract_infographics,"
+            " description, tags, created_at, updated_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 data["name"],
                 data["path"],
@@ -792,6 +831,18 @@ def create_dataset(data: dict[str, Any], db_path: str | None = None) -> dict[str
                 1 if data.get("recall_required") else 0,
                 data.get("recall_match_mode", "pdf_page"),
                 data.get("recall_adapter", "none"),
+                data.get("evaluation_mode", "recall"),
+                data.get("beir_loader") or None,
+                data.get("beir_dataset_name") or None,
+                data.get("beir_split", "test"),
+                data.get("beir_query_language") or None,
+                data.get("beir_doc_id_field", "pdf_basename"),
+                beir_ks_json,
+                data.get("embed_model_name") or None,
+                data.get("embed_modality", "text"),
+                data.get("embed_granularity", "element"),
+                1 if data.get("extract_page_as_image") else 0,
+                1 if data.get("extract_infographics") else 0,
                 data.get("description") or None,
                 tags,
                 now,
@@ -835,6 +886,7 @@ def get_dataset_by_id(dataset_id: int, db_path: str | None = None) -> dict[str, 
 
 
 def update_dataset(dataset_id: int, data: dict[str, Any], db_path: str | None = None) -> dict[str, Any] | None:
+    _BOOL_DATASET_FIELDS = {"recall_required", "extract_page_as_image", "extract_infographics"}
     conn = _connect(db_path)
     try:
         sets: list[str] = []
@@ -842,8 +894,10 @@ def update_dataset(dataset_id: int, data: dict[str, Any], db_path: str | None = 
         for field in _DATASET_FIELDS:
             if field in data:
                 val = data[field]
-                if field == "recall_required":
+                if field in _BOOL_DATASET_FIELDS:
                     val = 1 if val else 0
+                elif field == "beir_ks":
+                    val = json.dumps(val) if val is not None else None
                 sets.append(f"{field} = ?")
                 vals.append(val)
         if "tags" in data:

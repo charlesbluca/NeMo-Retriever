@@ -187,20 +187,12 @@ def _git_checkout_commit(commit: str, ref: str | None = None) -> str | None:
         prev = None
 
     try:
-        if commit.startswith("refs/pull/"):
-            # GitHub doesn't advertise pull refs by default; must specify a
-            # destination refspec so git actually fetches it.
-            _run_git("fetch", "origin", f"{commit}:{commit}", check=True)
-            sha = _run_git("rev-parse", commit).stdout.strip()
-            logger.info("Checking out PR ref %s (%s) in %s", commit, sha[:12], repo_root)
-            _run_git("checkout", sha)
-        else:
-            if "/" in commit and not commit.startswith("origin/"):
-                remote_name = commit.split("/")[0]
-                _run_git("fetch", remote_name, "--prune", check=False)
-            _run_git("fetch", "--all", "--prune", check=False)
-            logger.info("Checking out %s in %s", commit, repo_root)
-            _run_git("checkout", commit)
+        if "/" in commit and not commit.startswith("origin/"):
+            remote_name = commit.split("/")[0]
+            _run_git("fetch", remote_name, "--prune", check=False)
+        _run_git("fetch", "--all", "--prune", check=False)
+        logger.info("Checking out %s in %s", commit, repo_root)
+        _run_git("checkout", commit)
         actual = _run_git("rev-parse", "HEAD").stdout.strip()
         logger.info("HEAD is now at %s", actual[:12])
         return prev

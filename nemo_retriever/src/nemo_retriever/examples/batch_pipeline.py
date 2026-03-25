@@ -209,6 +209,13 @@ def main(
         dir_okay=False,
         help="Optional JSON file path to write end-of-run detection counts summary.",
     ),
+    metrics_output_file: Optional[Path] = typer.Option(
+        None,
+        "--metrics-output-file",
+        path_type=Path,
+        dir_okay=False,
+        help="JSON file path to write structured run metrics (used by the harness).",
+    ),
     recall_match_mode: str = typer.Option(
         "pdf_page",
         "--recall-match-mode",
@@ -1020,7 +1027,7 @@ def main(
         total_time = time.perf_counter() - ingest_start
         ray.shutdown()
 
-        print_run_summary(
+        summary_dict = print_run_summary(
             num_rows,
             input_path,
             hybrid,
@@ -1030,11 +1037,21 @@ def main(
             ingestion_only_total_time,
             ray_dataset_download_time,
             lancedb_write_time,
-            evaluation_total_time,
-            evaluation_metrics,
+            evaluation_total_time=evaluation_total_time,
+            evaluation_metrics=evaluation_metrics,
+            recall_total_time=recall_total_time,
+            recall_metrics=recall_metrics,
             evaluation_label=evaluation_label,
             evaluation_count=evaluation_query_count,
         )
+
+        if metrics_output_file is not None and isinstance(summary_dict, dict):
+            metrics_output_file = Path(metrics_output_file)
+            metrics_output_file.parent.mkdir(parents=True, exist_ok=True)
+            metrics_output_file.write_text(
+                json.dumps(summary_dict, indent=2, sort_keys=True),
+                encoding="utf-8",
+            )
 
     finally:
         # Restore real stdio before closing the mirror file so exception hooks

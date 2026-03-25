@@ -276,14 +276,16 @@ def _resolve_lancedb_uri(cfg: HarnessConfig, artifact_dir: Path) -> str:
     return str(p)
 
 
-def _build_command(cfg: HarnessConfig, artifact_dir: Path, run_id: str) -> tuple[list[str], Path, Path, Path | None]:
+def _build_command(
+    cfg: HarnessConfig, artifact_dir: Path, run_id: str
+) -> tuple[list[str], Path, Path, Path | None, Path]:
     runtime_dir = artifact_dir / "runtime_metrics"
     runtime_dir.mkdir(parents=True, exist_ok=True)
     if cfg.write_detection_file:
         detection_summary_file = artifact_dir / "detection_summary.json"
     else:
-        # Keep detection summary out of top-level artifacts unless explicitly requested.
         detection_summary_file = runtime_dir / ".detection_summary.json"
+    metrics_output_file = runtime_dir / f"{run_id}.metrics.json"
     effective_query_csv: Path | None = None
 
     cmd = [
@@ -339,6 +341,8 @@ def _build_command(cfg: HarnessConfig, artifact_dir: Path, run_id: str) -> tuple
         run_id,
         "--detection-summary-file",
         str(detection_summary_file),
+        "--metrics-output-file",
+        str(metrics_output_file),
         "--lancedb-uri",
         _resolve_lancedb_uri(cfg, artifact_dir),
     ]
@@ -382,7 +386,7 @@ def _build_command(cfg: HarnessConfig, artifact_dir: Path, run_id: str) -> tuple
     if cfg.hybrid:
         cmd += ["--hybrid"]
 
-    return cmd, runtime_dir, detection_summary_file, effective_query_csv
+    return cmd, runtime_dir, detection_summary_file, effective_query_csv, metrics_output_file
 
 
 def _evaluate_run_outcome(
@@ -397,7 +401,7 @@ def _evaluate_run_outcome(
         return process_rc, reason, False
     if evaluation_mode == "beir" and not (evaluation_metrics or {}):
         return 97, "missing_beir_metrics", False
-    if evaluation_mode == "recall" and recall_required and not recall_metrics:
+    if evaluation_mode == "recall" and recall_required and not recall_metrics and not (evaluation_metrics or {}):
         return 98, "missing_recall_metrics", False
     return 0, "", True
 
@@ -566,7 +570,9 @@ def _run_single(
     tags: list[str] | None = None,
     skip_local_history: bool = False,
 ) -> dict[str, Any]:
-    cmd, runtime_dir, detection_summary_file, effective_query_csv = _build_command(cfg, artifact_dir, run_id)
+    cmd, runtime_dir, detection_summary_file, effective_query_csv, metrics_output_file = _build_command(
+        cfg, artifact_dir, run_id
+    )
 
     lancedb_path = Path(_resolve_lancedb_uri(cfg, artifact_dir))
     if lancedb_path.is_dir():
@@ -604,26 +610,52 @@ def _run_single(
     if not cfg.write_detection_file and detection_summary_file.exists():
         detection_summary_file.unlink()
 
+    # ----- Metrics: prefer the structured JSON written by batch_pipeline -----
+    pipeline_metrics = _read_json_if_exists(metrics_output_file)
+
+    if isinstance(pipeline_metrics, dict) and (
+        pipeline_metrics.get("recall_metrics") or pipeline_metrics.get("evaluation_metrics")
+    ):
+        recall_raw: dict[str, float] = pipeline_metrics.get("recall_metrics") or {}
+        eval_raw: dict[str, float] = pipeline_metrics.get("evaluation_metrics") or {}
+    else:
+        recall_raw = dict(metrics.recall_metrics)
+        eval_raw = dict(metrics.evaluation_metrics)
+
     recall_metrics_normalized: dict[str, float] = {}
-    for key, val in metrics.recall_metrics.items():
+    for key, val in recall_raw.items():
         recall_metrics_normalized[_normalize_recall_metric_key(key)] = val
     evaluation_metrics_normalized: dict[str, float] = {}
-    for key, val in metrics.evaluation_metrics.items():
+    for key, val in eval_raw.items():
         evaluation_metrics_normalized[_normalize_recall_metric_key(key)] = val
 
     effective_rc, failure_reason, success = _evaluate_run_outcome(
         process_rc=process_rc,
         evaluation_mode=cfg.evaluation_mode,
         recall_required=bool(cfg.recall_required),
-        recall_metrics=metrics.recall_metrics,
-        evaluation_metrics=metrics.evaluation_metrics,
+        recall_metrics=recall_raw,
+        evaluation_metrics=eval_raw,
     )
 
+    pm_files = metrics.files
+    pm_pages = metrics.pages
+    pm_ingest_secs = metrics.ingest_secs
+    pm_pps = metrics.pages_per_sec_ingest
+    if isinstance(pipeline_metrics, dict):
+        if pm_files is None and pipeline_metrics.get("files") is not None:
+            pm_files = int(pipeline_metrics["files"])
+        if pm_pages is None and pipeline_metrics.get("pages") is not None:
+            pm_pages = int(pipeline_metrics["pages"])
+        if pm_ingest_secs is None and pipeline_metrics.get("ingest_secs") is not None:
+            pm_ingest_secs = float(pipeline_metrics["ingest_secs"])
+        if pm_pps is None and pipeline_metrics.get("pages_per_sec_ingest") is not None:
+            pm_pps = float(pipeline_metrics["pages_per_sec_ingest"])
+
     metrics_payload = {
-        "files": metrics.files,
-        "pages": metrics.pages,
-        "ingest_secs": metrics.ingest_secs,
-        "pages_per_sec_ingest": metrics.pages_per_sec_ingest,
+        "files": pm_files,
+        "pages": pm_pages,
+        "ingest_secs": pm_ingest_secs,
+        "pages_per_sec_ingest": pm_pps,
         **recall_metrics_normalized,
         **evaluation_metrics_normalized,
     }
@@ -664,10 +696,10 @@ def _run_single(
             "tuning": {field: getattr(cfg, field) for field in sorted(TUNING_FIELDS)},
         },
         "metrics": {
-            "files": metrics.files,
-            "pages": metrics.pages,
-            "ingest_secs": metrics.ingest_secs,
-            "pages_per_sec_ingest": metrics.pages_per_sec_ingest,
+            "files": pm_files,
+            "pages": pm_pages,
+            "ingest_secs": pm_ingest_secs,
+            "pages_per_sec_ingest": pm_pps,
             "rows_processed": metrics.rows_processed,
             "rows_per_sec_ingest": metrics.rows_per_sec_ingest,
             **recall_metrics_normalized,

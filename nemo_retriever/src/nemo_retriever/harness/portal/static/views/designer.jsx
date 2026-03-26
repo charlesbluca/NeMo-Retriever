@@ -4,13 +4,134 @@
 function _uid() { return 'n' + Math.random().toString(36).slice(2, 10); }
 
 function _categoryColor(cat) {
-  const map = { gpu: 'var(--nv-green)', cpu: '#64b4ff', graph: '#e06cff' };
+  const map = { data: '#ff9f43', gpu: 'var(--nv-green)', cpu: '#64b4ff', graph: '#e06cff' };
   return map[cat] || 'var(--nv-text-muted)';
+}
+
+function _toPythonValue(val) {
+  if (val === true || val === 'true' || val === 'True') return 'True';
+  if (val === false || val === 'false' || val === 'False') return 'False';
+  if (val === null || val === 'null' || val === 'None' || val === 'none' || val === undefined) return 'None';
+  if (typeof val === 'number') return String(val);
+  if (typeof val === 'string') {
+    if (/^-?\d+$/.test(val)) return val;
+    if (/^-?\d+\.\d+$/.test(val)) return val;
+    return JSON.stringify(val);
+  }
+  return JSON.stringify(String(val));
 }
 
 function _generateCode(nodes, edges) {
   if (nodes.length === 0) return '# Empty graph — add operators to the canvas\n';
 
+  const hasSource = nodes.some(n => n.operator?.type === 'ray_data_source');
+  if (hasSource) return _generateRayDataCode(nodes, edges);
+  return _generateLegacyCode(nodes, edges);
+}
+
+function _generateRayDataCode(nodes, edges) {
+  const nodeMap = {};
+  nodes.forEach(n => { nodeMap[n.id] = n; });
+
+  const childrenOf = {};
+  edges.forEach(e => {
+    if (!childrenOf[e.from]) childrenOf[e.from] = [];
+    childrenOf[e.from].push(e);
+  });
+
+  const roots = new Set(nodes.map(n => n.id));
+  edges.forEach(e => roots.delete(e.to));
+
+  if (roots.size !== 1) return '# Error: Ray Data pipeline requires exactly one root node (data source)\n';
+
+  const rootId = Array.from(roots)[0];
+  const rootNode = nodeMap[rootId];
+
+  if (rootNode.operator?.type !== 'ray_data_source') {
+    return '# Warning: Pipeline should start with a Ray Data source (e.g. ReadBinaryFiles)\n' +
+           _generateLegacyCode(nodes, edges);
+  }
+
+  if (!_isLinear(rootId, childrenOf)) {
+    return '# Error: Ray Data pipeline must be linear (no branching)\n';
+  }
+
+  const chain = [];
+  let cur = rootId;
+  while (cur) {
+    chain.push(nodeMap[cur]);
+    const children = childrenOf[cur];
+    cur = children && children.length === 1 ? children[0].to : null;
+  }
+
+  const imports = new Set();
+  imports.add('import ray');
+  imports.add('import ray.data');
+  chain.forEach(n => {
+    if (n.operator && n.operator.type !== 'ray_data_source') {
+      imports.add(n.operator.import_path);
+    }
+  });
+
+  const lines = [];
+  lines.push(Array.from(imports).sort().join('\n'));
+  lines.push('');
+  lines.push('ray.init(ignore_reinit_error=True)');
+  lines.push('');
+
+  const src = chain[0];
+  const srcOp = src.operator;
+  const srcCfg = src.config || {};
+  const srcParams = srcOp.params || [];
+  const pathsVal = srcCfg.paths || '';
+
+  const srcArgParts = [JSON.stringify(pathsVal)];
+  srcParams.forEach(p => {
+    if (p.name === 'paths') return;
+    const val = srcCfg[p.name];
+    const effectiveVal = (val !== undefined && val !== '') ? val : p.default;
+    if (effectiveVal !== undefined && effectiveVal !== '') {
+      srcArgParts.push(`${p.name}=${_toPythonValue(effectiveVal)}`);
+    }
+  });
+  lines.push(`# Data source: ${srcOp.class_name}`);
+  lines.push(`ds = ${srcOp.ray_fn}(${srcArgParts.join(', ')})`);
+  lines.push('');
+
+  for (let i = 1; i < chain.length; i++) {
+    const n = chain[i];
+    const op = n.operator;
+    if (!op) continue;
+
+    const cfgEntries = Object.entries(n.config || {}).filter(([, v]) => v !== '' && v !== undefined);
+    const isGpu = op.category === 'gpu';
+
+    let kwargsStr = '{}';
+    if (cfgEntries.length > 0) {
+      const parts = cfgEntries.map(([k, v]) => `${JSON.stringify(k)}: ${_toPythonValue(v)}`);
+      kwargsStr = '{' + parts.join(', ') + '}';
+    }
+
+    lines.push(`# Stage: ${op.class_name}`);
+    lines.push(`ds = ds.map_batches(`);
+    lines.push(`    ${op.class_name},`);
+    lines.push(`    fn_constructor_kwargs=${kwargsStr},`);
+    lines.push(`    batch_size=1,`);
+    lines.push(`    batch_format="pandas",`);
+    if (isGpu) {
+      lines.push(`    num_cpus=0,`);
+      lines.push(`    num_gpus=1,`);
+    }
+    lines.push(`)`);
+    lines.push('');
+  }
+
+  lines.push('result = ds.materialize()');
+  lines.push('');
+  return lines.join('\n');
+}
+
+function _generateLegacyCode(nodes, edges) {
   const imports = new Set();
   imports.add('from nemo_retriever.graph import Graph, Node');
 
@@ -107,8 +228,13 @@ function _toVarName(className) {
 }
 
 /* ---------- Operator Palette ---------- */
+function _categoryLabel(cat) {
+  const labels = { data: 'Data Sources', gpu: 'GPU Operators', cpu: 'CPU Operators', graph: 'Graph Utilities' };
+  return labels[cat] || cat;
+}
+
 function OperatorPalette({ operators, onDragStart, filter, setFilter }) {
-  const cats = ['cpu', 'gpu', 'graph'];
+  const cats = ['data', 'cpu', 'gpu', 'graph'];
   const filtered = operators.filter(op =>
     !filter || op.class_name.toLowerCase().includes(filter.toLowerCase())
   );
@@ -116,7 +242,7 @@ function OperatorPalette({ operators, onDragStart, filter, setFilter }) {
   return (
     <div style={{width:'220px',borderRight:'1px solid var(--nv-border)',display:'flex',flexDirection:'column',overflow:'hidden',flexShrink:0}}>
       <div style={{padding:'12px',borderBottom:'1px solid var(--nv-border)'}}>
-        <div style={{fontSize:'12px',fontWeight:700,color:'#fff',marginBottom:'8px'}}>Operators</div>
+        <div style={{fontSize:'12px',fontWeight:700,color:'#fff',marginBottom:'8px'}}>Components</div>
         <input className="input" placeholder="Filter…" value={filter} onChange={e=>setFilter(e.target.value)}
           style={{width:'100%',fontSize:'11px',padding:'5px 8px'}} />
       </div>
@@ -127,7 +253,7 @@ function OperatorPalette({ operators, onDragStart, filter, setFilter }) {
           return (
             <div key={cat} style={{marginBottom:'14px'}}>
               <div style={{fontSize:'10px',fontWeight:700,textTransform:'uppercase',color:_categoryColor(cat),marginBottom:'6px',letterSpacing:'0.05em'}}>
-                {cat === 'gpu' ? 'GPU Operators' : cat === 'cpu' ? 'CPU Operators' : 'Graph Utilities'}
+                {_categoryLabel(cat)}
               </div>
               {ops.map(op => (
                 <div key={op.class_name + op.module} draggable
@@ -138,8 +264,8 @@ function OperatorPalette({ operators, onDragStart, filter, setFilter }) {
                     fontSize:'11px',color:'#fff',fontWeight:500,
                     display:'flex',alignItems:'center',gap:'6px',
                   }}
-                  title={op.module + '.' + op.class_name}>
-                  <span style={{width:'6px',height:'6px',borderRadius:'50%',background:_categoryColor(cat),flexShrink:0}}></span>
+                  title={op.type === 'ray_data_source' ? `ray.data · ${op.ray_fn}` : `${op.module}.${op.class_name}`}>
+                  <span style={{width:'6px',height:'6px',borderRadius: op.type === 'ray_data_source' ? '2px' : '50%',background:_categoryColor(cat),flexShrink:0}}></span>
                   {op.class_name}
                 </div>
               ))}
@@ -147,7 +273,7 @@ function OperatorPalette({ operators, onDragStart, filter, setFilter }) {
           );
         })}
         {filtered.length === 0 && (
-          <div style={{textAlign:'center',color:'var(--nv-text-dim)',fontSize:'12px',padding:'20px 0'}}>No operators found</div>
+          <div style={{textAlign:'center',color:'var(--nv-text-dim)',fontSize:'12px',padding:'20px 0'}}>No components found</div>
         )}
       </div>
     </div>
@@ -157,35 +283,46 @@ function OperatorPalette({ operators, onDragStart, filter, setFilter }) {
 /* ---------- Canvas Node ---------- */
 function CanvasNode({ node, selected, onMouseDown, onSelect, onDelete }) {
   const color = node.operator ? _categoryColor(node.operator.category) : 'var(--nv-text-dim)';
+  const isSource = node.operator?.type === 'ray_data_source';
+  const nodeHeight = isSource ? 66 : 56;
   return (
     <g transform={`translate(${node.x},${node.y})`}
       onMouseDown={e => { e.stopPropagation(); onMouseDown(e, node.id); }}
       onClick={e => { e.stopPropagation(); onSelect(node.id); }}
       style={{cursor:'grab'}}>
-      <rect x="0" y="0" width="180" height="56" rx="8"
+      <rect x="0" y="0" width="180" height={nodeHeight} rx="8"
         fill={selected ? 'rgba(255,255,255,0.08)' : 'rgba(255,255,255,0.04)'}
-        stroke={selected ? color : 'var(--nv-border)'} strokeWidth={selected ? 2 : 1} />
-      <circle cx="0" cy="28" r="7" fill="var(--nv-bg)" stroke={color} strokeWidth="2" pointerEvents="none" />
-      <circle cx="180" cy="28" r="7" fill="var(--nv-bg)" stroke={color} strokeWidth="2" pointerEvents="none" />
-      <rect x="6" y="6" width="4" height="44" rx="2" fill={color} opacity="0.6" />
-      <text x="18" y="22" fill="#fff" fontSize="12" fontWeight="600" fontFamily="inherit">{node.operator?.class_name || 'Unknown'}</text>
-      <text x="18" y="38" fill="var(--nv-text-dim)" fontSize="10" fontFamily="inherit">{node.varName}</text>
-      <text x="170" y="14" fill="var(--nv-text-dim)" fontSize="10" textAnchor="end" style={{cursor:'pointer'}}
+        stroke={selected ? color : 'var(--nv-border)'} strokeWidth={selected ? 2 : 1}
+        strokeDasharray={isSource ? '4 2' : undefined} />
+      {!isSource && <circle cx="0" cy={nodeHeight/2} r="7" fill="var(--nv-bg)" stroke={color} strokeWidth="2" pointerEvents="none" />}
+      <circle cx="180" cy={nodeHeight/2} r="7" fill="var(--nv-bg)" stroke={color} strokeWidth="2" pointerEvents="none" />
+      <rect x="6" y="6" width="4" height={nodeHeight - 12} rx="2" fill={color} opacity="0.6" />
+      {isSource && <text x="170" y="12" fill={color} fontSize="8" fontWeight="700" textAnchor="end" fontFamily="inherit">SOURCE</text>}
+      <text x="18" y={isSource ? 24 : 22} fill="#fff" fontSize="12" fontWeight="600" fontFamily="inherit">{node.operator?.class_name || 'Unknown'}</text>
+      <text x="18" y={isSource ? 40 : 38} fill="var(--nv-text-dim)" fontSize="10" fontFamily="inherit">{node.varName}</text>
+      {isSource && node.config?.paths && (
+        <text x="18" y="54" fill="var(--nv-text-dim)" fontSize="8" fontFamily="inherit" opacity="0.6">
+          {node.config.paths.length > 24 ? '\u2026' + node.config.paths.slice(-24) : node.config.paths}
+        </text>
+      )}
+      <text x="170" y={isSource ? 24 : 14} fill="var(--nv-text-dim)" fontSize="10" textAnchor="end" style={{cursor:'pointer'}}
         onClick={e => { e.stopPropagation(); onDelete(node.id); }}>✕</text>
     </g>
   );
 }
 
 /* ---------- Edge Arrow ---------- */
+function _nodeHeight(n) { return n.operator?.type === 'ray_data_source' ? 66 : 56; }
+
 function EdgeArrow({ edge, nodes, selected, onSelect }) {
   const fromNode = nodes.find(n => n.id === edge.from);
   const toNode = nodes.find(n => n.id === edge.to);
   if (!fromNode || !toNode) return null;
 
   const x1 = fromNode.x + 180;
-  const y1 = fromNode.y + 28;
+  const y1 = fromNode.y + _nodeHeight(fromNode) / 2;
   const x2 = toNode.x;
-  const y2 = toNode.y + 28;
+  const y2 = toNode.y + _nodeHeight(toNode) / 2;
   const mx = (x1 + x2) / 2;
 
   const hasConfig = Object.keys(edge.config || {}).some(k => edge.config[k] !== '');
@@ -372,7 +509,6 @@ function SaveGraphModal({ name, setName, description, setDescription, onSave, on
 function RunGraphModal({ graphId, graphName, onClose }) {
   const [runners, setRunners] = useState([]);
   const [runnerId, setRunnerId] = useState('');
-  const [inputPath, setInputPath] = useState('');
   const [rayAddress, setRayAddress] = useState('');
   const [gitRef, setGitRef] = useState('');
   const [gitCommit, setGitCommit] = useState('');
@@ -394,7 +530,6 @@ function RunGraphModal({ graphId, graphName, onClose }) {
     try {
       const body = {};
       if (runnerId) body.runner_id = parseInt(runnerId, 10);
-      if (inputPath.trim()) body.input_path = inputPath.trim();
       if (rayAddress.trim()) body.ray_address = rayAddress.trim();
       if (gitRef.trim()) body.git_ref = gitRef.trim();
       if (gitCommit.trim()) body.git_commit = gitCommit.trim();
@@ -439,10 +574,8 @@ function RunGraphModal({ graphId, graphName, onClose }) {
             </div>
           ) : (
             <>
-              <div>
-                <label style={fieldLabel}>Input Path (files/glob for RayDataExecutor)</label>
-                <input className="input" value={inputPath} onChange={e => setInputPath(e.target.value)}
-                  style={{ width: '100%' }} placeholder="/path/to/documents/**/*.pdf" />
+              <div style={{ padding: '10px 12px', borderRadius: '6px', background: 'rgba(255,159,67,0.08)', border: '1px solid rgba(255,159,67,0.2)', fontSize: '12px', color: '#ff9f43' }}>
+                Data source (paths) is configured in the graph itself via the Data Source component.
               </div>
               <div style={{ display: 'flex', gap: '10px' }}>
                 <div style={{ flex: 1 }}>
@@ -796,23 +929,27 @@ function DesignerView() {
                 onSelect={id => { setSelectedEdgeId(id); setSelectedNodeId(null); }} />
             ))}
 
-            {nodes.map(n => (
-              <g key={n.id}>
-                <CanvasNode node={n} selected={selectedNodeId===n.id}
-                  onMouseDown={handleNodeMouseDown} onSelect={id => { nodeInteractionRef.current = true; setSelectedNodeId(id); setSelectedEdgeId(null); }}
-                  onDelete={deleteNode} />
-                {/* Input port click target */}
-                <circle cx={n.x} cy={n.y+28} r="12"
-                  fill="rgba(0,0,0,0.001)" pointerEvents="all" style={{cursor:'crosshair'}}
-                  onMouseDown={e => e.stopPropagation()}
-                  onClick={e => { e.stopPropagation(); handlePortClick(n.id, 'in'); }} />
-                {/* Output port click target */}
-                <circle cx={n.x+180} cy={n.y+28} r="12"
-                  fill="rgba(0,0,0,0.001)" pointerEvents="all" style={{cursor:'crosshair'}}
-                  onMouseDown={e => e.stopPropagation()}
-                  onClick={e => { e.stopPropagation(); handlePortClick(n.id, 'out'); }} />
-              </g>
-            ))}
+            {nodes.map(n => {
+              const isSource = n.operator?.type === 'ray_data_source';
+              const nh = isSource ? 66 : 56;
+              return (
+                <g key={n.id}>
+                  <CanvasNode node={n} selected={selectedNodeId===n.id}
+                    onMouseDown={handleNodeMouseDown} onSelect={id => { nodeInteractionRef.current = true; setSelectedNodeId(id); setSelectedEdgeId(null); }}
+                    onDelete={deleteNode} />
+                  {!isSource && (
+                    <circle cx={n.x} cy={n.y+nh/2} r="12"
+                      fill="rgba(0,0,0,0.001)" pointerEvents="all" style={{cursor:'crosshair'}}
+                      onMouseDown={e => e.stopPropagation()}
+                      onClick={e => { e.stopPropagation(); handlePortClick(n.id, 'in'); }} />
+                  )}
+                  <circle cx={n.x+180} cy={n.y+nh/2} r="12"
+                    fill="rgba(0,0,0,0.001)" pointerEvents="all" style={{cursor:'crosshair'}}
+                    onMouseDown={e => e.stopPropagation()}
+                    onClick={e => { e.stopPropagation(); handlePortClick(n.id, 'out'); }} />
+                </g>
+              );
+            })}
 
             {nodes.length === 0 && (
               <text x={viewBox.x + viewBox.w/2} y={viewBox.y + viewBox.h/2} textAnchor="middle" fill="var(--nv-text-dim)" fontSize="14" fontFamily="inherit">

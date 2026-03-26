@@ -397,7 +397,6 @@ import json, sys, os, traceback, time
 graph_code_file = sys.argv[1]
 result_file = sys.argv[2]
 ray_address = sys.argv[3] if len(sys.argv) > 3 and sys.argv[3] != "__none__" else None
-input_path = sys.argv[4] if len(sys.argv) > 4 and sys.argv[4] != "__none__" else None
 
 def _root_cause(exc):
     \"\"\"Walk the exception chain to find the original cause.\"\"\"
@@ -408,48 +407,44 @@ def _root_cause(exc):
     return exc
 
 try:
+    import ray
+
+    effective_ray = ray_address or os.environ.get("RAY_ADDRESS") or "auto"
+    ray.init(address=effective_ray, ignore_reinit_error=True)
+    print(f"Ray initialized: {effective_ray}")
+
     with open(graph_code_file) as f:
         code = f.read()
 
     ns = {"__name__": "__graph_runner__", "__file__": graph_code_file}
-    exec(compile(code, graph_code_file, "exec"), ns)
-
-    graph = ns.get("graph")
-    if graph is None:
-        raise RuntimeError("Generated code did not produce a 'graph' variable")
-
-    print(f"Graph loaded: {len(graph.roots)} root(s)")
-
-    from nemo_retriever.graph.executor import RayDataExecutor
-
-    effective_ray = ray_address or os.environ.get("RAY_ADDRESS") or "auto"
-    print(f"Using Ray address: {effective_ray}")
-    print(f"Input path: {input_path or '(none)'}")
 
     wall_start = time.perf_counter()
+    exec(compile(code, graph_code_file, "exec"), ns)
 
-    if input_path:
-        executor = RayDataExecutor(graph, ray_address=effective_ray, batch_size=1)
-        ds = executor.ingest(input_path)
-        row_count = ds.count() if hasattr(ds, "count") else "unknown"
+    result_ds = ns.get("result")
+    graph = ns.get("graph")
+
+    if result_ds is not None:
         elapsed = round(time.perf_counter() - wall_start, 2)
-        print(f"Graph execution complete: {row_count} rows in {elapsed}s")
-        result = {
-            "success": True,
-            "return_code": 0,
-            "rows": row_count if isinstance(row_count, int) else 0,
-            "elapsed_secs": elapsed,
-        }
-    else:
+        try:
+            import ray.data as _rd
+            if isinstance(result_ds, _rd.Dataset):
+                row_count = result_ds.count()
+                print(f"Pipeline complete: {row_count} rows in {elapsed}s")
+                result = {"success": True, "return_code": 0, "rows": row_count, "elapsed_secs": elapsed}
+            else:
+                print(f"Pipeline complete in {elapsed}s (result type: {type(result_ds).__name__})")
+                result = {"success": True, "return_code": 0, "elapsed_secs": elapsed}
+        except Exception:
+            print(f"Pipeline complete in {elapsed}s")
+            result = {"success": True, "return_code": 0, "elapsed_secs": elapsed}
+    elif graph is not None:
         outputs = graph.execute(None)
         elapsed = round(time.perf_counter() - wall_start, 2)
         print(f"Graph.execute complete: {len(outputs)} output(s) in {elapsed}s")
-        result = {
-            "success": True,
-            "return_code": 0,
-            "outputs": len(outputs),
-            "elapsed_secs": elapsed,
-        }
+        result = {"success": True, "return_code": 0, "outputs": len(outputs), "elapsed_secs": elapsed}
+    else:
+        raise RuntimeError("Generated code did not produce a 'result' (Ray Data) or 'graph' variable")
 
 except Exception as exc:
     full_tb = traceback.format_exc()
@@ -883,10 +878,9 @@ def _execute_job_on_runner(base_url: str, job: dict[str, Any], runner_id: int = 
             wrapper_file.write_text(_GRAPH_WRAPPER_SCRIPT)
 
             ray_addr = graph_meta.get("ray_address") or overrides.get("ray_address") or "__none__"
-            input_path = graph_meta.get("input_path") or "__none__"
 
             python_bin = str(venv_dir / "bin" / "python") if venv_dir else sys.executable
-            cmd = [python_bin, str(wrapper_file), str(code_file), str(result_file), ray_addr, input_path]
+            cmd = [python_bin, str(wrapper_file), str(code_file), str(result_file), ray_addr]
             if use_nsys:
                 cmd = _nsys_prefix(str(nsys_output_dir / "profile")) + cmd
             proc = subprocess.Popen(

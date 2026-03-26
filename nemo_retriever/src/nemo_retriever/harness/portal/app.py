@@ -2928,6 +2928,78 @@ async def export_runs_json(
 # ---------------------------------------------------------------------------
 
 
+_RAY_DATA_SOURCES: list[dict[str, Any]] = [
+    {
+        "class_name": "ReadBinaryFiles",
+        "module": "ray.data",
+        "import_path": "import ray.data",
+        "type": "ray_data_source",
+        "ray_fn": "ray.data.read_binary_files",
+        "params": [
+            {"name": "paths", "type": "str"},
+            {"name": "include_paths", "type": "bool", "default": True},
+        ],
+        "category": "data",
+    },
+    {
+        "class_name": "ReadCSV",
+        "module": "ray.data",
+        "import_path": "import ray.data",
+        "type": "ray_data_source",
+        "ray_fn": "ray.data.read_csv",
+        "params": [
+            {"name": "paths", "type": "str"},
+        ],
+        "category": "data",
+    },
+    {
+        "class_name": "ReadParquet",
+        "module": "ray.data",
+        "import_path": "import ray.data",
+        "type": "ray_data_source",
+        "ray_fn": "ray.data.read_parquet",
+        "params": [
+            {"name": "paths", "type": "str"},
+        ],
+        "category": "data",
+    },
+    {
+        "class_name": "ReadJSON",
+        "module": "ray.data",
+        "import_path": "import ray.data",
+        "type": "ray_data_source",
+        "ray_fn": "ray.data.read_json",
+        "params": [
+            {"name": "paths", "type": "str"},
+        ],
+        "category": "data",
+    },
+    {
+        "class_name": "ReadImages",
+        "module": "ray.data",
+        "import_path": "import ray.data",
+        "type": "ray_data_source",
+        "ray_fn": "ray.data.read_images",
+        "params": [
+            {"name": "paths", "type": "str"},
+            {"name": "mode", "type": "str", "default": "RGB"},
+        ],
+        "category": "data",
+    },
+    {
+        "class_name": "ReadText",
+        "module": "ray.data",
+        "import_path": "import ray.data",
+        "type": "ray_data_source",
+        "ray_fn": "ray.data.read_text",
+        "params": [
+            {"name": "paths", "type": "str"},
+        ],
+        "category": "data",
+    },
+]
+
+
 def _discover_operators() -> list[dict[str, Any]]:
     """Discover all AbstractOperator subclasses available in the environment."""
     import inspect as _inspect
@@ -2998,6 +3070,7 @@ def _discover_operators() -> list[dict[str, Any]]:
             except Exception as exc:
                 logger.debug("Failed to introspect %s.%s: %s", module_path, class_name, exc)
 
+    registry.extend(_RAY_DATA_SOURCES)
     return registry
 
 
@@ -3060,7 +3133,6 @@ class GraphRunRequest(BaseModel):
     runner_id: int | None = None
     git_ref: str | None = None
     git_commit: str | None = None
-    input_path: str | None = None
     ray_address: str | None = None
 
 
@@ -3082,7 +3154,6 @@ async def run_graph_endpoint(graph_id: int, req: GraphRunRequest):
     pinned_sha, pinned_ref = _resolve_git_override(req.git_ref, req.git_commit)
 
     graph_meta = {
-        "input_path": req.input_path,
         "ray_address": req.ray_address,
     }
 

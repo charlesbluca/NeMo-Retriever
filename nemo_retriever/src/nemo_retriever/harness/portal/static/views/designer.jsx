@@ -21,6 +21,28 @@ function _toPythonValue(val) {
   return JSON.stringify(String(val));
 }
 
+function _buildKwargsEntries(opParams, nodeCfg) {
+  const entries = [];
+  opParams.forEach(p => {
+    if (p.pydantic && p.fields) {
+      const subCfg = nodeCfg[p.name] || {};
+      const subEntries = Object.entries(subCfg).filter(([, v]) => v !== '' && v !== undefined);
+      if (subEntries.length > 0) {
+        const args = subEntries.map(([k, v]) => `${k}=${_toPythonValue(v)}`).join(', ');
+        entries.push(`${JSON.stringify(p.name)}: ${p.pydantic_class}(${args})`);
+      } else {
+        entries.push(`${JSON.stringify(p.name)}: ${p.pydantic_class}()`);
+      }
+    } else {
+      const val = nodeCfg[p.name];
+      if (val !== '' && val !== undefined) {
+        entries.push(`${JSON.stringify(p.name)}: ${_toPythonValue(val)}`);
+      }
+    }
+  });
+  return entries;
+}
+
 function _generateCode(nodes, edges) {
   if (nodes.length === 0) return '# Empty graph — add operators to the canvas\n';
 
@@ -70,6 +92,9 @@ function _generateRayDataCode(nodes, edges) {
   chain.forEach(n => {
     if (n.operator && n.operator.type !== 'ray_data_source') {
       imports.add(n.operator.import_path);
+      (n.operator.params || []).forEach(p => {
+        if (p.pydantic && p.pydantic_import) imports.add(p.pydantic_import);
+      });
     }
   });
 
@@ -102,14 +127,13 @@ function _generateRayDataCode(nodes, edges) {
     const n = chain[i];
     const op = n.operator;
     if (!op) continue;
-
-    const cfgEntries = Object.entries(n.config || {}).filter(([, v]) => v !== '' && v !== undefined);
     const isGpu = op.category === 'gpu';
 
+    const kwargsEntries = _buildKwargsEntries(op.params || [], n.config || {});
+
     let kwargsStr = '{}';
-    if (cfgEntries.length > 0) {
-      const parts = cfgEntries.map(([k, v]) => `${JSON.stringify(k)}: ${_toPythonValue(v)}`);
-      kwargsStr = '{' + parts.join(', ') + '}';
+    if (kwargsEntries.length > 0) {
+      kwargsStr = '{' + kwargsEntries.join(', ') + '}';
     }
 
     lines.push(`# Stage: ${op.class_name}`);
@@ -139,7 +163,12 @@ function _generateLegacyCode(nodes, edges) {
   nodes.forEach(n => { nodeMap[n.id] = n; });
 
   nodes.forEach(n => {
-    if (n.operator) imports.add(n.operator.import_path);
+    if (n.operator) {
+      imports.add(n.operator.import_path);
+      (n.operator.params || []).forEach(p => {
+        if (p.pydantic && p.pydantic_import) imports.add(p.pydantic_import);
+      });
+    }
   });
 
   const lines = [];
@@ -149,15 +178,36 @@ function _generateLegacyCode(nodes, edges) {
   nodes.forEach(n => {
     const op = n.operator;
     if (!op) return;
-    const cfgEntries = Object.entries(n.config || {}).filter(([, v]) => v !== '' && v !== undefined);
-    let argStr = '';
-    if (cfgEntries.length > 0) {
-      argStr = cfgEntries.map(([k, v]) => {
-        const strVal = typeof v === 'string' ? JSON.stringify(v) : String(v);
-        return `${k}=${strVal}`;
-      }).join(', ');
+    const opParams = op.params || [];
+    const hasPydantic = opParams.some(p => p.pydantic);
+
+    if (hasPydantic) {
+      const argParts = [];
+      opParams.forEach(p => {
+        if (p.pydantic && p.fields) {
+          const subCfg = (n.config || {})[p.name] || {};
+          const subEntries = Object.entries(subCfg).filter(([, v]) => v !== '' && v !== undefined);
+          const constructorArgs = subEntries.map(([k, v]) => `${k}=${_toPythonValue(v)}`).join(', ');
+          argParts.push(`${p.name}=${p.pydantic_class}(${constructorArgs})`);
+        } else {
+          const val = (n.config || {})[p.name];
+          if (val !== '' && val !== undefined) {
+            argParts.push(`${p.name}=${_toPythonValue(val)}`);
+          }
+        }
+      });
+      lines.push(`${n.varName} = ${op.class_name}(${argParts.join(', ')})`);
+    } else {
+      const cfgEntries = Object.entries(n.config || {}).filter(([, v]) => v !== '' && v !== undefined);
+      let argStr = '';
+      if (cfgEntries.length > 0) {
+        argStr = cfgEntries.map(([k, v]) => {
+          const strVal = typeof v === 'string' ? JSON.stringify(v) : String(v);
+          return `${k}=${strVal}`;
+        }).join(', ');
+      }
+      lines.push(`${n.varName} = ${op.class_name}(${argStr})`);
     }
-    lines.push(`${n.varName} = ${op.class_name}(${argStr})`);
   });
 
   lines.push('');
@@ -340,6 +390,42 @@ function EdgeArrow({ edge, nodes, selected, onSelect }) {
 }
 
 /* ---------- Node Config Panel ---------- */
+function _defaultLabel(field) {
+  if (field.required) return null;
+  if (field.default === undefined) return null;
+  if (field.default === null) return 'None';
+  return String(field.default);
+}
+
+function _PydanticFieldInput({ paramName, field, value, onChange }) {
+  const hasDefault = field.default !== undefined;
+  const defaultStr = hasDefault ? (field.default === null ? '' : String(field.default)) : '';
+  const displayVal = value !== undefined ? value : defaultStr;
+  const isModified = value !== undefined && value !== defaultStr;
+  const defaultHint = _defaultLabel(field);
+
+  return (
+    <div style={{marginBottom:'8px'}}>
+      <label style={{display:'flex',alignItems:'baseline',gap:'4px',fontSize:'11px',color:'#fff',fontWeight:500,marginBottom:'3px'}}>
+        <span>{field.name}</span>
+        {field.required && <span style={{color:'#ff9f43',fontSize:'9px',fontWeight:700}}>REQ</span>}
+        {field.type && <span style={{color:'var(--nv-text-dim)',fontWeight:400,fontSize:'9px',marginLeft:'auto'}}>{field.type}</span>}
+      </label>
+      <input className="input" value={displayVal}
+        onChange={e => onChange(paramName, field.name, e.target.value)}
+        placeholder={field.default === null ? 'None' : (field.required ? 'required' : '')}
+        style={{width:'100%',fontSize:'11px',fontFamily:'var(--font-mono)',padding:'4px 8px',
+          borderColor: field.required && !value ? 'rgba(255,159,67,0.4)' : undefined,
+          color: isModified ? '#fff' : 'var(--nv-text-muted)'}} />
+      {defaultHint !== null && (
+        <div style={{fontSize:'9px',color:'var(--nv-text-dim)',marginTop:'2px',fontFamily:'var(--font-mono)'}}>
+          default: {defaultHint}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function NodeConfigPanel({ node, onUpdate, onClose }) {
   const params = node.operator?.params || [];
   const [cfg, setCfg] = useState({...(node.config || {})});
@@ -350,8 +436,21 @@ function NodeConfigPanel({ node, onUpdate, onClose }) {
     onClose();
   }
 
+  function handlePydanticField(paramName, fieldName, value) {
+    const subCfg = { ...(cfg[paramName] || {}) };
+    if (value === '' || value === undefined) {
+      delete subCfg[fieldName];
+    } else {
+      subCfg[fieldName] = value;
+    }
+    setCfg({ ...cfg, [paramName]: subCfg });
+  }
+
+  const scalarParams = params.filter(p => !p.pydantic);
+  const pydanticParams = params.filter(p => p.pydantic && p.fields);
+
   return (
-    <div style={{width:'280px',borderLeft:'1px solid var(--nv-border)',display:'flex',flexDirection:'column',overflow:'hidden',flexShrink:0,background:'var(--nv-surface)'}}>
+    <div style={{width:'300px',borderLeft:'1px solid var(--nv-border)',display:'flex',flexDirection:'column',overflow:'hidden',flexShrink:0,background:'var(--nv-surface)'}}>
       <div style={{padding:'12px',borderBottom:'1px solid var(--nv-border)',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
         <div>
           <div style={{fontSize:'12px',fontWeight:700,color:'#fff'}}>{node.operator?.class_name}</div>
@@ -365,21 +464,55 @@ function NodeConfigPanel({ node, onUpdate, onClose }) {
           <input className="input" value={varName} onChange={e => setVarName(e.target.value)}
             style={{width:'100%',fontSize:'12px',fontFamily:'var(--font-mono)',padding:'5px 8px'}} />
         </div>
-        {params.length > 0 && (
-          <div style={{fontSize:'10px',fontWeight:700,color:'var(--nv-text-dim)',textTransform:'uppercase',marginBottom:'8px'}}>Parameters</div>
+
+        {scalarParams.length > 0 && (
+          <>
+            <div style={{fontSize:'10px',fontWeight:700,color:'var(--nv-text-dim)',textTransform:'uppercase',marginBottom:'8px'}}>Parameters</div>
+            {scalarParams.map(p => {
+              const hasDefault = p.default !== undefined;
+              const defaultStr = hasDefault ? (p.default === null ? '' : String(p.default)) : '';
+              const curVal = cfg[p.name] !== undefined ? cfg[p.name] : defaultStr;
+              return (
+                <div key={p.name} style={{marginBottom:'10px'}}>
+                  <label style={{display:'block',fontSize:'11px',color:'#fff',fontWeight:500,marginBottom:'3px'}}>
+                    {p.name}
+                    {p.type && <span style={{color:'var(--nv-text-dim)',fontWeight:400,marginLeft:'6px',fontSize:'10px'}}>{p.type}</span>}
+                  </label>
+                  <input className="input" value={curVal}
+                    onChange={e => setCfg({...cfg, [p.name]: e.target.value})}
+                    placeholder={p.default === null ? 'None' : (hasDefault ? defaultStr : '')}
+                    style={{width:'100%',fontSize:'11px',fontFamily:'var(--font-mono)',padding:'4px 8px'}} />
+                  {hasDefault && (
+                    <div style={{fontSize:'9px',color:'var(--nv-text-dim)',marginTop:'2px',fontFamily:'var(--font-mono)'}}>
+                      default: {p.default === null ? 'None' : String(p.default)}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </>
         )}
-        {params.map(p => (
-          <div key={p.name} style={{marginBottom:'10px'}}>
-            <label style={{display:'block',fontSize:'11px',color:'#fff',fontWeight:500,marginBottom:'3px'}}>
-              {p.name}
-              {p.type && <span style={{color:'var(--nv-text-dim)',fontWeight:400,marginLeft:'6px',fontSize:'10px'}}>{p.type}</span>}
-            </label>
-            <input className="input" value={cfg[p.name] ?? (p.default !== undefined ? p.default : '')}
-              onChange={e => setCfg({...cfg, [p.name]: e.target.value})}
-              placeholder={p.default !== undefined ? String(p.default) : ''}
-              style={{width:'100%',fontSize:'11px',fontFamily:'var(--font-mono)',padding:'4px 8px'}} />
-          </div>
-        ))}
+
+        {pydanticParams.map(p => {
+          const subCfg = cfg[p.name] || {};
+          return (
+            <div key={p.name} style={{marginBottom:'16px'}}>
+              <div style={{
+                fontSize:'10px',fontWeight:700,textTransform:'uppercase',letterSpacing:'0.04em',
+                marginBottom:'10px',paddingBottom:'6px',borderBottom:'1px solid var(--nv-border)',
+                display:'flex',alignItems:'center',gap:'6px',
+              }}>
+                <span style={{color:'var(--nv-green)'}}>{p.pydantic_class}</span>
+                <span style={{color:'var(--nv-text-dim)',fontWeight:400,fontSize:'9px'}}>({p.name})</span>
+              </div>
+              {p.fields.map(f => (
+                <_PydanticFieldInput key={f.name} paramName={p.name} field={f}
+                  value={subCfg[f.name]} onChange={handlePydanticField} />
+              ))}
+            </div>
+          );
+        })}
+
         {params.length === 0 && (
           <div style={{color:'var(--nv-text-dim)',fontSize:'12px',fontStyle:'italic',padding:'12px 0'}}>No configurable parameters</div>
         )}

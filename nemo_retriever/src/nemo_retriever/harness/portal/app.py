@@ -3000,9 +3000,48 @@ _RAY_DATA_SOURCES: list[dict[str, Any]] = [
 ]
 
 
+def _introspect_pydantic_fields(model_cls: type) -> list[dict[str, Any]] | None:
+    """If *model_cls* is a Pydantic BaseModel, return its scalar field descriptors."""
+    try:
+        from pydantic import BaseModel as _BM
+        from pydantic_core import PydanticUndefined as _PU
+    except ImportError:
+        return None
+    if not (isinstance(model_cls, type) and issubclass(model_cls, _BM)):
+        return None
+    fields: list[dict[str, Any]] = []
+    for fname, finfo in model_cls.model_fields.items():
+        ftype = finfo.annotation
+        try:
+            if isinstance(ftype, type) and issubclass(ftype, _BM):
+                continue
+        except TypeError:
+            pass
+        if finfo.default_factory is not None:
+            continue
+        f_data: dict[str, Any] = {"name": fname}
+        if finfo.default is not _PU:
+            default_val = finfo.default
+            if default_val is None:
+                f_data["default"] = None
+            else:
+                try:
+                    json_module.dumps(default_val)
+                    f_data["default"] = default_val
+                except (TypeError, ValueError):
+                    f_data["default"] = str(default_val)
+        else:
+            f_data["required"] = True
+        if finfo.annotation is not None:
+            f_data["type"] = str(finfo.annotation)
+        fields.append(f_data)
+    return fields
+
+
 def _discover_operators() -> list[dict[str, Any]]:
     """Discover all AbstractOperator subclasses available in the environment."""
     import inspect as _inspect
+    import typing as _typing
 
     registry: list[dict[str, Any]] = []
 
@@ -3034,6 +3073,12 @@ def _discover_operators() -> list[dict[str, Any]]:
                 mod = __import__(module_path, fromlist=[class_name])
                 cls = getattr(mod, class_name)
                 sig = _inspect.signature(cls.__init__)
+
+                try:
+                    resolved_hints = _typing.get_type_hints(cls.__init__)
+                except Exception:
+                    resolved_hints = {}
+
                 params = []
                 for pname, param in sig.parameters.items():
                     if pname == "self" or param.kind in (
@@ -3042,6 +3087,19 @@ def _discover_operators() -> list[dict[str, Any]]:
                     ):
                         continue
                     p_info: dict[str, Any] = {"name": pname}
+
+                    resolved_type = resolved_hints.get(pname)
+                    if resolved_type is not None:
+                        pydantic_fields = _introspect_pydantic_fields(resolved_type)
+                        if pydantic_fields is not None:
+                            p_info["pydantic"] = True
+                            p_info["pydantic_class"] = resolved_type.__name__
+                            p_info["pydantic_module"] = resolved_type.__module__
+                            p_info["pydantic_import"] = (
+                                f"from {resolved_type.__module__} import {resolved_type.__name__}"
+                            )
+                            p_info["fields"] = pydantic_fields
+
                     if param.default is not _inspect.Parameter.empty:
                         try:
                             json_module.dumps(param.default)

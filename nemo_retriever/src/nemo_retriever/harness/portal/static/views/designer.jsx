@@ -170,73 +170,43 @@ function _generateRayDataCode(nodes, edges) {
     lines.push('');
   }
 
-  if (sinkNodes.length > 0) {
-    lines.push('result = ds.materialize()');
+  sinkNodes.forEach(sn => {
+    const op = sn.operator;
+    if (!op) return;
+    imports.add(op.import_path);
+
+    const kwargsEntries = _buildKwargsEntries(op.params || [], sn.config || {});
+    let kwargsStr = '{}';
+    if (kwargsEntries.length > 0) {
+      kwargsStr = '{' + kwargsEntries.join(', ') + '}';
+    }
+
+    lines.push(`# Sink: ${op.display_name || op.class_name}`);
+    lines.push(`ds = ds.map_batches(`);
+    lines.push(`    ${op.class_name},`);
+    lines.push(`    fn_constructor_kwargs=${kwargsStr},`);
+    lines.push(`    batch_size=1,`);
+    lines.push(`    batch_format="pandas",`);
+    lines.push(`)`);
     lines.push('');
-    sinkNodes.forEach(sn => {
-      const sc = sn.config || {};
-      if (sn.operator?.class_name === 'LanceDBWriterActor') {
-        const uri = sc.uri || 'lancedb';
-        const tbl = sc.table_name || 'nv-ingest';
-        lines.push('# Sink: LanceDB Writer');
-        lines.push('import shutil, os, lancedb, pyarrow as pa');
-        lines.push(`_ldb_uri = ${_toPythonValue(uri)}`);
-        lines.push('if os.path.isdir(_ldb_uri):');
-        lines.push('    shutil.rmtree(_ldb_uri)');
-        lines.push('os.makedirs(_ldb_uri, exist_ok=True)');
-        lines.push('_arrow_refs = result.to_arrow_refs()');
-        lines.push('import ray as _ray');
-        lines.push('_table = pa.concat_tables([_ray.get(r) for r in _arrow_refs], promote_options="permissive")');
-        lines.push(`_db = lancedb.connect(_ldb_uri)`);
-        lines.push(`_db.create_table(${_toPythonValue(tbl)}, _table, mode="overwrite")`);
-        lines.push(`print(f"LanceDB: wrote {_table.num_rows} rows to {_ldb_uri}/${tbl}")`);
-        lines.push('');
-      }
-    });
-  } else {
-    lines.push('result = ds.materialize()');
-    lines.push('');
-  }
+  });
+
+  lines.push('result = ds.materialize()');
+  lines.push('');
 
   evalNodes.forEach(en => {
-    const ec = en.config || {};
-    if (en.operator?.class_name === 'RecallEvaluatorActor') {
-      imports.add('from nemo_retriever.recall.core import RecallConfig, retrieve_and_score');
-      const ksStr = (ec.ks || '1,3,5,10').split(',').map(s => s.trim()).filter(Boolean).join(', ');
-      lines.push('# Evaluation: Recall');
-      lines.push('_recall_cfg = RecallConfig(');
-      lines.push(`    lancedb_uri=${_toPythonValue(ec.lancedb_uri || 'lancedb')},`);
-      lines.push(`    lancedb_table=${_toPythonValue(ec.lancedb_table || 'nv-ingest')},`);
-      lines.push(`    embedding_model=${_toPythonValue(ec.embedding_model || 'nvidia/llama-nemotron-embed-1b-v2')},`);
-      lines.push(`    match_mode=${_toPythonValue(ec.match_mode || 'pdf_page')},`);
-      lines.push(`    ks=(${ksStr}),`);
-      lines.push(`    hybrid=${_toPythonValue(ec.hybrid || false)},`);
-      lines.push(')');
-      lines.push(`_query_csv = ${_toPythonValue(ec.query_csv || '')}`);
-      lines.push('from pathlib import Path as _Path');
-      lines.push('_df, _gold, _hits, _keys, _recall_results = retrieve_and_score(_Path(_query_csv), cfg=_recall_cfg)');
-      lines.push('print(f"Recall results: {_recall_results}")');
-      lines.push('');
-    } else if (en.operator?.class_name === 'BEIREvaluatorActor') {
-      imports.add('from nemo_retriever.recall.beir import BeirConfig, evaluate_lancedb_beir');
-      const ksStr = (ec.beir_ks || '1,3,5,10').split(',').map(s => s.trim()).filter(Boolean).join(', ');
-      lines.push('# Evaluation: BEIR');
-      lines.push('_beir_cfg = BeirConfig(');
-      lines.push(`    lancedb_uri=${_toPythonValue(ec.lancedb_uri || 'lancedb')},`);
-      lines.push(`    lancedb_table=${_toPythonValue(ec.lancedb_table || 'nv-ingest')},`);
-      lines.push(`    embedding_model=${_toPythonValue(ec.embedding_model || 'nvidia/llama-nemotron-embed-1b-v2')},`);
-      lines.push(`    loader=${_toPythonValue(ec.beir_loader || 'vidore_hf')},`);
-      lines.push(`    dataset_name=${_toPythonValue(ec.beir_dataset_name || '')},`);
-      lines.push(`    split=${_toPythonValue(ec.beir_split || 'test')},`);
-      if (ec.beir_query_language) lines.push(`    query_language=${_toPythonValue(ec.beir_query_language)},`);
-      lines.push(`    doc_id_field=${_toPythonValue(ec.beir_doc_id_field || 'pdf_basename')},`);
-      lines.push(`    ks=(${ksStr}),`);
-      lines.push(`    hybrid=${_toPythonValue(ec.hybrid || false)},`);
-      lines.push(')');
-      lines.push('_dataset, _hits, _per_query, _beir_results = evaluate_lancedb_beir(_beir_cfg)');
-      lines.push('print(f"BEIR results: {_beir_results}")');
-      lines.push('');
-    }
+    const op = en.operator;
+    if (!op) return;
+    imports.add(op.import_path);
+
+    const kwargsEntries = _buildKwargsEntries(op.params || [], en.config || {});
+    let kwargsStr = kwargsEntries.length > 0 ? '{' + kwargsEntries.join(', ') + '}' : '{}';
+
+    const varName = en.varName || '_evaluator';
+    lines.push(`# Evaluation: ${op.display_name || op.class_name}`);
+    lines.push(`${varName} = ${op.class_name}(**${kwargsStr})`);
+    lines.push(`_eval_summary = ${varName}.evaluate()`);
+    lines.push('');
   });
 
   const importBlock = Array.from(imports).sort().join('\n');

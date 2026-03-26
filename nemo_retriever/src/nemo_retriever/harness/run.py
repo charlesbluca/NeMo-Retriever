@@ -985,7 +985,7 @@ def _run_entry(
         graph_overrides = {
             "query_csv": None,
             "recall_required": False,
-            "evaluation_mode": "none",
+            "evaluation_mode": "recall",
         }
         if sweep_overrides:
             graph_overrides.update(sweep_overrides)

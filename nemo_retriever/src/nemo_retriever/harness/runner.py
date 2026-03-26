@@ -13,6 +13,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import traceback
@@ -390,6 +391,70 @@ with open(sys.argv[2], "w") as f:
     json.dump(result, f)
 """
 
+_GRAPH_WRAPPER_SCRIPT = """\
+import json, sys, os, traceback, time
+
+graph_code_file = sys.argv[1]
+result_file = sys.argv[2]
+ray_address = sys.argv[3] if len(sys.argv) > 3 and sys.argv[3] != "__none__" else None
+input_path = sys.argv[4] if len(sys.argv) > 4 and sys.argv[4] != "__none__" else None
+
+try:
+    with open(graph_code_file) as f:
+        code = f.read()
+
+    ns = {"__name__": "__graph_runner__", "__file__": graph_code_file}
+    exec(compile(code, graph_code_file, "exec"), ns)
+
+    graph = ns.get("graph")
+    if graph is None:
+        raise RuntimeError("Generated code did not produce a 'graph' variable")
+
+    print(f"Graph loaded: {len(graph.roots)} root(s)")
+
+    from nemo_retriever.graph.executor import RayDataExecutor
+
+    effective_ray = ray_address or os.environ.get("RAY_ADDRESS") or "auto"
+    print(f"Using Ray address: {effective_ray}")
+    print(f"Input path: {input_path or '(none)'}")
+
+    wall_start = time.perf_counter()
+
+    if input_path:
+        executor = RayDataExecutor(graph, ray_address=effective_ray, batch_size=1)
+        ds = executor.ingest(input_path)
+        row_count = ds.count() if hasattr(ds, "count") else "unknown"
+        elapsed = round(time.perf_counter() - wall_start, 2)
+        print(f"Graph execution complete: {row_count} rows in {elapsed}s")
+        result = {
+            "success": True,
+            "return_code": 0,
+            "rows": row_count if isinstance(row_count, int) else 0,
+            "elapsed_secs": elapsed,
+        }
+    else:
+        outputs = graph.execute(None)
+        elapsed = round(time.perf_counter() - wall_start, 2)
+        print(f"Graph.execute complete: {len(outputs)} output(s) in {elapsed}s")
+        result = {
+            "success": True,
+            "return_code": 0,
+            "outputs": len(outputs),
+            "elapsed_secs": elapsed,
+        }
+
+except Exception:
+    traceback.print_exc()
+    result = {
+        "success": False,
+        "failure_reason": traceback.format_exc().splitlines()[-1],
+        "return_code": 1,
+    }
+
+with open(result_file, "w") as f:
+    json.dump(result, f)
+"""
+
 
 def _create_job_venv(job_id: str, repo_root: Path) -> Path | None:
     """Create a uv venv for *job_id* and install nemo_retriever into it.
@@ -725,10 +790,57 @@ def _execute_job_on_runner(base_url: str, job: dict[str, Any], runner_id: int = 
         else:
             logger.warning("Job %s — venv creation failed, falling back to current environment", job_id)
 
+    graph_code = job.get("graph_code")
+    graph_meta: dict[str, Any] = {}
+    if graph_code and job.get("config"):
+        try:
+            graph_meta = json_module.loads(job["config"])
+        except (json_module.JSONDecodeError, TypeError):
+            pass
+
     original_stdout = sys.stdout
     sys.stdout = _TeeWriter(original_stdout)
     try:
-        if venv_dir is not None:
+        if graph_code:
+            # ---- Graph execution path ----
+            run_dir = venv_dir or Path(tempfile.mkdtemp(prefix=f"graph_{job_id}_"))
+            code_file = run_dir / "graph_pipeline.py"
+            result_file = run_dir / "job_result.json"
+            wrapper_file = run_dir / "graph_wrapper.py"
+
+            code_file.write_text(graph_code)
+            wrapper_file.write_text(_GRAPH_WRAPPER_SCRIPT)
+
+            ray_addr = graph_meta.get("ray_address") or overrides.get("ray_address", "__none__")
+            input_path = graph_meta.get("input_path") or "__none__"
+
+            python_bin = str(venv_dir / "bin" / "python") if venv_dir else sys.executable
+            proc = subprocess.Popen(
+                [python_bin, str(wrapper_file), str(code_file), str(result_file), ray_addr, input_path],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                cwd=str(repo_root) if repo_root else None,
+            )
+
+            for line in proc.stdout:
+                sys.stdout.write(line)
+
+            proc.wait()
+
+            if result_file.exists():
+                result = json_module.loads(result_file.read_text())
+            else:
+                result = {
+                    "success": False,
+                    "failure_reason": f"Graph process terminated (exit code {proc.returncode})",
+                    "return_code": proc.returncode,
+                }
+
+            if not venv_dir and run_dir.exists():
+                shutil.rmtree(run_dir, ignore_errors=True)
+
+        elif venv_dir is not None:
             # ---- Run in isolated subprocess using the job venv ----
             args_file = venv_dir / "job_args.json"
             result_file = venv_dir / "job_result.json"

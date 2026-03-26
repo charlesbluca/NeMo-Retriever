@@ -3004,3 +3004,48 @@ async def delete_graph_endpoint(graph_id: int):
     if not ok:
         raise HTTPException(404, "Graph not found")
     return {"ok": True}
+
+
+class GraphRunRequest(BaseModel):
+    runner_id: int | None = None
+    git_ref: str | None = None
+    git_commit: str | None = None
+    input_path: str | None = None
+    ray_address: str | None = None
+
+
+class GraphRunResponse(BaseModel):
+    job_id: str
+    status: str
+
+
+@app.post("/api/graphs/{graph_id}/run", response_model=GraphRunResponse)
+async def run_graph_endpoint(graph_id: int, req: GraphRunRequest):
+    graph = history.get_graph(graph_id)
+    if not graph:
+        raise HTTPException(404, "Graph not found")
+
+    code = graph.get("generated_code") or ""
+    if not code.strip():
+        raise HTTPException(400, "Graph has no generated code. Save the graph first.")
+
+    pinned_sha, pinned_ref = _resolve_git_override(req.git_ref, req.git_commit)
+
+    graph_meta = {
+        "input_path": req.input_path,
+        "ray_address": req.ray_address,
+    }
+
+    job = history.create_job(
+        {
+            "trigger_source": "graph",
+            "dataset": graph.get("name") or f"graph-{graph_id}",
+            "assigned_runner_id": req.runner_id,
+            "git_commit": pinned_sha,
+            "git_ref": pinned_ref,
+            "graph_code": code,
+            "tags": ["graph-run", graph.get("name", "")],
+            "config": json_module.dumps(graph_meta),
+        }
+    )
+    return GraphRunResponse(job_id=job["id"], status="pending")

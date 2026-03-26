@@ -368,6 +368,131 @@ function SaveGraphModal({ name, setName, description, setDescription, onSave, on
   );
 }
 
+/* ---------- Run Graph Modal ---------- */
+function RunGraphModal({ graphId, graphName, onClose }) {
+  const [runners, setRunners] = useState([]);
+  const [runnerId, setRunnerId] = useState('');
+  const [inputPath, setInputPath] = useState('');
+  const [rayAddress, setRayAddress] = useState('');
+  const [gitRef, setGitRef] = useState('');
+  const [gitCommit, setGitCommit] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [result, setResult] = useState(null);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    fetch('/api/runners').then(r => r.json()).then(list => {
+      const online = (list || []).filter(r => r.status === 'online' || r.status === 'idle');
+      setRunners(online.length > 0 ? online : list || []);
+    }).catch(() => {});
+  }, []);
+
+  async function handleRun() {
+    setSubmitting(true);
+    setError(null);
+    setResult(null);
+    try {
+      const body = {};
+      if (runnerId) body.runner_id = parseInt(runnerId, 10);
+      if (inputPath.trim()) body.input_path = inputPath.trim();
+      if (rayAddress.trim()) body.ray_address = rayAddress.trim();
+      if (gitRef.trim()) body.git_ref = gitRef.trim();
+      if (gitCommit.trim()) body.git_commit = gitCommit.trim();
+
+      const res = await fetch(`/api/graphs/${graphId}/run`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.detail || `HTTP ${res.status}`);
+      }
+      const data = await res.json();
+      setResult(data);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  const fieldLabel = { display: 'block', fontSize: '11px', fontWeight: 600, color: 'var(--nv-text-dim)', textTransform: 'uppercase', marginBottom: '5px' };
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-content" style={{ maxWidth: '520px' }} onClick={e => e.stopPropagation()}>
+        <div className="modal-head">
+          <span>Run Graph: {graphName}</span>
+          <button className="modal-close" onClick={onClose}>&times;</button>
+        </div>
+        <div className="modal-body" style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+          {result ? (
+            <div style={{ textAlign: 'center', padding: '16px 0' }}>
+              <div style={{ fontSize: '14px', color: 'var(--nv-green)', fontWeight: 600, marginBottom: '8px' }}>Job submitted successfully</div>
+              <div style={{ fontSize: '12px', color: 'var(--nv-text-dim)', marginBottom: '12px' }}>
+                Job ID: <code style={{ color: '#fff', background: 'rgba(255,255,255,0.06)', padding: '2px 6px', borderRadius: '4px' }}>{result.job_id}</code>
+              </div>
+              <div style={{ fontSize: '11px', color: 'var(--nv-text-muted)' }}>
+                View progress in the <strong>Runs</strong> tab under Active Jobs.
+              </div>
+            </div>
+          ) : (
+            <>
+              <div>
+                <label style={fieldLabel}>Input Path (files/glob for RayDataExecutor)</label>
+                <input className="input" value={inputPath} onChange={e => setInputPath(e.target.value)}
+                  style={{ width: '100%' }} placeholder="/path/to/documents/**/*.pdf" />
+              </div>
+              <div style={{ display: 'flex', gap: '10px' }}>
+                <div style={{ flex: 1 }}>
+                  <label style={fieldLabel}>Runner (optional)</label>
+                  <select className="input" value={runnerId} onChange={e => setRunnerId(e.target.value)} style={{ width: '100%' }}>
+                    <option value="">Any available</option>
+                    {runners.map(r => (
+                      <option key={r.id} value={r.id}>{r.name || `Runner ${r.id}`} ({r.status})</option>
+                    ))}
+                  </select>
+                </div>
+                <div style={{ flex: 1 }}>
+                  <label style={fieldLabel}>Ray Address (optional)</label>
+                  <input className="input" value={rayAddress} onChange={e => setRayAddress(e.target.value)}
+                    style={{ width: '100%' }} placeholder="auto" />
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: '10px' }}>
+                <div style={{ flex: 1 }}>
+                  <label style={fieldLabel}>Git Ref (optional)</label>
+                  <input className="input" value={gitRef} onChange={e => setGitRef(e.target.value)}
+                    style={{ width: '100%' }} placeholder="origin/main" />
+                </div>
+                <div style={{ flex: 1 }}>
+                  <label style={fieldLabel}>Git Commit SHA (optional)</label>
+                  <input className="input" value={gitCommit} onChange={e => setGitCommit(e.target.value)}
+                    style={{ width: '100%' }} placeholder="abc123…" />
+                </div>
+              </div>
+              {error && (
+                <div style={{ padding: '8px 12px', borderRadius: '6px', background: 'rgba(255,80,80,0.1)', border: '1px solid rgba(255,80,80,0.2)', color: '#ff5050', fontSize: '12px' }}>
+                  {error}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+        <div className="modal-foot">
+          <button className="btn btn-secondary" onClick={onClose}>{result ? 'Close' : 'Cancel'}</button>
+          {!result && (
+            <button className="btn btn-primary" onClick={handleRun} disabled={submitting} style={{ flex: 1, justifyContent: 'center' }}>
+              {submitting ? <><span className="spinner" style={{ marginRight: '6px' }}></span>Submitting…</> : 'Run on Runner'}
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ========== Main Designer View ========== */
 function DesignerView() {
   const [operators, setOperators] = useState([]);
@@ -385,6 +510,7 @@ function DesignerView() {
 
   const [showCode, setShowCode] = useState(false);
   const [showSaveModal, setShowSaveModal] = useState(false);
+  const [showRunModal, setShowRunModal] = useState(false);
   const [saving, setSaving] = useState(false);
   const [showTable, setShowTable] = useState(true);
 
@@ -596,6 +722,10 @@ function DesignerView() {
             style={{fontSize:'11px',padding:'4px 10px'}}>
             <IconDownload /> Save Graph
           </button>
+          <button className="btn btn-sm" onClick={() => setShowRunModal(true)} disabled={!activeGraphId || nodes.length===0}
+            style={{fontSize:'11px',padding:'4px 10px',background:'rgba(118,185,0,0.15)',color:'var(--nv-green)',border:'1px solid rgba(118,185,0,0.3)'}}>
+            <IconPlay /> Run Graph
+          </button>
         </div>
       </div>
 
@@ -728,6 +858,10 @@ function DesignerView() {
       {showSaveModal && (
         <SaveGraphModal name={graphName} setName={setGraphName} description={graphDescription} setDescription={setGraphDescription}
           onSave={handleSave} onClose={() => setShowSaveModal(false)} saving={saving} isUpdate={!!activeGraphId} />
+      )}
+      {showRunModal && activeGraphId && (
+        <RunGraphModal graphId={activeGraphId} graphName={graphName || `Graph #${activeGraphId}`}
+          onClose={() => setShowRunModal(false)} />
       )}
     </div>
   );

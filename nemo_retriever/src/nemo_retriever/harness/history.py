@@ -257,6 +257,7 @@ _MIGRATIONS = [
     "ALTER TABLE jobs ADD COLUMN matrix_run_id TEXT",
     "ALTER TABLE jobs ADD COLUMN matrix_name TEXT",
     "ALTER TABLE runs ADD COLUMN job_id TEXT",
+    "ALTER TABLE jobs ADD COLUMN graph_code TEXT",
 ]
 
 RUNNER_MISSED_HEARTBEATS_THRESHOLD = 4
@@ -1638,6 +1639,7 @@ def create_job(data: dict[str, Any], db_path: str | None = None) -> dict[str, An
             "tags": json.dumps(data["tags"]) if data.get("tags") else None,
             "matrix_run_id": data.get("matrix_run_id"),
             "matrix_name": data.get("matrix_name"),
+            "graph_code": data.get("graph_code"),
         }
         columns = ", ".join(row.keys())
         placeholders = ", ".join("?" * len(row))

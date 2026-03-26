@@ -119,6 +119,7 @@ function TriggerSourceBadge({ source }) {
     github_push: { cls: "badge-github", label: "GitHub" },
     playground: { cls: "badge-manual", label: "Playground" },
     matrix: { cls: "badge-scheduled", label: "Matrix" },
+    graph: { cls: "badge-manual", label: "Graph" },
   };
   const info = map[source] || { cls: "badge-na", label: source };
   return <span className={`badge ${info.cls}`}>{info.label}</span>;

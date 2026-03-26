@@ -631,6 +631,7 @@ def _execute_job_on_runner(base_url: str, job: dict[str, Any], runner_id: int = 
             skip_local_history=True,
         )
 
+        final_log_tail = _job_tracker.get_log_tail(_LOG_TAIL_MAX)
         if _job_tracker.is_cancel_requested():
             complete_resp = _post_json(
                 f"{base_url}/api/jobs/{job_id}/complete",
@@ -640,6 +641,7 @@ def _execute_job_on_runner(base_url: str, job: dict[str, Any], runner_id: int = 
                     "result": result,
                     "execution_commit": execution_commit,
                     "num_gpus": _runner_num_gpus,
+                    "log_tail": final_log_tail,
                 },
             )
             logger.info("Job %s cancelled by user", job_id)
@@ -647,7 +649,13 @@ def _execute_job_on_runner(base_url: str, job: dict[str, Any], runner_id: int = 
             success = bool(result.get("success"))
             complete_resp = _post_json(
                 f"{base_url}/api/jobs/{job_id}/complete",
-                {"success": success, "result": result, "execution_commit": execution_commit, "num_gpus": _runner_num_gpus},
+                {
+                    "success": success,
+                    "result": result,
+                    "execution_commit": execution_commit,
+                    "num_gpus": _runner_num_gpus,
+                    "log_tail": final_log_tail,
+                },
             )
             logger.info("Job %s completed (success=%s)", job_id, success)
 
@@ -674,7 +682,13 @@ def _execute_job_on_runner(base_url: str, job: dict[str, Any], runner_id: int = 
                 error_msg = "Cancelled by user"
             _post_json(
                 f"{base_url}/api/jobs/{job_id}/complete",
-                {"success": False, "error": error_msg, "execution_commit": execution_commit, "num_gpus": _runner_num_gpus},
+                {
+                    "success": False,
+                    "error": error_msg,
+                    "execution_commit": execution_commit,
+                    "num_gpus": _runner_num_gpus,
+                    "log_tail": _job_tracker.get_log_tail(_LOG_TAIL_MAX),
+                },
             )
         except Exception:
             pass
@@ -846,7 +860,7 @@ def runner_start_command(
             current_jid = _job_tracker.get_current_job_id()
             if current_jid:
                 hb_payload["current_job_id"] = current_jid
-                hb_payload["log_tail"] = _job_tracker.get_log_tail(200)
+                hb_payload["log_tail"] = _job_tracker.get_log_tail(_LOG_TAIL_MAX)
 
             try:
                 hb_resp = _post_json(f"{base_url}/api/runners/{runner_id}/heartbeat", hb_payload)

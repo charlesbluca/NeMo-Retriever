@@ -81,12 +81,10 @@ function MatrixJobsModal({ matrixRunId, matrixName, jobs, runnerMap, githubRepoU
                       <IconSearch />
                     </button>
                   )}
-                  {(j.status==="running" || j.status==="cancelling") && (
-                    <button className="btn btn-secondary" style={{fontSize:'11px',padding:'3px 8px'}}
-                      onClick={() => onViewLogs && onViewLogs(j.id)} title="View Logs">
-                      <IconTerminal />
-                    </button>
-                  )}
+                  <button className="btn btn-secondary" style={{fontSize:'11px',padding:'3px 8px'}}
+                    onClick={() => onViewLogs && onViewLogs(j.id)} title="View Logs">
+                    <IconTerminal />
+                  </button>
                   {(j.status==="pending" || j.status==="running") && (
                     <button className="btn" style={{fontSize:'11px',padding:'3px 8px',background:'rgba(255,80,80,0.12)',color:'#ff5050',border:'1px solid rgba(255,80,80,0.2)'}}
                       onClick={() => handleCancelOne(j.id)} title="Cancel">
@@ -355,12 +353,10 @@ function RunsView({ runs, datasets, loading, filterDataset, setFilterDataset, fi
                       <IconSearch /> Diagnose
                     </button>
                   )}
-                  {(j.status==="running" || j.status==="cancelling") && (
-                    <button className="btn btn-secondary" style={{fontSize:'11px',padding:'3px 8px'}}
-                      onClick={() => onViewLogs && onViewLogs(j.id)} title="View Logs">
-                      <IconTerminal /> Logs
-                    </button>
-                  )}
+                  <button className="btn btn-secondary" style={{fontSize:'11px',padding:'3px 8px'}}
+                    onClick={() => onViewLogs && onViewLogs(j.id)} title="View Logs">
+                    <IconTerminal /> Logs
+                  </button>
                   {(j.status==="pending" || j.status==="running") && (
                     <button className="btn" style={{fontSize:'11px',padding:'3px 8px',background:'rgba(255,80,80,0.12)',color:'#ff5050',border:'1px solid rgba(255,80,80,0.2)'}}
                       onClick={() => handleCancel(j.id)} title="Cancel Job">

@@ -272,6 +272,7 @@ class JobCompleteRequest(BaseModel):
     error: str | None = None
     execution_commit: str | None = None
     num_gpus: int | None = None
+    log_tail: list[str] | None = None
 
 
 class PresetCreateRequest(BaseModel):
@@ -1917,6 +1918,9 @@ async def complete_job_endpoint(job_id: str, req: JobCompleteRequest):
     job_before = history.get_job_by_id(job_id)
     was_cancelling = job_before and job_before.get("status") == "cancelling"
 
+    if req.log_tail:
+        history.update_job_log(job_id, req.log_tail)
+
     if was_cancelling and not req.success:
         history.complete_job(job_id, success=False, result=req.result, error=req.error or "Cancelled by user")
         history.update_job_status(job_id, "cancelled", error=req.error or "Cancelled by user")
@@ -1926,7 +1930,10 @@ async def complete_job_endpoint(job_id: str, req: JobCompleteRequest):
     job = history.get_job_by_id(job_id)
     effective_success = req.success and not was_cancelling
     effective_error = req.error or ("Cancelled by user" if was_cancelling else None)
-    run_id = _record_run_from_job(job, effective_success, req.result, effective_error, execution_commit=req.execution_commit, num_gpus=req.num_gpus)
+    run_id = _record_run_from_job(
+        job, effective_success, req.result, effective_error,
+        execution_commit=req.execution_commit, num_gpus=req.num_gpus,
+    )
 
     return {"ok": True, "run_id": run_id}
 
@@ -1989,6 +1996,7 @@ def _record_run_from_job(
             schedule_id=schedule_id,
             execution_commit=execution_commit,
             num_gpus=num_gpus,
+            job_id=job.get("id"),
         )
         if run_row_id:
             run_row = history.get_run_by_id(run_row_id)
@@ -2614,6 +2622,7 @@ async def get_git_info():
 class DeployRequest(BaseModel):
     branch: str = "main"
     remote: str = ""
+    update_runners: bool = True
 
 
 @app.post("/api/settings/deploy")
@@ -2680,9 +2689,13 @@ async def deploy_latest(req: DeployRequest):
     new_sha_full = _git_run("rev-parse", "HEAD", cwd=repo_root)
     log_lines.append(f"Now at {new_sha_short} on {req.branch}")
 
-    updated_count = history.set_pending_update_all_runners(new_sha_full)
-    if updated_count:
-        log_lines.append(f"Signalled {updated_count} runner(s) to update to {new_sha_short}")
+    updated_count = 0
+    if req.update_runners:
+        updated_count = history.set_pending_update_all_runners(new_sha_full)
+        if updated_count:
+            log_lines.append(f"Signalled {updated_count} runner(s) to update to {new_sha_short}")
+    else:
+        log_lines.append("Runner update skipped (portal-only deploy)")
 
     def _restart_after_delay():
         import time
@@ -2697,13 +2710,61 @@ async def deploy_latest(req: DeployRequest):
 
     threading.Thread(target=_restart_after_delay, daemon=True).start()
 
+    runners_msg = f" {updated_count} runner(s) will update." if req.update_runners else " Runners were not updated."
     return {
         "ok": True,
         "new_sha": new_sha_short,
         "branch": req.branch,
         "remote": req.remote,
+        "update_runners": req.update_runners,
+        "runners_updated": updated_count,
         "log": log_lines,
-        "message": f"Deployed {req.branch} ({new_sha_short}). Portal will restart in ~2 seconds. {updated_count} runner(s) will update.",
+        "message": f"Deployed {req.branch} ({new_sha_short}). Portal will restart in ~2 seconds.{runners_msg}",
+    }
+
+
+class UpdateRunnersRequest(BaseModel):
+    branch: str = "main"
+    remote: str = ""
+
+
+@app.post("/api/settings/update-runners")
+async def update_runners_only(req: UpdateRunnersRequest):
+    """Signal all online/paused runners to update to the latest commit on a branch.
+
+    This does NOT restart the portal — it only resolves the branch to a SHA
+    and sets ``pending_update_commit`` on every eligible runner.
+    """
+    try:
+        repo_root = _git_run("rev-parse", "--show-toplevel")
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Git not available: {exc}")
+
+    if not req.remote:
+        nvidia_name, _ = _detect_nvidia_remote()
+        req.remote = nvidia_name or "origin"
+
+    try:
+        _git_run("fetch", req.remote, "--prune", cwd=repo_root, timeout=30)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"git fetch failed: {exc}")
+
+    ref = f"{req.remote}/{req.branch}"
+    try:
+        sha = _git_run("rev-parse", ref, cwd=repo_root)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Could not resolve {ref}: {exc}")
+
+    short_sha = sha[:12]
+    updated_count = history.set_pending_update_all_runners(sha)
+
+    return {
+        "ok": True,
+        "sha": sha,
+        "short_sha": short_sha,
+        "ref": ref,
+        "runners_updated": updated_count,
+        "message": f"Signalled {updated_count} runner(s) to update to {short_sha} ({ref}).",
     }
 
 

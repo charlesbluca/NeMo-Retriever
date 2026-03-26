@@ -9,7 +9,28 @@ function RunDetailModal({ run, onClose, onDelete, githubRepoUrl }) {
   const [rerunState, setRerunState] = useState(null);
   const [rerunSubmitting, setRerunSubmitting] = useState(false);
   const [rerunSelectedRunner, setRerunSelectedRunner] = useState("");
+  const [showLogs, setShowLogs] = useState(false);
+  const [logLines, setLogLines] = useState(null);
+  const [logLoading, setLogLoading] = useState(false);
+  const logRef = useRef(null);
   const raw = run.raw_json && typeof run.raw_json === 'object' && Object.keys(run.raw_json).length > 0 ? run.raw_json : run;
+
+  useEffect(() => {
+    if (showLogs && logLines === null && !logLoading && run.job_id) {
+      setLogLoading(true);
+      fetch(`/api/jobs/${run.job_id}/logs`)
+        .then(r => r.json())
+        .then(data => setLogLines(data.log_tail || []))
+        .catch(() => setLogLines([]))
+        .finally(() => setLogLoading(false));
+    }
+  }, [showLogs, logLines, logLoading, run.job_id]);
+
+  useEffect(() => {
+    if (showLogs && logLines && logRef.current) {
+      logRef.current.scrollTop = logRef.current.scrollHeight;
+    }
+  }, [showLogs, logLines]);
 
   useEffect(() => {
     if (showCommand && commandText === null && !commandLoading) {
@@ -105,6 +126,12 @@ function RunDetailModal({ run, onClose, onDelete, githubRepoUrl }) {
               <div style={{display:'flex',alignItems:'center',gap:'10px',marginBottom:'12px'}}>
                 <span style={{fontSize:'20px'}}>&#x26A0;</span>
                 <span style={{fontSize:'15px',fontWeight:700,color:'#ff5050'}}>Run Failed</span>
+                {run.job_id && (
+                  <button className="btn btn-sm" style={{fontSize:'11px',padding:'3px 10px',background:'rgba(255,80,80,0.15)',color:'#ff5050',border:'1px solid rgba(255,80,80,0.3)'}}
+                    onClick={()=>setShowLogs(true)}>
+                    <IconTerminal /> View Logs
+                  </button>
+                )}
               </div>
               <div style={{display:'grid',gridTemplateColumns:'140px 1fr',gap:'6px 12px',fontSize:'13px'}}>
                 <span style={{color:'rgba(255,255,255,0.5)',fontWeight:500}}>Failure Reason</span>
@@ -268,6 +295,41 @@ function RunDetailModal({ run, onClose, onDelete, githubRepoUrl }) {
               )
             )}
           </div>
+
+          {/* Job Logs */}
+          {run.job_id && (
+            <div style={{marginBottom:'28px'}}>
+              <div className="section-title"
+                style={{cursor:'pointer',userSelect:'none',display:'flex',alignItems:'center',gap:'8px'}}
+                onClick={()=>setShowLogs(!showLogs)}
+              >
+                <span style={{transform:showLogs?'rotate(90deg)':'rotate(0deg)',transition:'transform 0.15s',display:'inline-block',fontSize:'10px'}}>{"\u25B6"}</span>
+                Job Output (last 500 lines)
+              </div>
+              {showLogs && (
+                logLoading ? (
+                  <div style={{padding:'12px',color:'var(--nv-text-muted)',fontSize:'13px'}}><span className="spinner" style={{marginRight:'8px'}}></span>Loading…</div>
+                ) : logLines && logLines.length > 0 ? (
+                  <div style={{position:'relative'}}>
+                    <div className="log-viewer" ref={logRef} style={{maxHeight:'400px'}}>
+                      {logLines.map((line, i) => <div key={i} className="log-line">{line}</div>)}
+                    </div>
+                    <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginTop:'6px'}}>
+                      <span style={{fontSize:'11px',color:'var(--nv-text-dim)'}}>{logLines.length} line{logLines.length!==1?'s':''}</span>
+                      <button className="btn btn-ghost btn-sm"
+                        style={{fontSize:'11px',color:'var(--nv-text-dim)'}}
+                        onClick={() => { navigator.clipboard.writeText(logLines.join('\n')); }}
+                        title="Copy logs">
+                        Copy All
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div style={{padding:'12px',color:'var(--nv-text-dim)',fontSize:'13px',fontStyle:'italic'}}>No log output available for this run.</div>
+                )
+              )}
+            </div>
+          )}
 
           {/* Metrics */}
           <div style={{marginBottom:'28px'}}>

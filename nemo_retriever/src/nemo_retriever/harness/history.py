@@ -244,6 +244,7 @@ _MIGRATIONS = [
     "ALTER TABLE preset_matrices ADD COLUMN git_commit TEXT",
     "ALTER TABLE jobs ADD COLUMN matrix_run_id TEXT",
     "ALTER TABLE jobs ADD COLUMN matrix_name TEXT",
+    "ALTER TABLE runs ADD COLUMN job_id TEXT",
 ]
 
 RUNNER_MISSED_HEARTBEATS_THRESHOLD = 4
@@ -317,6 +318,7 @@ def record_run(
     schedule_id: int | None = None,
     execution_commit: str | None = None,
     num_gpus: int | None = None,
+    job_id: str | None = None,
 ) -> int:
     """Insert a single run result into the history database. Returns the row id."""
     conn = _connect(db_path)
@@ -351,6 +353,7 @@ def record_run(
             "ray_dashboard_url": run_meta.get("ray_dashboard_url"),
             "execution_commit": execution_commit,
             "num_gpus": num_gpus,
+            "job_id": job_id,
         }
 
         columns = ", ".join(row.keys())

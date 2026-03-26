@@ -7,12 +7,13 @@ function SettingsView() {
   const [deploying, setDeploying] = useState(false);
   const [deployResult, setDeployResult] = useState(null);
   const [deployError, setDeployError] = useState("");
-  const [showConfirm, setShowConfirm] = useState(false);
+  const [confirmAction, setConfirmAction] = useState(null);
   const [reconnecting, setReconnecting] = useState(false);
   const [portalSettings, setPortalSettings] = useState({});
   const [runCodeRefInput, setRunCodeRefInput] = useState("");
   const [savingRunCodeRef, setSavingRunCodeRef] = useState(false);
   const [runCodeRefSaved, setRunCodeRefSaved] = useState(false);
+  const [updatingRunners, setUpdatingRunners] = useState(false);
 
   async function fetchPortalSettings() {
     try {
@@ -68,8 +69,8 @@ function SettingsView() {
 
   useEffect(() => { fetchGitInfo(); fetchPortalSettings(); }, []);
 
-  async function handleDeploy() {
-    setShowConfirm(false);
+  async function handleDeploy(updateRunners) {
+    setConfirmAction(null);
     setDeploying(true);
     setDeployResult(null);
     setDeployError("");
@@ -77,7 +78,7 @@ function SettingsView() {
       const res = await fetch("/api/settings/deploy", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ branch: deployBranch, remote: deployRemote }),
+        body: JSON.stringify({ branch: deployBranch, remote: deployRemote, update_runners: updateRunners }),
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
@@ -91,6 +92,30 @@ function SettingsView() {
       setDeployError(err.message);
     } finally {
       setDeploying(false);
+    }
+  }
+
+  async function handleUpdateRunnersOnly() {
+    setConfirmAction(null);
+    setUpdatingRunners(true);
+    setDeployResult(null);
+    setDeployError("");
+    try {
+      const res = await fetch("/api/settings/update-runners", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ branch: deployBranch, remote: deployRemote }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.detail || `HTTP ${res.status}`);
+      }
+      const data = await res.json();
+      setDeployResult(data);
+    } catch (err) {
+      setDeployError(err.message);
+    } finally {
+      setUpdatingRunners(false);
     }
   }
 
@@ -117,6 +142,8 @@ function SettingsView() {
   }
 
   const labelStyle = {display:'block',fontSize:'11px',fontWeight:600,color:'var(--nv-text-dim)',textTransform:'uppercase',letterSpacing:'0.04em',marginBottom:'6px'};
+  const isBusy = deploying || updatingRunners;
+  const refLabel = `${deployRemote}/${deployBranch}`;
 
   if (gitLoading) {
     return (
@@ -136,6 +163,48 @@ function SettingsView() {
       </div>
     );
   }
+
+  const confirmConfig = {
+    "deploy-portal": {
+      title: "Deploy Portal Only",
+      color: "var(--nv-green)",
+      steps: [
+        "Stash any uncommitted local changes",
+        <>Fetch latest code from <span className="mono" style={{color:'var(--nv-green)'}}>{deployRemote}</span></>,
+        <>Checkout branch <span className="mono" style={{color:'var(--nv-green)'}}>{deployBranch}</span></>,
+        "Restart the portal web server",
+      ],
+      note: "Runners will NOT be updated. They will continue running their current code.",
+      onConfirm: () => handleDeploy(false),
+      btnLabel: <>Deploy Portal Only</>,
+    },
+    "deploy-all": {
+      title: "Deploy Portal + Update Runners",
+      color: "var(--nv-green)",
+      steps: [
+        "Stash any uncommitted local changes",
+        <>Fetch latest code from <span className="mono" style={{color:'var(--nv-green)'}}>{deployRemote}</span></>,
+        <>Checkout branch <span className="mono" style={{color:'var(--nv-green)'}}>{deployBranch}</span></>,
+        "Restart the portal web server",
+        "Signal all online runners to pull and restart with the new commit",
+      ],
+      note: null,
+      onConfirm: () => handleDeploy(true),
+      btnLabel: <>Deploy All</>,
+    },
+    "update-runners": {
+      title: "Update Runners Only",
+      color: "#64b4ff",
+      steps: [
+        <>Resolve <span className="mono" style={{color:'#64b4ff'}}>{refLabel}</span> to its latest commit</>,
+        "Signal all online/paused runners to pull that commit and restart",
+      ],
+      note: "The portal will NOT restart. Only runners will be updated.",
+      onConfirm: handleUpdateRunnersOnly,
+      btnLabel: <>Update Runners</>,
+    },
+  };
+  const confirm = confirmAction ? confirmConfig[confirmAction] : null;
 
   return (
     <>
@@ -243,58 +312,101 @@ function SettingsView() {
         })()}
       </div>
 
-      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'20px',marginBottom:'20px'}}>
-        {/* Deploy Card */}
-        <div className="card" style={{padding:'24px'}}>
-          <div className="section-title" style={{marginBottom:'16px'}}>Deploy Latest Code</div>
-          <div style={{display:'flex',flexDirection:'column',gap:'14px'}}>
-            <div>
-              <label style={labelStyle}>Remote</label>
-              <select className="select" style={{width:'100%'}} value={deployRemote} onChange={e => setDeployRemote(e.target.value)}>
-                {(gitInfo.remotes || []).map(r => (
-                  <option key={r.name} value={r.name}>{r.name} ({r.url})</option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label style={labelStyle}>Branch</label>
-              <div style={{display:'flex',gap:'8px'}}>
-                <input className="input" style={{flex:1}} value={deployBranch}
-                  onChange={e => setDeployBranch(e.target.value)}
-                  placeholder="e.g. main" />
-              </div>
-              {gitInfo.remote_branches?.length > 0 && (
-                <div style={{marginTop:'8px',display:'flex',gap:'6px',flexWrap:'wrap'}}>
-                  {gitInfo.remote_branches.slice(0, 10).map(b => {
-                    const short = b.replace(/^[^/]+\//, "");
-                    return (
-                      <button key={b} className="btn btn-sm"
-                        onClick={() => setDeployBranch(short)}
-                        style={{
-                          fontSize:'10px',padding:'2px 8px',
-                          background: short === deployBranch ? 'rgba(118,185,0,0.15)' : 'transparent',
-                          color: short === deployBranch ? 'var(--nv-green)' : 'var(--nv-text-dim)',
-                          border: `1px solid ${short === deployBranch ? 'rgba(118,185,0,0.3)' : 'var(--nv-border)'}`,
-                        }}>
-                        {short}
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-            <button className="btn btn-primary" onClick={() => setShowConfirm(true)}
-              disabled={deploying || !deployBranch.trim()}
-              style={{width:'100%',justifyContent:'center',marginTop:'4px'}}>
-              {deploying ? <><span className="spinner" style={{marginRight:'8px'}}></span>Deploying…</> : <><IconDownload /> Deploy & Restart</>}
-            </button>
-            <div style={{fontSize:'11px',color:'var(--nv-text-dim)',lineHeight:'1.5'}}>
-              This will pull the latest code from <span className="mono" style={{color:'var(--nv-text-muted)'}}>{deployRemote}/{deployBranch}</span>, then restart the portal web server.
-              The page will automatically reconnect.
-            </div>
+      {/* Deploy & Update Section */}
+      <div className="card" style={{padding:'24px',marginBottom:'20px'}}>
+        <div className="section-title" style={{marginBottom:'6px'}}>Deploy & Update</div>
+        <div style={{fontSize:'12px',color:'var(--nv-text-dim)',lineHeight:'1.6',marginBottom:'20px'}}>
+          Pull the latest code from a remote branch. You can update the portal server, the runners, or both independently.
+        </div>
+
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'14px',marginBottom:'20px'}}>
+          <div>
+            <label style={labelStyle}>Remote</label>
+            <select className="select" style={{width:'100%'}} value={deployRemote} onChange={e => setDeployRemote(e.target.value)}>
+              {(gitInfo.remotes || []).map(r => (
+                <option key={r.name} value={r.name}>{r.name} ({r.url})</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label style={labelStyle}>Branch</label>
+            <input className="input" style={{width:'100%'}} value={deployBranch}
+              onChange={e => setDeployBranch(e.target.value)}
+              placeholder="e.g. main" />
           </div>
         </div>
 
+        {gitInfo.remote_branches?.length > 0 && (
+          <div style={{marginBottom:'20px'}}>
+            <div style={{...labelStyle,marginBottom:'8px'}}>Quick Select Branch</div>
+            <div style={{display:'flex',gap:'6px',flexWrap:'wrap'}}>
+              {gitInfo.remote_branches.slice(0, 12).map(b => {
+                const short = b.replace(/^[^/]+\//, "");
+                return (
+                  <button key={b} className="btn btn-sm"
+                    onClick={() => setDeployBranch(short)}
+                    style={{
+                      fontSize:'10px',padding:'2px 8px',
+                      background: short === deployBranch ? 'rgba(118,185,0,0.15)' : 'transparent',
+                      color: short === deployBranch ? 'var(--nv-green)' : 'var(--nv-text-dim)',
+                      border: `1px solid ${short === deployBranch ? 'rgba(118,185,0,0.3)' : 'var(--nv-border)'}`,
+                    }}>
+                    {short}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        <div style={{
+          display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:'12px',
+          padding:'16px',borderRadius:'10px',
+          background:'rgba(255,255,255,0.015)',border:'1px solid var(--nv-border)',
+        }}>
+          <div style={{display:'flex',flexDirection:'column',gap:'10px'}}>
+            <div style={{fontSize:'13px',fontWeight:600,color:'#fff'}}>Portal Only</div>
+            <div style={{fontSize:'11px',color:'var(--nv-text-dim)',lineHeight:'1.5',flex:1}}>
+              Pulls code and restarts the portal server. Runners keep their current code.
+            </div>
+            <button className="btn" onClick={() => setConfirmAction("deploy-portal")}
+              disabled={isBusy || !deployBranch.trim()}
+              style={{width:'100%',justifyContent:'center',background:'rgba(118,185,0,0.1)',color:'var(--nv-green)',border:'1px solid rgba(118,185,0,0.25)',fontWeight:600}}>
+              {deploying ? <><span className="spinner" style={{marginRight:'6px'}}></span>…</> : <><IconDownload /> Deploy Portal</>}
+            </button>
+          </div>
+
+          <div style={{display:'flex',flexDirection:'column',gap:'10px'}}>
+            <div style={{fontSize:'13px',fontWeight:600,color:'#fff'}}>Portal + Runners</div>
+            <div style={{fontSize:'11px',color:'var(--nv-text-dim)',lineHeight:'1.5',flex:1}}>
+              Pulls code, restarts portal, and signals all runners to update and restart.
+            </div>
+            <button className="btn btn-primary" onClick={() => setConfirmAction("deploy-all")}
+              disabled={isBusy || !deployBranch.trim()}
+              style={{width:'100%',justifyContent:'center'}}>
+              {deploying ? <><span className="spinner" style={{marginRight:'6px'}}></span>…</> : <><IconDownload /> Deploy All</>}
+            </button>
+          </div>
+
+          <div style={{display:'flex',flexDirection:'column',gap:'10px'}}>
+            <div style={{fontSize:'13px',fontWeight:600,color:'#fff'}}>Runners Only</div>
+            <div style={{fontSize:'11px',color:'var(--nv-text-dim)',lineHeight:'1.5',flex:1}}>
+              Signals runners to pull and restart. The portal is not restarted.
+            </div>
+            <button className="btn" onClick={() => setConfirmAction("update-runners")}
+              disabled={isBusy || !deployBranch.trim()}
+              style={{width:'100%',justifyContent:'center',background:'rgba(100,180,255,0.1)',color:'#64b4ff',border:'1px solid rgba(100,180,255,0.25)',fontWeight:600}}>
+              {updatingRunners ? <><span className="spinner" style={{marginRight:'6px'}}></span>…</> : <><IconRefresh /> Update Runners</>}
+            </button>
+          </div>
+        </div>
+
+        <div style={{marginTop:'12px',fontSize:'11px',color:'var(--nv-text-dim)',lineHeight:'1.5'}}>
+          Target: <span className="mono" style={{color:'var(--nv-text-muted)'}}>{refLabel}</span>
+        </div>
+      </div>
+
+      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'20px',marginBottom:'20px'}}>
         {/* Recent Commits Card */}
         <div className="card" style={{padding:'24px'}}>
           <div className="section-title" style={{marginBottom:'16px'}}>Recent Commits</div>
@@ -319,22 +431,22 @@ function SettingsView() {
             )}
           </div>
         </div>
-      </div>
 
-      {/* Remotes */}
-      <div className="card" style={{padding:'24px',marginBottom:'20px'}}>
-        <div className="section-title" style={{marginBottom:'12px'}}>Remotes</div>
-        <div style={{display:'flex',flexDirection:'column',gap:'8px'}}>
-          {(gitInfo.remotes || []).map(r => (
-            <div key={r.name} style={{display:'flex',alignItems:'center',gap:'12px',padding:'6px 0',borderBottom:'1px solid var(--nv-border)'}}>
-              <span style={{fontSize:'13px',fontWeight:600,color:'#fff',minWidth:'80px'}}>{r.name}</span>
-              <span className="mono" style={{fontSize:'12px',color:'var(--nv-text-muted)',wordBreak:'break-all'}}>{r.url}</span>
-            </div>
-          ))}
+        {/* Remotes Card */}
+        <div className="card" style={{padding:'24px'}}>
+          <div className="section-title" style={{marginBottom:'12px'}}>Remotes</div>
+          <div style={{display:'flex',flexDirection:'column',gap:'8px'}}>
+            {(gitInfo.remotes || []).map(r => (
+              <div key={r.name} style={{display:'flex',alignItems:'center',gap:'12px',padding:'6px 0',borderBottom:'1px solid var(--nv-border)'}}>
+                <span style={{fontSize:'13px',fontWeight:600,color:'#fff',minWidth:'80px'}}>{r.name}</span>
+                <span className="mono" style={{fontSize:'12px',color:'var(--nv-text-muted)',wordBreak:'break-all'}}>{r.url}</span>
+              </div>
+            ))}
+          </div>
         </div>
       </div>
 
-      {/* Deploy Result */}
+      {/* Deploy/Update Result */}
       {deployResult && (
         <div className="card" style={{padding:'20px',marginBottom:'20px',background:'rgba(118,185,0,0.05)',border:'1px solid rgba(118,185,0,0.2)'}}>
           <div style={{display:'flex',alignItems:'center',gap:'10px',marginBottom:'12px'}}>
@@ -352,45 +464,49 @@ function SettingsView() {
         </div>
       )}
 
-      {/* Deploy Error */}
+      {/* Deploy/Update Error */}
       {deployError && (
         <div style={{marginBottom:'16px',padding:'14px 18px',borderRadius:'8px',background:'rgba(255,50,50,0.08)',border:'1px solid rgba(255,50,50,0.2)'}}>
-          <div style={{fontSize:'13px',fontWeight:600,color:'#ff5050',marginBottom:'6px'}}>Deploy Failed</div>
+          <div style={{fontSize:'13px',fontWeight:600,color:'#ff5050',marginBottom:'6px'}}>Operation Failed</div>
           <pre className="mono" style={{fontSize:'12px',color:'#ff5050',whiteSpace:'pre-wrap',wordBreak:'break-all',margin:0}}>{deployError}</pre>
         </div>
       )}
 
       {/* Confirmation Modal */}
-      {showConfirm && (
-        <div className="modal-overlay" onClick={() => setShowConfirm(false)}>
+      {confirm && (
+        <div className="modal-overlay" onClick={() => setConfirmAction(null)}>
           <div className="modal-content" style={{maxWidth:'480px'}} onClick={e => e.stopPropagation()}>
             <div className="modal-head">
-              <h2 style={{fontSize:'16px',fontWeight:700,color:'#fff'}}>Confirm Deploy</h2>
-              <button className="btn btn-ghost btn-icon" onClick={() => setShowConfirm(false)} style={{borderRadius:'50%'}}><IconX /></button>
+              <h2 style={{fontSize:'16px',fontWeight:700,color:'#fff'}}>{confirm.title}</h2>
+              <button className="btn btn-ghost btn-icon" onClick={() => setConfirmAction(null)} style={{borderRadius:'50%'}}><IconX /></button>
             </div>
             <div style={{padding:'24px'}}>
               <div style={{fontSize:'14px',color:'var(--nv-text-muted)',lineHeight:'1.7',marginBottom:'16px'}}>
                 This will:
               </div>
               <ol style={{fontSize:'13px',color:'#fff',lineHeight:'2',paddingLeft:'20px',marginBottom:'20px'}}>
-                <li>Stash any uncommitted local changes</li>
-                <li>Fetch the latest code from <span className="mono" style={{color:'var(--nv-green)'}}>{deployRemote}</span></li>
-                <li>Checkout branch <span className="mono" style={{color:'var(--nv-green)'}}>{deployBranch}</span></li>
-                <li>Restart the portal web server</li>
+                {confirm.steps.map((s, i) => <li key={i}>{s}</li>)}
               </ol>
-              {gitInfo.is_dirty && (
+              {confirm.note && (
+                <div style={{padding:'10px 14px',borderRadius:'8px',background:'rgba(100,180,255,0.06)',border:'1px solid rgba(100,180,255,0.15)',color:'#64b4ff',fontSize:'12px',marginBottom:'16px',lineHeight:'1.6'}}>
+                  {confirm.note}
+                </div>
+              )}
+              {gitInfo.is_dirty && confirmAction !== "update-runners" && (
                 <div style={{padding:'10px 14px',borderRadius:'8px',background:'rgba(255,184,77,0.08)',border:'1px solid rgba(255,184,77,0.25)',color:'#ffb84d',fontSize:'12px',marginBottom:'16px'}}>
                   <strong>Warning:</strong> You have uncommitted changes. They will be stashed before the deploy.
                 </div>
               )}
-              <div style={{fontSize:'12px',color:'var(--nv-text-dim)',marginBottom:'4px'}}>
-                The portal will be briefly unavailable during restart. This page will reconnect automatically.
-              </div>
+              {confirmAction !== "update-runners" && (
+                <div style={{fontSize:'12px',color:'var(--nv-text-dim)'}}>
+                  The portal will be briefly unavailable during restart. This page will reconnect automatically.
+                </div>
+              )}
             </div>
             <div className="modal-foot">
-              <button className="btn btn-secondary" onClick={() => setShowConfirm(false)}>Cancel</button>
-              <button className="btn btn-primary" onClick={handleDeploy} style={{flex:1,justifyContent:'center'}}>
-                <IconDownload /> Deploy {deployBranch}
+              <button className="btn btn-secondary" onClick={() => setConfirmAction(null)}>Cancel</button>
+              <button className="btn btn-primary" onClick={confirm.onConfirm} style={{flex:1,justifyContent:'center'}}>
+                {confirm.btnLabel}
               </button>
             </div>
           </div>

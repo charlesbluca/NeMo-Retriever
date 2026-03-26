@@ -788,6 +788,7 @@ try:
                 print(f"Pipeline complete: {row_count} rows in {elapsed}s")
 
                 if lancedb_uri:
+                    print(f"LanceDB target: uri={lancedb_uri} table={lancedb_table}")
                     try:
                         import lancedb as _ldb
                         import pyarrow as _pa

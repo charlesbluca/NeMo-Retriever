@@ -200,6 +200,18 @@ CREATE TABLE IF NOT EXISTS preset_matrices (
 );
 """
 
+CREATE_GRAPHS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS graphs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    description TEXT,
+    graph_json TEXT NOT NULL,
+    generated_code TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT
+);
+"""
+
 _MIGRATIONS = [
     "ALTER TABLE runs ADD COLUMN hostname TEXT",
     "ALTER TABLE runs ADD COLUMN gpu_type TEXT",
@@ -282,6 +294,7 @@ def _connect(db_path: str | None = None) -> sqlite3.Connection:
     conn.execute(CREATE_ALERT_EVENTS_TABLE_SQL)
     conn.execute(CREATE_PORTAL_SETTINGS_TABLE_SQL)
     conn.execute(CREATE_PRESET_MATRICES_TABLE_SQL)
+    conn.execute(CREATE_GRAPHS_TABLE_SQL)
     conn.execute(CREATE_INDEX_SQL)
     for stmt in _MIGRATIONS:
         try:
@@ -2276,3 +2289,85 @@ def backfill_from_artifacts(artifacts_root: Path | None = None, db_path: str | N
         imported += 1
 
     return imported
+
+
+# ---------------------------------------------------------------------------
+# Graph CRUD
+# ---------------------------------------------------------------------------
+
+
+def list_graphs(db_path: str | None = None) -> list[dict[str, Any]]:
+    conn = _connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute("SELECT * FROM graphs ORDER BY updated_at DESC, id DESC").fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def get_graph(graph_id: int, db_path: str | None = None) -> dict[str, Any] | None:
+    conn = _connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        row = conn.execute("SELECT * FROM graphs WHERE id = ?", (graph_id,)).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def create_graph(data: dict[str, Any], db_path: str | None = None) -> dict[str, Any]:
+    now = _now_iso()
+    conn = _connect(db_path)
+    try:
+        cur = conn.execute(
+            "INSERT INTO graphs (name, description, graph_json, generated_code, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                data["name"],
+                data.get("description") or "",
+                data["graph_json"] if isinstance(data["graph_json"], str) else json.dumps(data["graph_json"]),
+                data.get("generated_code") or "",
+                now,
+                now,
+            ),
+        )
+        conn.commit()
+        return get_graph(cur.lastrowid, db_path) or {"id": cur.lastrowid}
+    finally:
+        conn.close()
+
+
+def update_graph(graph_id: int, data: dict[str, Any], db_path: str | None = None) -> dict[str, Any] | None:
+    now = _now_iso()
+    conn = _connect(db_path)
+    try:
+        sets: list[str] = []
+        vals: list[Any] = []
+        for col in ("name", "description", "graph_json", "generated_code"):
+            if col in data:
+                sets.append(f"{col} = ?")
+                v = data[col]
+                if col == "graph_json" and not isinstance(v, str):
+                    v = json.dumps(v)
+                vals.append(v)
+        if not sets:
+            return get_graph(graph_id, db_path)
+        sets.append("updated_at = ?")
+        vals.append(now)
+        vals.append(graph_id)
+        conn.execute(f"UPDATE graphs SET {', '.join(sets)} WHERE id = ?", vals)
+        conn.commit()
+        return get_graph(graph_id, db_path)
+    finally:
+        conn.close()
+
+
+def delete_graph(graph_id: int, db_path: str | None = None) -> bool:
+    conn = _connect(db_path)
+    try:
+        cur = conn.execute("DELETE FROM graphs WHERE id = ?", (graph_id,))
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()

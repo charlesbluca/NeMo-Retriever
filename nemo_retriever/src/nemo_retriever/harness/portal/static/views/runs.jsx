@@ -1,5 +1,6 @@
 /* ===== Matrix Jobs Modal ===== */
-function MatrixJobsModal({ matrixRunId, matrixName, jobs, runnerMap, githubRepoUrl, onClose, onRefresh, onViewLogs, onDiagnose }) {
+function MatrixJobsModal({ matrixRunId, matrixName, jobs, runnerMap, githubRepoUrl, onClose, onRefresh, onViewLogs }) {
+  const [diagnoseJobId, setDiagnoseJobId] = useState(null);
   const matrixJobs = jobs.filter(j => j.matrix_run_id === matrixRunId);
 
   const counts = { pending: 0, running: 0, cancelling: 0, completed: 0, failed: 0, cancelled: 0, error: 0 };
@@ -77,7 +78,7 @@ function MatrixJobsModal({ matrixRunId, matrixName, jobs, runnerMap, githubRepoU
                 <div style={{display:'flex',alignItems:'center',gap:'6px',flexShrink:0}}>
                   {j.status==="pending" && (
                     <button className="btn btn-secondary" style={{fontSize:'11px',padding:'3px 8px'}}
-                      onClick={() => onDiagnose(j.id)} title="Diagnose">
+                      onClick={() => setDiagnoseJobId(j.id)} title="Diagnose">
                       <IconSearch />
                     </button>
                   )}
@@ -104,6 +105,7 @@ function MatrixJobsModal({ matrixRunId, matrixName, jobs, runnerMap, githubRepoU
           })}
         </div>
       </div>
+      {diagnoseJobId && <JobDiagnoseModal jobId={diagnoseJobId} onClose={() => setDiagnoseJobId(null)} />}
     </div>
   );
 }
@@ -482,7 +484,6 @@ function RunsView({ runs, datasets, loading, filterDataset, setFilterDataset, fi
           onClose={() => setMatrixModalId(null)}
           onRefresh={onRefresh}
           onViewLogs={onViewLogs}
-          onDiagnose={setDiagnoseJobId}
         />
       )}
     </>

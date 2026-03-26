@@ -49,6 +49,9 @@ function Sidebar({ activeView, onNavigate, alertBadgeCount, githubRepoUrl }) {
         <div className={`nav-item ${activeView==='models'?'active':''}`} onClick={()=>onNavigate('models')}>
           <IconCpu /><span>Models</span>
         </div>
+        <div className={`nav-item ${activeView==='designer'?'active':''}`} onClick={()=>onNavigate('designer')}>
+          <IconSliders /><span>Designer</span>
+        </div>
         <div className="sidebar-section-label">System</div>
         <div className={`nav-item ${activeView==='settings'?'active':''}`} onClick={()=>onNavigate('settings')}>
           <IconSettings /><span>Settings</span>

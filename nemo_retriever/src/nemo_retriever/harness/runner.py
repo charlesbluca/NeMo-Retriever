@@ -9,6 +9,7 @@ import collections
 import json as json_module
 import logging
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -354,6 +355,104 @@ def _git_restore(prev_ref: str | None) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Per-job virtual environment
+# ---------------------------------------------------------------------------
+
+_VENV_BASE_DIR = Path("/tmp/.nemo_runner_venvs")
+
+_JOB_WRAPPER_SCRIPT = """\
+import json, sys, traceback
+
+with open(sys.argv[1]) as f:
+    args = json.load(f)
+
+try:
+    from nemo_retriever.harness.run import _run_entry
+    result = _run_entry(
+        run_name=args.get("run_name"),
+        config_file=args.get("config_file"),
+        session_dir=args.get("session_dir"),
+        dataset=args.get("dataset"),
+        preset=args.get("preset"),
+        sweep_overrides=args.get("sweep_overrides"),
+        tags=args.get("tags"),
+        skip_local_history=args.get("skip_local_history", True),
+    )
+except Exception:
+    traceback.print_exc()
+    result = {
+        "success": False,
+        "failure_reason": traceback.format_exc().splitlines()[-1],
+        "return_code": 1,
+    }
+
+with open(sys.argv[2], "w") as f:
+    json.dump(result, f)
+"""
+
+
+def _create_job_venv(job_id: str, repo_root: Path) -> Path | None:
+    """Create a uv venv for *job_id* and install nemo_retriever into it.
+
+    Returns the venv directory on success, or ``None`` on failure.
+    """
+    venv_dir = _VENV_BASE_DIR / job_id
+    _VENV_BASE_DIR.mkdir(parents=True, exist_ok=True)
+
+    try:
+        result = subprocess.run(
+            ["uv", "venv", str(venv_dir), "--python", sys.executable],
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=120,
+        )
+        logger.info("Created venv for job %s at %s", job_id, venv_dir)
+    except FileNotFoundError:
+        logger.error("uv is not installed — cannot create job venv")
+        return None
+    except Exception as exc:
+        logger.error("Failed to create venv for job %s: %s", job_id, exc)
+        return None
+
+    venv_python = str(venv_dir / "bin" / "python")
+    try:
+        result = subprocess.run(
+            ["uv", "pip", "install", "-e", "./nemo_retriever",
+             "--python", venv_python],
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=600,
+        )
+        if result.stdout:
+            for line in result.stdout.strip().splitlines()[-5:]:
+                logger.info("  pip: %s", line)
+        logger.info("Installed nemo_retriever into job venv %s", job_id)
+    except Exception as exc:
+        logger.error("Failed to install into job venv %s: %s", job_id, exc)
+        if hasattr(exc, "stderr") and exc.stderr:
+            logger.error("stderr: %s", exc.stderr[:1000])
+        shutil.rmtree(venv_dir, ignore_errors=True)
+        return None
+
+    return venv_dir
+
+
+def _destroy_job_venv(job_id: str) -> None:
+    """Remove the venv for a specific job (safe to call even if it doesn't exist)."""
+    venv_dir = _VENV_BASE_DIR / job_id
+    if venv_dir.exists():
+        try:
+            shutil.rmtree(venv_dir)
+            logger.info("Removed venv for job %s", job_id)
+        except Exception as exc:
+            logger.warning("Failed to remove venv for job %s: %s", job_id, exc)
+
+
+# ---------------------------------------------------------------------------
 # Job tracker — shared state between heartbeat loop and job thread
 # ---------------------------------------------------------------------------
 
@@ -615,21 +714,75 @@ def _execute_job_on_runner(base_url: str, job: dict[str, Any], runner_id: int = 
         overrides.get("ray_address", "local"),
     )
 
+    # --- Create an isolated venv for this job ---
+    repo_root = _find_repo_root()
+    venv_dir: Path | None = None
+    if repo_root is not None:
+        logger.info("Job %s — creating isolated venv …", job_id)
+        venv_dir = _create_job_venv(job_id, repo_root)
+        if venv_dir is not None:
+            logger.info("Job %s — venv ready at %s", job_id, venv_dir)
+        else:
+            logger.warning("Job %s — venv creation failed, falling back to current environment", job_id)
+
     original_stdout = sys.stdout
     sys.stdout = _TeeWriter(original_stdout)
     try:
-        from nemo_retriever.harness.run import _run_entry
+        if venv_dir is not None:
+            # ---- Run in isolated subprocess using the job venv ----
+            args_file = venv_dir / "job_args.json"
+            result_file = venv_dir / "job_result.json"
+            wrapper_file = venv_dir / "job_wrapper.py"
 
-        result = _run_entry(
-            run_name=None,
-            config_file=job.get("config"),
-            session_dir=None,
-            dataset=dataset_value,
-            preset=job.get("preset"),
-            sweep_overrides=overrides if overrides else None,
-            tags=job.get("tags"),
-            skip_local_history=True,
-        )
+            job_args = {
+                "run_name": None,
+                "config_file": job.get("config"),
+                "session_dir": None,
+                "dataset": dataset_value,
+                "preset": job.get("preset"),
+                "sweep_overrides": overrides if overrides else None,
+                "tags": job.get("tags"),
+                "skip_local_history": True,
+            }
+            args_file.write_text(json_module.dumps(job_args))
+            wrapper_file.write_text(_JOB_WRAPPER_SCRIPT)
+
+            venv_python = str(venv_dir / "bin" / "python")
+            proc = subprocess.Popen(
+                [venv_python, str(wrapper_file), str(args_file), str(result_file)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                cwd=str(repo_root),
+            )
+
+            for line in proc.stdout:
+                sys.stdout.write(line)
+
+            proc.wait()
+
+            if result_file.exists():
+                result = json_module.loads(result_file.read_text())
+            else:
+                result = {
+                    "success": False,
+                    "failure_reason": f"Job process terminated (exit code {proc.returncode})",
+                    "return_code": proc.returncode,
+                }
+        else:
+            # ---- Fallback: run in the current process ----
+            from nemo_retriever.harness.run import _run_entry
+
+            result = _run_entry(
+                run_name=None,
+                config_file=job.get("config"),
+                session_dir=None,
+                dataset=dataset_value,
+                preset=job.get("preset"),
+                sweep_overrides=overrides if overrides else None,
+                tags=job.get("tags"),
+                skip_local_history=True,
+            )
 
         final_log_tail = _job_tracker.get_log_tail(_LOG_TAIL_MAX)
         if _job_tracker.is_cancel_requested():
@@ -697,6 +850,7 @@ def _execute_job_on_runner(base_url: str, job: dict[str, Any], runner_id: int = 
         _job_tracker.finish_job()
         if prev_head:
             _git_restore(prev_head)
+        _destroy_job_venv(job_id)
 
 
 # ---------------------------------------------------------------------------

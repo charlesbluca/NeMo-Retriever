@@ -2552,14 +2552,17 @@ async def get_git_info():
         current_sha = _git_run("rev-parse", "HEAD", cwd=repo_root)
         current_short = _git_run("rev-parse", "--short", "HEAD", cwd=repo_root)
 
-        remotes_raw = _git_run("remote", "-v", cwd=repo_root)
+        remote_names_raw = _git_run("remote", cwd=repo_root)
         remotes: list[dict[str, str]] = []
-        seen: set[str] = set()
-        for line in remotes_raw.splitlines():
-            parts = line.split()
-            if len(parts) >= 2 and parts[0] not in seen:
-                seen.add(parts[0])
-                remotes.append({"name": parts[0], "url": parts[1]})
+        for rname in remote_names_raw.splitlines():
+            rname = rname.strip()
+            if not rname:
+                continue
+            try:
+                rurl = _git_run("remote", "get-url", rname, cwd=repo_root)
+            except Exception:
+                rurl = ""
+            remotes.append({"name": rname, "url": rurl})
 
         nvidia_remote_name, _ = _detect_nvidia_remote()
         if nvidia_remote_name:
@@ -2868,3 +2871,136 @@ async def export_runs_json(
         media_type="application/json",
         headers={"Content-Disposition": f'attachment; filename="harness_runs_export_{ts}.json"'},
     )
+
+
+# ---------------------------------------------------------------------------
+# Graph Designer API
+# ---------------------------------------------------------------------------
+
+
+def _discover_operators() -> list[dict[str, Any]]:
+    """Discover all AbstractOperator subclasses available in the environment."""
+    import inspect as _inspect
+
+    registry: list[dict[str, Any]] = []
+
+    operator_sources = [
+        ("nemo_retriever.graph", ["UDFOperator", "FileListLoaderOperator", "MultiTypeExtractOperator"]),
+        ("nemo_retriever.graph.content_operators", ["ExplodeContentActor"]),
+        ("nemo_retriever.pdf.split", ["PDFSplitActor"]),
+        ("nemo_retriever.pdf.extract", ["PDFExtractionActor"]),
+        ("nemo_retriever.txt.ray_data", ["TextChunkActor", "TxtSplitActor"]),
+        ("nemo_retriever.html.ray_data", ["HtmlSplitActor"]),
+        ("nemo_retriever.image.ray_data", ["ImageLoadActor"]),
+        ("nemo_retriever.audio.chunk_actor", ["MediaChunkActor"]),
+        ("nemo_retriever.audio.asr_actor", ["ASRActor"]),
+        ("nemo_retriever.text_embed.text_embed", ["TextEmbedActor"]),
+        ("nemo_retriever.text_embed.operators", ["_BatchEmbedActor"]),
+        ("nemo_retriever.caption.caption", ["CaptionActor"]),
+        ("nemo_retriever.rerank.rerank", ["NemotronRerankActor"]),
+        ("nemo_retriever.page_elements.page_elements", ["PageElementDetectionActor", "PageElementDetectionCPUActor"]),
+        ("nemo_retriever.table.table_detection", ["TableStructureActor", "TableStructureCPUActor"]),
+        ("nemo_retriever.chart.chart_detection", ["GraphicElementsActor", "GraphicElementsCPUActor"]),
+        ("nemo_retriever.infographic.infographic_detection", ["InfographicDetectionActor"]),
+        ("nemo_retriever.ocr.ocr", ["OCRActor", "OCRCPUActor", "NemotronParseActor", "NemotronParseCPUActor"]),
+        ("nemo_retriever.utils.convert.to_pdf", ["DocToPdfConversionActor"]),
+    ]
+
+    for module_path, class_names in operator_sources:
+        for class_name in class_names:
+            try:
+                mod = __import__(module_path, fromlist=[class_name])
+                cls = getattr(mod, class_name)
+                sig = _inspect.signature(cls.__init__)
+                params = []
+                for pname, param in sig.parameters.items():
+                    if pname == "self" or param.kind in (
+                        _inspect.Parameter.VAR_POSITIONAL,
+                        _inspect.Parameter.VAR_KEYWORD,
+                    ):
+                        continue
+                    p_info: dict[str, Any] = {"name": pname}
+                    if param.default is not _inspect.Parameter.empty:
+                        try:
+                            json_module.dumps(param.default)
+                            p_info["default"] = param.default
+                        except (TypeError, ValueError):
+                            p_info["default"] = str(param.default)
+                    if param.annotation is not _inspect.Parameter.empty:
+                        p_info["type"] = str(param.annotation)
+                    params.append(p_info)
+
+                category = "graph"
+                if "CPU" in class_name:
+                    category = "cpu"
+                elif any(g in class_name for g in ("Embed", "Caption", "Rerank", "Detection", "OCR", "Parse", "Table", "Graphic", "Infographic")):
+                    category = "gpu"
+                elif any(t in class_name for t in ("Split", "Chunk", "Load", "Convert", "Explode", "Txt", "Html", "Image", "ASR", "Media")):
+                    category = "cpu"
+
+                registry.append({
+                    "class_name": class_name,
+                    "module": module_path,
+                    "import_path": f"from {module_path} import {class_name}",
+                    "params": params,
+                    "category": category,
+                })
+            except Exception as exc:
+                logger.debug("Failed to introspect %s.%s: %s", module_path, class_name, exc)
+
+    return registry
+
+
+@app.get("/api/operators")
+async def list_operators():
+    """Return all available pipeline operators with their constructor parameters."""
+    return _discover_operators()
+
+
+class GraphCreateRequest(BaseModel):
+    name: str
+    description: str = ""
+    graph_json: Any
+    generated_code: str = ""
+
+
+class GraphUpdateRequest(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    graph_json: Any = None
+    generated_code: str | None = None
+
+
+@app.get("/api/graphs")
+async def list_graphs_endpoint():
+    return history.list_graphs()
+
+
+@app.get("/api/graphs/{graph_id}")
+async def get_graph_endpoint(graph_id: int):
+    g = history.get_graph(graph_id)
+    if not g:
+        raise HTTPException(404, "Graph not found")
+    return g
+
+
+@app.post("/api/graphs")
+async def create_graph_endpoint(req: GraphCreateRequest):
+    return history.create_graph(req.model_dump())
+
+
+@app.put("/api/graphs/{graph_id}")
+async def update_graph_endpoint(graph_id: int, req: GraphUpdateRequest):
+    data = {k: v for k, v in req.model_dump().items() if v is not None}
+    g = history.update_graph(graph_id, data)
+    if not g:
+        raise HTTPException(404, "Graph not found")
+    return g
+
+
+@app.delete("/api/graphs/{graph_id}")
+async def delete_graph_endpoint(graph_id: int):
+    ok = history.delete_graph(graph_id)
+    if not ok:
+        raise HTTPException(404, "Graph not found")
+    return {"ok": True}

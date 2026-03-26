@@ -203,7 +203,7 @@ function App() {
     } catch {}
   }
 
-  const viewTitles = { runs: "Runs", analytics: "Analytics", reporting: "Reporting", datasets: "Datasets", presets: "Presets", runners: "Runners", scheduling: "Scheduling", alerts: "Alerts", ingestion: "Ingestion", retrieval: "Retrieval", models: "Models", settings: "Settings" };
+  const viewTitles = { runs: "Runs", analytics: "Analytics", reporting: "Reporting", datasets: "Datasets", presets: "Presets", runners: "Runners", scheduling: "Scheduling", alerts: "Alerts", ingestion: "Ingestion", retrieval: "Retrieval", models: "Models", designer: "Pipeline Designer", settings: "Settings" };
 
   const activeJobCount = jobs.filter(j => j.status==="running" || j.status==="pending" || j.status==="cancelling").length;
 
@@ -242,6 +242,9 @@ function App() {
     }
     if (activeView === "models") {
       return "Send test payloads to HuggingFace models and inspect responses";
+    }
+    if (activeView === "designer") {
+      return "Visually design operator pipelines and generate graph code";
     }
     if (activeView === "reporting") {
       return loading ? "Loading\u2026" : `${runs.length} run${runs.length!==1?'s':''} available for reporting`;
@@ -320,6 +323,9 @@ function App() {
           )}
           {activeView==="models" && (
             <ModelsView />
+          )}
+          {activeView==="designer" && (
+            <DesignerView />
           )}
         </div>
         <Footer>

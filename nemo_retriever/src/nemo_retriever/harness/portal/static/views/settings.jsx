@@ -4,7 +4,7 @@ function SettingsView() {
   const [gitLoading, setGitLoading] = useState(true);
   const [deployBranch, setDeployBranch] = useState("main");
   const [deployRemote, setDeployRemote] = useState("origin");
-  const [deploying, setDeploying] = useState(false);
+  const [activeAction, setActiveAction] = useState(null);
   const [deployResult, setDeployResult] = useState(null);
   const [deployError, setDeployError] = useState("");
   const [confirmAction, setConfirmAction] = useState(null);
@@ -13,7 +13,6 @@ function SettingsView() {
   const [runCodeRefInput, setRunCodeRefInput] = useState("");
   const [savingRunCodeRef, setSavingRunCodeRef] = useState(false);
   const [runCodeRefSaved, setRunCodeRefSaved] = useState(false);
-  const [updatingRunners, setUpdatingRunners] = useState(false);
 
   async function fetchPortalSettings() {
     try {
@@ -70,8 +69,9 @@ function SettingsView() {
   useEffect(() => { fetchGitInfo(); fetchPortalSettings(); }, []);
 
   async function handleDeploy(updateRunners) {
+    const action = updateRunners ? "deploy-all" : "deploy-portal";
     setConfirmAction(null);
-    setDeploying(true);
+    setActiveAction(action);
     setDeployResult(null);
     setDeployError("");
     try {
@@ -91,13 +91,13 @@ function SettingsView() {
     } catch (err) {
       setDeployError(err.message);
     } finally {
-      setDeploying(false);
+      setActiveAction(null);
     }
   }
 
   async function handleUpdateRunnersOnly() {
     setConfirmAction(null);
-    setUpdatingRunners(true);
+    setActiveAction("update-runners");
     setDeployResult(null);
     setDeployError("");
     try {
@@ -115,7 +115,7 @@ function SettingsView() {
     } catch (err) {
       setDeployError(err.message);
     } finally {
-      setUpdatingRunners(false);
+      setActiveAction(null);
     }
   }
 
@@ -142,7 +142,7 @@ function SettingsView() {
   }
 
   const labelStyle = {display:'block',fontSize:'11px',fontWeight:600,color:'var(--nv-text-dim)',textTransform:'uppercase',letterSpacing:'0.04em',marginBottom:'6px'};
-  const isBusy = deploying || updatingRunners;
+  const isBusy = !!activeAction;
   const refLabel = `${deployRemote}/${deployBranch}`;
 
   if (gitLoading) {
@@ -323,8 +323,8 @@ function SettingsView() {
           <div>
             <label style={labelStyle}>Remote</label>
             <select className="select" style={{width:'100%'}} value={deployRemote} onChange={e => setDeployRemote(e.target.value)}>
-              {(gitInfo.remotes || []).map(r => (
-                <option key={r.name} value={r.name}>{r.name} ({r.url})</option>
+              {(gitInfo?.remotes || []).map(r => (
+                <option key={r.name} value={r.name}>{r.name}{r.url ? ` — ${r.url}` : ''}</option>
               ))}
             </select>
           </div>
@@ -372,7 +372,7 @@ function SettingsView() {
             <button className="btn" onClick={() => setConfirmAction("deploy-portal")}
               disabled={isBusy || !deployBranch.trim()}
               style={{width:'100%',justifyContent:'center',background:'rgba(118,185,0,0.1)',color:'var(--nv-green)',border:'1px solid rgba(118,185,0,0.25)',fontWeight:600}}>
-              {deploying ? <><span className="spinner" style={{marginRight:'6px'}}></span>…</> : <><IconDownload /> Deploy Portal</>}
+              {activeAction === "deploy-portal" ? <><span className="spinner" style={{marginRight:'6px'}}></span>Deploying…</> : <><IconDownload /> Deploy Portal</>}
             </button>
           </div>
 
@@ -384,7 +384,7 @@ function SettingsView() {
             <button className="btn btn-primary" onClick={() => setConfirmAction("deploy-all")}
               disabled={isBusy || !deployBranch.trim()}
               style={{width:'100%',justifyContent:'center'}}>
-              {deploying ? <><span className="spinner" style={{marginRight:'6px'}}></span>…</> : <><IconDownload /> Deploy All</>}
+              {activeAction === "deploy-all" ? <><span className="spinner" style={{marginRight:'6px'}}></span>Deploying…</> : <><IconDownload /> Deploy All</>}
             </button>
           </div>
 
@@ -396,7 +396,7 @@ function SettingsView() {
             <button className="btn" onClick={() => setConfirmAction("update-runners")}
               disabled={isBusy || !deployBranch.trim()}
               style={{width:'100%',justifyContent:'center',background:'rgba(100,180,255,0.1)',color:'#64b4ff',border:'1px solid rgba(100,180,255,0.25)',fontWeight:600}}>
-              {updatingRunners ? <><span className="spinner" style={{marginRight:'6px'}}></span>…</> : <><IconRefresh /> Update Runners</>}
+              {activeAction === "update-runners" ? <><span className="spinner" style={{marginRight:'6px'}}></span>Updating…</> : <><IconRefresh /> Update Runners</>}
             </button>
           </div>
         </div>
@@ -434,14 +434,17 @@ function SettingsView() {
 
         {/* Remotes Card */}
         <div className="card" style={{padding:'24px'}}>
-          <div className="section-title" style={{marginBottom:'12px'}}>Remotes</div>
-          <div style={{display:'flex',flexDirection:'column',gap:'8px'}}>
-            {(gitInfo.remotes || []).map(r => (
-              <div key={r.name} style={{display:'flex',alignItems:'center',gap:'12px',padding:'6px 0',borderBottom:'1px solid var(--nv-border)'}}>
-                <span style={{fontSize:'13px',fontWeight:600,color:'#fff',minWidth:'80px'}}>{r.name}</span>
-                <span className="mono" style={{fontSize:'12px',color:'var(--nv-text-muted)',wordBreak:'break-all'}}>{r.url}</span>
+          <div className="section-title" style={{marginBottom:'12px'}}>Remotes ({(gitInfo?.remotes || []).length})</div>
+          <div style={{display:'flex',flexDirection:'column',gap:'0'}}>
+            {(gitInfo?.remotes || []).map(r => (
+              <div key={r.name} style={{display:'flex',alignItems:'center',gap:'12px',padding:'8px 0',borderBottom:'1px solid var(--nv-border)'}}>
+                <span className="mono" style={{fontSize:'13px',fontWeight:600,color:'var(--nv-green)',minWidth:'100px'}}>{r.name}</span>
+                <span className="mono" style={{fontSize:'12px',color:'var(--nv-text-muted)',wordBreak:'break-all',flex:1}}>{r.url || '(no URL)'}</span>
               </div>
             ))}
+            {(gitInfo?.remotes || []).length === 0 && (
+              <div style={{padding:'16px',textAlign:'center',color:'var(--nv-text-dim)',fontSize:'13px'}}>No git remotes configured</div>
+            )}
           </div>
         </div>
       </div>

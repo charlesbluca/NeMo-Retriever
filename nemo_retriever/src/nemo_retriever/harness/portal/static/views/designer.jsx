@@ -649,6 +649,21 @@ function RunGraphModal({ graphId, graphName, onClose }) {
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
 
+  const [enableRecall, setEnableRecall] = useState(false);
+  const [evalMode, setEvalMode] = useState('recall');
+  const [queryCsv, setQueryCsv] = useState('');
+  const [recallRequired, setRecallRequired] = useState(true);
+  const [recallMatchMode, setRecallMatchMode] = useState('pdf_page');
+  const [recallAdapter, setRecallAdapter] = useState('none');
+  const [beirLoader, setBeirLoader] = useState('vidore_hf');
+  const [beirDatasetName, setBeirDatasetName] = useState('');
+  const [beirSplit, setBeirSplit] = useState('test');
+  const [beirQueryLang, setBeirQueryLang] = useState('');
+  const [beirDocIdField, setBeirDocIdField] = useState('pdf_basename');
+  const [beirKs, setBeirKs] = useState('1, 3, 5, 10');
+  const [embedModel, setEmbedModel] = useState('');
+  const [hybrid, setHybrid] = useState(false);
+
   useEffect(() => {
     fetch('/api/runners').then(r => r.json()).then(list => {
       const online = (list || []).filter(r => r.status === 'online' || r.status === 'idle');
@@ -661,11 +676,31 @@ function RunGraphModal({ graphId, graphName, onClose }) {
     setError(null);
     setResult(null);
     try {
-      const body = {};
+      const body = { enable_recall: enableRecall };
       if (runnerId) body.runner_id = parseInt(runnerId, 10);
       if (rayAddress.trim()) body.ray_address = rayAddress.trim();
       if (gitRef.trim()) body.git_ref = gitRef.trim();
       if (gitCommit.trim()) body.git_commit = gitCommit.trim();
+
+      if (enableRecall) {
+        body.evaluation_mode = evalMode;
+        body.recall_required = recallRequired;
+        body.hybrid = hybrid;
+        if (queryCsv.trim()) body.query_csv = queryCsv.trim();
+        if (embedModel.trim()) body.embed_model_name = embedModel.trim();
+        if (evalMode === 'recall') {
+          body.recall_match_mode = recallMatchMode;
+          body.recall_adapter = recallAdapter;
+        } else {
+          if (beirLoader) body.beir_loader = beirLoader;
+          if (beirDatasetName.trim()) body.beir_dataset_name = beirDatasetName.trim();
+          if (beirSplit.trim()) body.beir_split = beirSplit.trim();
+          if (beirQueryLang.trim()) body.beir_query_language = beirQueryLang.trim();
+          if (beirDocIdField) body.beir_doc_id_field = beirDocIdField;
+          const parsedKs = beirKs.split(',').map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n) && n > 0);
+          if (parsedKs.length > 0) body.beir_ks = parsedKs;
+        }
+      }
 
       const res = await fetch(`/api/graphs/${graphId}/run`, {
         method: 'POST',
@@ -686,23 +721,31 @@ function RunGraphModal({ graphId, graphName, onClose }) {
   }
 
   const fieldLabel = { display: 'block', fontSize: '11px', fontWeight: 600, color: 'var(--nv-text-dim)', textTransform: 'uppercase', marginBottom: '5px' };
+  const sectionStyle = { padding: '12px', borderRadius: '8px', display: 'flex', flexDirection: 'column', gap: '10px' };
+  const isBeir = evalMode === 'beir';
 
   return (
     <div className="modal-overlay" onClick={onClose}>
-      <div className="modal-content" style={{ maxWidth: '520px' }} onClick={e => e.stopPropagation()}>
+      <div className="modal-content" style={{ maxWidth: '580px', maxHeight: '85vh', display: 'flex', flexDirection: 'column' }} onClick={e => e.stopPropagation()}>
         <div className="modal-head">
           <span>Run Graph: {graphName}</span>
           <button className="modal-close" onClick={onClose}>&times;</button>
         </div>
-        <div className="modal-body" style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+        <div className="modal-body" style={{ display: 'flex', flexDirection: 'column', gap: '14px', overflowY: 'auto', flex: 1 }}>
           {result ? (
             <div style={{ textAlign: 'center', padding: '16px 0' }}>
               <div style={{ fontSize: '14px', color: 'var(--nv-green)', fontWeight: 600, marginBottom: '8px' }}>Job submitted successfully</div>
               <div style={{ fontSize: '12px', color: 'var(--nv-text-dim)', marginBottom: '12px' }}>
                 Job ID: <code style={{ color: '#fff', background: 'rgba(255,255,255,0.06)', padding: '2px 6px', borderRadius: '4px' }}>{result.job_id}</code>
               </div>
-              <div style={{ fontSize: '11px', color: 'var(--nv-text-muted)' }}>
-                View progress in the <strong>Runs</strong> tab under Active Jobs.
+              <div style={{ marginTop: '12px' }}>
+                <a href="#runs" onClick={() => { window.location.hash = 'runs'; onClose(); }}
+                  style={{ fontSize: '13px', color: 'var(--nv-green)', textDecoration: 'none', fontWeight: 600,
+                    display: 'inline-flex', alignItems: 'center', gap: '6px', padding: '8px 16px',
+                    borderRadius: '6px', background: 'rgba(118,185,0,0.08)', border: '1px solid rgba(118,185,0,0.2)',
+                    cursor: 'pointer' }}>
+                  View in Runs &rarr;
+                </a>
               </div>
             </div>
           ) : (
@@ -738,6 +781,132 @@ function RunGraphModal({ graphId, graphName, onClose }) {
                     style={{ width: '100%' }} placeholder="abc123…" />
                 </div>
               </div>
+
+              {/* Recall / Evaluation Toggle */}
+              <div style={{ borderTop: '1px solid var(--nv-border)', paddingTop: '14px' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '13px', color: '#fff' }}>
+                  <input type="checkbox" checked={enableRecall} onChange={e => setEnableRecall(e.target.checked)}
+                    style={{ width: '16px', height: '16px', accentColor: 'var(--nv-green)' }} />
+                  Enable Recall / BEIR Evaluation
+                </label>
+                <div style={{ fontSize: '11px', color: 'var(--nv-text-dim)', marginTop: '4px' }}>
+                  After the graph pipeline writes embeddings to LanceDB, run recall or BEIR evaluation against a query CSV or BEIR dataset.
+                </div>
+              </div>
+
+              {enableRecall && (
+                <div style={{ ...sectionStyle, background: 'rgba(118,185,0,0.04)', border: '1px solid rgba(118,185,0,0.15)' }}>
+                  <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--nv-green)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Evaluation Configuration</div>
+
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+                    <div>
+                      <label style={fieldLabel}>Evaluation Mode</label>
+                      <select className="input" style={{ width: '100%' }} value={evalMode} onChange={e => setEvalMode(e.target.value)}>
+                        <option value="recall">recall</option>
+                        <option value="beir">beir</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label style={fieldLabel}>Embed Model</label>
+                      <input className="input" style={{ width: '100%' }} value={embedModel} onChange={e => setEmbedModel(e.target.value)}
+                        placeholder="nvidia/llama-nemotron-embed-1b-v2" />
+                    </div>
+                  </div>
+
+                  {!isBeir && (
+                    <>
+                      <div>
+                        <label style={fieldLabel}>Query CSV</label>
+                        <input className="input" style={{ width: '100%' }} value={queryCsv} onChange={e => setQueryCsv(e.target.value)}
+                          placeholder="/path/to/query_gt.csv" />
+                      </div>
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '10px' }}>
+                        <div>
+                          <label style={fieldLabel}>Recall Required</label>
+                          <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '12px', color: '#fff', marginTop: '4px' }}>
+                            <input type="checkbox" checked={recallRequired} onChange={e => setRecallRequired(e.target.checked)} />
+                            {recallRequired ? 'Yes' : 'No'}
+                          </label>
+                        </div>
+                        <div>
+                          <label style={fieldLabel}>Match Mode</label>
+                          <select className="input" style={{ width: '100%' }} value={recallMatchMode} onChange={e => setRecallMatchMode(e.target.value)}>
+                            <option value="pdf_page">pdf_page</option>
+                            <option value="pdf_only">pdf_only</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label style={fieldLabel}>Recall Adapter</label>
+                          <select className="input" style={{ width: '100%' }} value={recallAdapter} onChange={e => setRecallAdapter(e.target.value)}>
+                            <option value="none">none</option>
+                            <option value="page_plus_one">page_plus_one</option>
+                            <option value="financebench_json">financebench_json</option>
+                          </select>
+                        </div>
+                      </div>
+                      <div>
+                        <label style={fieldLabel}>Hybrid Search</label>
+                        <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '12px', color: '#fff', marginTop: '4px' }}>
+                          <input type="checkbox" checked={hybrid} onChange={e => setHybrid(e.target.checked)} />
+                          {hybrid ? 'Yes' : 'No'}
+                        </label>
+                      </div>
+                    </>
+                  )}
+
+                  {isBeir && (
+                    <>
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+                        <div>
+                          <label style={fieldLabel}>BEIR Loader</label>
+                          <select className="input" style={{ width: '100%' }} value={beirLoader} onChange={e => setBeirLoader(e.target.value)}>
+                            <option value="vidore_hf">vidore_hf</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label style={fieldLabel}>BEIR Dataset Name</label>
+                          <input className="input" style={{ width: '100%' }} value={beirDatasetName} onChange={e => setBeirDatasetName(e.target.value)}
+                            placeholder="e.g. vidore_v3_computer_science" />
+                        </div>
+                      </div>
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+                        <div>
+                          <label style={fieldLabel}>BEIR Split</label>
+                          <input className="input" style={{ width: '100%' }} value={beirSplit} onChange={e => setBeirSplit(e.target.value)} placeholder="test" />
+                        </div>
+                        <div>
+                          <label style={fieldLabel}>BEIR Query Language</label>
+                          <input className="input" style={{ width: '100%' }} value={beirQueryLang} onChange={e => setBeirQueryLang(e.target.value)}
+                            placeholder="Optional (e.g. en, fr)" />
+                        </div>
+                      </div>
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+                        <div>
+                          <label style={fieldLabel}>Doc ID Field</label>
+                          <select className="input" style={{ width: '100%' }} value={beirDocIdField} onChange={e => setBeirDocIdField(e.target.value)}>
+                            <option value="pdf_basename">pdf_basename</option>
+                            <option value="pdf_page">pdf_page</option>
+                            <option value="source_id">source_id</option>
+                            <option value="path">path</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label style={fieldLabel}>K Values</label>
+                          <input className="input" style={{ width: '100%' }} value={beirKs} onChange={e => setBeirKs(e.target.value)} placeholder="1, 3, 5, 10" />
+                        </div>
+                      </div>
+                      <div>
+                        <label style={fieldLabel}>Hybrid Search</label>
+                        <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '12px', color: '#fff', marginTop: '4px' }}>
+                          <input type="checkbox" checked={hybrid} onChange={e => setHybrid(e.target.checked)} />
+                          {hybrid ? 'Yes' : 'No'}
+                        </label>
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
+
               {error && (
                 <div style={{ padding: '8px 12px', borderRadius: '6px', background: 'rgba(255,80,80,0.1)', border: '1px solid rgba(255,80,80,0.2)', color: '#ff5050', fontSize: '12px' }}>
                   {error}

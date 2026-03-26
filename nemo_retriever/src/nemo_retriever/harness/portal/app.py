@@ -3222,6 +3222,20 @@ class GraphRunRequest(BaseModel):
     git_ref: str | None = None
     git_commit: str | None = None
     ray_address: str | None = None
+    enable_recall: bool = False
+    evaluation_mode: str | None = None
+    query_csv: str | None = None
+    recall_required: bool = True
+    recall_match_mode: str | None = None
+    recall_adapter: str | None = None
+    beir_loader: str | None = None
+    beir_dataset_name: str | None = None
+    beir_split: str | None = None
+    beir_query_language: str | None = None
+    beir_doc_id_field: str | None = None
+    beir_ks: list[int] | None = None
+    embed_model_name: str | None = None
+    hybrid: bool = False
 
 
 class GraphRunResponse(BaseModel):
@@ -3245,15 +3259,62 @@ async def run_graph_endpoint(graph_id: int, req: GraphRunRequest):
         "ray_address": req.ray_address,
     }
 
+    graph_name = graph.get("name") or f"graph-{graph_id}"
+
+    input_path = graph_name
+    try:
+        raw_json = graph.get("graph_json") or "{}"
+        gj = json_module.loads(raw_json) if isinstance(raw_json, str) else raw_json
+        for node in gj.get("nodes") or []:
+            op = node.get("operator") or {}
+            if op.get("type") == "ray_data_source":
+                paths_val = (node.get("config") or {}).get("paths", "")
+                if paths_val:
+                    input_path = paths_val
+                break
+    except Exception:
+        pass
+
+    eval_overrides: dict[str, Any] = {}
+    if req.enable_recall:
+        if req.evaluation_mode:
+            eval_overrides["evaluation_mode"] = req.evaluation_mode
+        if req.query_csv:
+            eval_overrides["query_csv"] = req.query_csv
+        eval_overrides["recall_required"] = req.recall_required
+        if req.recall_match_mode:
+            eval_overrides["recall_match_mode"] = req.recall_match_mode
+        if req.recall_adapter:
+            eval_overrides["recall_adapter"] = req.recall_adapter
+        if req.beir_loader:
+            eval_overrides["beir_loader"] = req.beir_loader
+        if req.beir_dataset_name:
+            eval_overrides["beir_dataset_name"] = req.beir_dataset_name
+        if req.beir_split:
+            eval_overrides["beir_split"] = req.beir_split
+        if req.beir_query_language:
+            eval_overrides["beir_query_language"] = req.beir_query_language
+        if req.beir_doc_id_field:
+            eval_overrides["beir_doc_id_field"] = req.beir_doc_id_field
+        if req.beir_ks:
+            eval_overrides["beir_ks"] = req.beir_ks
+        if req.embed_model_name:
+            eval_overrides["embed_model_name"] = req.embed_model_name
+        if req.hybrid:
+            eval_overrides["hybrid"] = True
+
     job = history.create_job(
         {
             "trigger_source": "graph",
-            "dataset": graph.get("name") or f"graph-{graph_id}",
+            "dataset": input_path,
+            "dataset_overrides": eval_overrides if eval_overrides else None,
+            "preset": graph_name,
             "assigned_runner_id": req.runner_id,
             "git_commit": pinned_sha,
             "git_ref": pinned_ref,
             "graph_code": code,
-            "tags": ["graph-run", graph.get("name", "")],
+            "graph_id": graph_id,
+            "tags": ["graph-run", graph_name],
             "config": json_module.dumps(graph_meta),
         }
     )

@@ -183,6 +183,7 @@ class TriggerRequest(BaseModel):
     runner_id: int | None = None
     git_ref: str | None = None
     git_commit: str | None = None
+    nsys_profile: bool = False
 
 
 class TriggerResponse(BaseModel):
@@ -301,6 +302,7 @@ class PresetMatrixCreateRequest(BaseModel):
     gpu_type_filter: str | None = None
     git_ref: str | None = None
     git_commit: str | None = None
+    nsys_profile: bool = False
 
 
 class PresetMatrixUpdateRequest(BaseModel):
@@ -313,11 +315,13 @@ class PresetMatrixUpdateRequest(BaseModel):
     gpu_type_filter: str | None = None
     git_ref: str | None = None
     git_commit: str | None = None
+    nsys_profile: bool | None = None
 
 
 class MatrixTriggerRequest(BaseModel):
     git_ref: str | None = None
     git_commit: str | None = None
+    nsys_profile: bool | None = None
 
 
 class MatrixTriggerResponse(BaseModel):
@@ -498,6 +502,45 @@ async def download_run_zip(run_id: int):
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="run_{run_id}_{dataset}.zip"'},
     )
+
+
+@app.get("/api/runs/{run_id}/download/nsys-profile")
+async def download_nsys_profile(run_id: int):
+    row = history.get_run_by_id(run_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    dataset = row.get("dataset", "unknown")
+
+    uploaded_zip = history.portal_artifacts_dir() / f"run_{run_id}.zip"
+    if uploaded_zip.is_file():
+        try:
+            with zipfile.ZipFile(uploaded_zip, "r") as zf:
+                nsys_files = [n for n in zf.namelist() if n.endswith(".nsys-rep")]
+                if not nsys_files:
+                    raise HTTPException(status_code=404, detail="No nsys profile found in artifacts")
+                nsys_name = nsys_files[0]
+                buf = io.BytesIO(zf.read(nsys_name))
+                download_name = f"run_{run_id}_{dataset}.nsys-rep"
+                return StreamingResponse(
+                    buf,
+                    media_type="application/octet-stream",
+                    headers={"Content-Disposition": f'attachment; filename="{download_name}"'},
+                )
+        except zipfile.BadZipFile:
+            raise HTTPException(status_code=500, detail="Corrupt artifact zip")
+
+    artifact_dir = row.get("artifact_dir")
+    if artifact_dir and Path(artifact_dir).is_dir():
+        for fp in Path(artifact_dir).rglob("*.nsys-rep"):
+            download_name = f"run_{run_id}_{dataset}.nsys-rep"
+            return FileResponse(
+                path=str(fp),
+                media_type="application/octet-stream",
+                filename=download_name,
+            )
+
+    raise HTTPException(status_code=404, detail="No nsys profile found for this run")
 
 
 @app.post("/api/runs/{run_id}/upload-artifacts")
@@ -1584,6 +1627,10 @@ async def trigger_preset_matrix(matrix_id: int, req: MatrixTriggerRequest | None
     preferred_runner_id = matrix.get("preferred_runner_id")
     gpu_type_filter = matrix.get("gpu_type_filter")
     matrix_tags = matrix.get("tags") or []
+
+    nsys_flag = req.nsys_profile if (req and req.nsys_profile is not None) else bool(matrix.get("nsys_profile"))
+    nsys_val = int(bool(nsys_flag))
+
     job_ids: list[str] = []
     for ds_name in dataset_names:
         dataset_path, dataset_overrides = _resolve_dataset_config(ds_name)
@@ -1608,6 +1655,7 @@ async def trigger_preset_matrix(matrix_id: int, req: MatrixTriggerRequest | None
                     "tags": matrix_tags,
                     "matrix_run_id": matrix_run_id,
                     "matrix_name": matrix["name"],
+                    "nsys_profile": nsys_val,
                 }
             )
             job_ids.append(job["id"])
@@ -1718,6 +1766,7 @@ async def trigger_run(req: TriggerRequest):
             "git_commit": pinned_sha,
             "git_ref": pinned_ref,
             "tags": req.tags or [],
+            "nsys_profile": int(req.nsys_profile),
         }
     )
     return TriggerResponse(job_id=job["id"], status="pending")
@@ -1997,6 +2046,7 @@ def _record_run_from_job(
             execution_commit=execution_commit,
             num_gpus=num_gpus,
             job_id=job.get("id"),
+            nsys_profile=int(bool(job.get("nsys_profile"))),
         )
         if run_row_id:
             run_row = history.get_run_by_id(run_row_id)

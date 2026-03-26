@@ -288,6 +288,7 @@ function MatrixTriggerModal({ matrix, onClose }) {
   const [remoteBranches, setRemoteBranches] = useState([]);
   const [defaultRef, setDefaultRef] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [nsysProfile, setNsysProfile] = useState(!!matrix.nsys_profile);
 
   useEffect(() => {
     fetch("/api/portal-settings").then(r=>r.json()).then(s => {
@@ -301,7 +302,7 @@ function MatrixTriggerModal({ matrix, onClose }) {
   async function handleTrigger() {
     setSubmitting(true);
     try {
-      const body = {};
+      const body = { nsys_profile: nsysProfile };
       if (gitMode === "branch" && gitRef.trim()) {
         body.git_ref = gitRef.trim();
       } else if (gitMode === "commit" && gitRef.trim()) {
@@ -409,6 +410,18 @@ function MatrixTriggerModal({ matrix, onClose }) {
               )}
             </>
           )}
+
+          {/* Profiling */}
+          <div style={{borderTop:'1px solid var(--nv-border)',paddingTop:'16px'}}>
+            <label style={{display:'flex',alignItems:'center',gap:'8px',cursor:'pointer',fontSize:'13px',color:'var(--nv-text-muted)'}}>
+              <input type="checkbox" checked={nsysProfile} onChange={e => setNsysProfile(e.target.checked)}
+                style={{width:'16px',height:'16px',accentColor:'var(--nv-green)'}} />
+              Enable Nsight Systems Profile
+            </label>
+            <div style={hintStyle}>
+              All jobs in this matrix will be profiled with <code style={{fontSize:'11px'}}>nsys profile</code>.
+            </div>
+          </div>
         </div>
         <div className="modal-foot">
           <button type="button" className="btn btn-secondary" onClick={onClose}>Cancel</button>
@@ -609,6 +622,7 @@ function PresetMatrixFormModal({ matrix, onClose, onSaved }) {
   const [gitCommit, setGitCommit] = useState(existingGitCommit);
   const [remoteBranches, setRemoteBranches] = useState([]);
   const [defaultRef, setDefaultRef] = useState("");
+  const [nsysProfile, setNsysProfile] = useState(!!matrix?.nsys_profile);
 
   useEffect(() => {
     fetch("/api/config").then(r=>r.json()).then(cfg => {
@@ -651,6 +665,7 @@ function PresetMatrixFormModal({ matrix, onClose, onSaved }) {
       gpu_type_filter: gpuTypeFilter || null,
       git_ref: null,
       git_commit: null,
+      nsys_profile: nsysProfile,
     };
     if (gitMode === "branch" && gitRef.trim()) {
       payload.git_ref = gitRef.trim();
@@ -824,6 +839,21 @@ function PresetMatrixFormModal({ matrix, onClose, onSaved }) {
                   )}
                 </div>
               )}
+            </div>
+
+            {/* Profiling */}
+            <div style={{padding:'12px 16px',borderRadius:'8px',background:'rgba(255,255,255,0.02)',border:'1px solid var(--nv-border)'}}>
+              <div style={{fontSize:'11px',fontWeight:600,color:'var(--nv-text-muted)',textTransform:'uppercase',letterSpacing:'0.04em',marginBottom:'10px'}}>
+                Profiling (optional)
+              </div>
+              <label style={{display:'flex',alignItems:'center',gap:'8px',cursor:'pointer',fontSize:'13px',color:'var(--nv-text-muted)'}}>
+                <input type="checkbox" checked={nsysProfile} onChange={e => setNsysProfile(e.target.checked)}
+                  style={{width:'16px',height:'16px',accentColor:'var(--nv-green)'}} />
+                Enable Nsight Systems Profile
+              </label>
+              <div style={{fontSize:'10px',color:'var(--nv-text-dim)',marginTop:'4px',lineHeight:'1.5'}}>
+                All jobs spawned by this matrix will be wrapped with <code style={{fontSize:'10px'}}>nsys profile</code>. Can be overridden at trigger time.
+              </div>
             </div>
 
             <div>

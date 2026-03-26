@@ -461,6 +461,12 @@ function RunDetailModal({ run, onClose, onDelete, githubRepoUrl }) {
           <a href={`/api/runs/${run.id}/download/zip`} download className="btn btn-primary">
             <IconPackage /> Download Artifacts ZIP
           </a>
+          {!!run.nsys_profile && (
+            <button className="btn btn-secondary" onClick={() => window.open(`/api/runs/${run.id}/download/nsys-profile`, '_blank')}
+              title="Download the Nsight Systems profile captured during this run">
+              <IconActivity /> Nsys Profile
+            </button>
+          )}
           <button className="btn btn-secondary" onClick={handleRerunClick} title="Re-run with the exact same configuration and git commit">
             <IconRefresh /> Re-Run
           </button>

@@ -456,6 +456,32 @@ with open(result_file, "w") as f:
 """
 
 
+def _nsys_available() -> bool:
+    """Return True if ``nsys`` is on PATH."""
+    try:
+        subprocess.run(["nsys", "--version"], capture_output=True, timeout=5)
+        return True
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+
+
+def _nsys_prefix(output_path: str) -> list[str]:
+    """Return the command prefix to wrap a subprocess with nsys profile."""
+    return ["nsys", "profile", "-o", output_path, "--force-overwrite=true", "-t", "cuda,nvtx,osrt"]
+
+
+def _copy_nsys_profiles(src_dir: Path, dest_dir: Path) -> None:
+    """Copy any .nsys-rep files from *src_dir* into *dest_dir*."""
+    if not dest_dir.is_dir():
+        return
+    for fp in src_dir.glob("*.nsys-rep"):
+        try:
+            shutil.copy2(fp, dest_dir / fp.name)
+            logger.info("Copied nsys profile %s -> %s", fp, dest_dir / fp.name)
+        except Exception as exc:
+            logger.warning("Failed to copy nsys profile %s: %s", fp, exc)
+
+
 def _create_job_venv(job_id: str, repo_root: Path) -> Path | None:
     """Create a uv venv for *job_id* and install nemo_retriever into it.
 
@@ -811,6 +837,12 @@ def _execute_job_on_runner(base_url: str, job: dict[str, Any], runner_id: int = 
         _destroy_job_venv(job_id)
         return
 
+    nsys_profile = bool(job.get("nsys_profile"))
+    use_nsys = nsys_profile and _nsys_available()
+    if nsys_profile and not use_nsys:
+        logger.warning("Job %s requested nsys profiling but nsys is not on PATH — proceeding without", job_id)
+    nsys_output_dir = Path(tempfile.mkdtemp(prefix=f"nsys_{job_id}_")) if use_nsys else None
+
     original_stdout = sys.stdout
     sys.stdout = _TeeWriter(original_stdout)
     try:
@@ -828,8 +860,11 @@ def _execute_job_on_runner(base_url: str, job: dict[str, Any], runner_id: int = 
             input_path = graph_meta.get("input_path") or "__none__"
 
             python_bin = str(venv_dir / "bin" / "python") if venv_dir else sys.executable
+            cmd = [python_bin, str(wrapper_file), str(code_file), str(result_file), ray_addr, input_path]
+            if use_nsys:
+                cmd = _nsys_prefix(str(nsys_output_dir / "profile")) + cmd
             proc = subprocess.Popen(
-                [python_bin, str(wrapper_file), str(code_file), str(result_file), ray_addr, input_path],
+                cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
@@ -873,8 +908,11 @@ def _execute_job_on_runner(base_url: str, job: dict[str, Any], runner_id: int = 
             wrapper_file.write_text(_JOB_WRAPPER_SCRIPT)
 
             venv_python = str(venv_dir / "bin" / "python")
+            cmd = [venv_python, str(wrapper_file), str(args_file), str(result_file)]
+            if use_nsys:
+                cmd = _nsys_prefix(str(nsys_output_dir / "profile")) + cmd
             proc = subprocess.Popen(
-                [venv_python, str(wrapper_file), str(args_file), str(result_file)],
+                cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
@@ -946,11 +984,22 @@ def _execute_job_on_runner(base_url: str, job: dict[str, Any], runner_id: int = 
             else:
                 cmd_file = artifacts.get("command_file", "")
                 art_dir = str(Path(cmd_file).parent) if cmd_file else None
+
+            if use_nsys and nsys_output_dir and art_dir and Path(art_dir).is_dir():
+                _copy_nsys_profiles(nsys_output_dir, Path(art_dir))
+
             if art_dir:
                 try:
                     _upload_artifacts(base_url, resp_run_id, art_dir)
                 except Exception as upload_exc:
                     logger.warning("Failed to upload artifacts for run %d: %s", resp_run_id, upload_exc)
+            elif use_nsys and nsys_output_dir:
+                nsys_files = list(nsys_output_dir.glob("*.nsys-rep"))
+                if nsys_files:
+                    try:
+                        _upload_artifacts(base_url, resp_run_id, str(nsys_output_dir))
+                    except Exception as upload_exc:
+                        logger.warning("Failed to upload nsys artifacts for run %d: %s", resp_run_id, upload_exc)
     except Exception as exc:
         tb = traceback.format_exc()
         logger.error("Job %s failed: %s\n%s", job_id, exc, tb)
@@ -976,6 +1025,8 @@ def _execute_job_on_runner(base_url: str, job: dict[str, Any], runner_id: int = 
         if prev_head:
             _git_restore(prev_head)
         _destroy_job_venv(job_id)
+        if nsys_output_dir and nsys_output_dir.exists():
+            shutil.rmtree(nsys_output_dir, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------

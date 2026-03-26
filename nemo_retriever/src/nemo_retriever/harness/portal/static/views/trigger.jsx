@@ -14,6 +14,7 @@ function TriggerModal({ onClose, onTriggered }) {
   const [gitCommit, setGitCommit] = useState("");
   const [remoteBranches, setRemoteBranches] = useState([]);
   const [defaultRef, setDefaultRef] = useState("");
+  const [nsysProfile, setNsysProfile] = useState(false);
 
   useEffect(() => {
     fetch("/api/config").then(r=>r.json()).then(cfg => {
@@ -42,6 +43,7 @@ function TriggerModal({ onClose, onTriggered }) {
         dataset,
         preset: preset || null,
         runner_id: runnerId ? parseInt(runnerId, 10) : null,
+        nsys_profile: nsysProfile,
       };
       if (gitMode === "branch" && gitRef.trim()) {
         payload.git_ref = gitRef.trim();
@@ -189,6 +191,18 @@ function TriggerModal({ onClose, onTriggered }) {
                   )}
                 </div>
               )}
+            </div>
+
+            {/* Profiling */}
+            <div style={{borderTop:'1px solid var(--nv-border)',paddingTop:'16px'}}>
+              <label style={{display:'flex',alignItems:'center',gap:'8px',cursor:'pointer',fontSize:'13px',color:'var(--nv-text-muted)'}}>
+                <input type="checkbox" checked={nsysProfile} onChange={e => setNsysProfile(e.target.checked)}
+                  style={{width:'16px',height:'16px',accentColor:'var(--nv-green)'}} />
+                Enable Nsight Systems Profile
+              </label>
+              <div style={hintStyle}>
+                Wraps the job subprocess with <code style={{fontSize:'11px'}}>nsys profile</code>. The <code style={{fontSize:'11px'}}>.nsys-rep</code> file will be included in the artifacts ZIP.
+              </div>
             </div>
           </div>
           <div className="modal-foot">

@@ -258,6 +258,9 @@ _MIGRATIONS = [
     "ALTER TABLE jobs ADD COLUMN matrix_name TEXT",
     "ALTER TABLE runs ADD COLUMN job_id TEXT",
     "ALTER TABLE jobs ADD COLUMN graph_code TEXT",
+    "ALTER TABLE jobs ADD COLUMN nsys_profile INTEGER DEFAULT 0",
+    "ALTER TABLE preset_matrices ADD COLUMN nsys_profile INTEGER DEFAULT 0",
+    "ALTER TABLE runs ADD COLUMN nsys_profile INTEGER DEFAULT 0",
 ]
 
 RUNNER_MISSED_HEARTBEATS_THRESHOLD = 4
@@ -333,6 +336,7 @@ def record_run(
     execution_commit: str | None = None,
     num_gpus: int | None = None,
     job_id: str | None = None,
+    nsys_profile: int = 0,
 ) -> int:
     """Insert a single run result into the history database. Returns the row id."""
     conn = _connect(db_path)
@@ -368,6 +372,7 @@ def record_run(
             "execution_commit": execution_commit,
             "num_gpus": num_gpus,
             "job_id": job_id,
+            "nsys_profile": nsys_profile,
         }
 
         columns = ", ".join(row.keys())
@@ -397,7 +402,8 @@ def get_runs(
             " failure_reason, pages, ingest_secs, pages_per_sec, recall_1, recall_5,"
             " recall_10, files, tags,"
             " artifact_dir, hostname, gpu_type, trigger_source, schedule_id,"
-            " ray_cluster_mode, ray_dashboard_url, execution_commit, num_gpus"
+            " ray_cluster_mode, ray_dashboard_url, execution_commit, num_gpus,"
+            " nsys_profile"
             " FROM runs WHERE 1=1"
         )
         params: list[Any] = []
@@ -687,8 +693,8 @@ def create_preset_matrix(data: dict[str, Any], db_path: str | None = None) -> di
         now = _now_iso()
         conn.execute(
             "INSERT INTO preset_matrices (name, description, dataset_names, preset_names, tags,"
-            " preferred_runner_id, gpu_type_filter, git_ref, git_commit, created_at, updated_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " preferred_runner_id, gpu_type_filter, git_ref, git_commit, nsys_profile, created_at, updated_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 data["name"],
                 data.get("description"),
@@ -699,6 +705,7 @@ def create_preset_matrix(data: dict[str, Any], db_path: str | None = None) -> di
                 data.get("gpu_type_filter"),
                 data.get("git_ref"),
                 data.get("git_commit"),
+                data.get("nsys_profile", 0),
                 now,
                 now,
             ),
@@ -772,6 +779,9 @@ def update_preset_matrix(matrix_id: int, data: dict[str, Any], db_path: str | No
         if "git_commit" in data:
             sets.append("git_commit = ?")
             vals.append(data["git_commit"])
+        if "nsys_profile" in data:
+            sets.append("nsys_profile = ?")
+            vals.append(data["nsys_profile"])
         if not sets:
             return get_preset_matrix_by_id(matrix_id, db_path)
         sets.append("updated_at = ?")
@@ -1640,6 +1650,7 @@ def create_job(data: dict[str, Any], db_path: str | None = None) -> dict[str, An
             "matrix_run_id": data.get("matrix_run_id"),
             "matrix_name": data.get("matrix_name"),
             "graph_code": data.get("graph_code"),
+            "nsys_profile": data.get("nsys_profile", 0),
         }
         columns = ", ".join(row.keys())
         placeholders = ", ".join("?" * len(row))

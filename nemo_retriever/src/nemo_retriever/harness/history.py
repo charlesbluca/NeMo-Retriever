@@ -261,6 +261,7 @@ _MIGRATIONS = [
     "ALTER TABLE jobs ADD COLUMN nsys_profile INTEGER DEFAULT 0",
     "ALTER TABLE preset_matrices ADD COLUMN nsys_profile INTEGER DEFAULT 0",
     "ALTER TABLE runs ADD COLUMN nsys_profile INTEGER DEFAULT 0",
+    "ALTER TABLE jobs ADD COLUMN graph_id INTEGER",
 ]
 
 RUNNER_MISSED_HEARTBEATS_THRESHOLD = 4
@@ -1650,6 +1651,7 @@ def create_job(data: dict[str, Any], db_path: str | None = None) -> dict[str, An
             "matrix_run_id": data.get("matrix_run_id"),
             "matrix_name": data.get("matrix_name"),
             "graph_code": data.get("graph_code"),
+            "graph_id": data.get("graph_id"),
             "nsys_profile": data.get("nsys_profile", 0),
         }
         columns = ", ".join(row.keys())

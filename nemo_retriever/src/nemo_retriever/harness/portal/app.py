@@ -184,6 +184,7 @@ class TriggerRequest(BaseModel):
     git_ref: str | None = None
     git_commit: str | None = None
     nsys_profile: bool = False
+    graph_id: int | None = None
 
 
 class TriggerResponse(BaseModel):
@@ -1754,21 +1755,50 @@ async def trigger_run(req: TriggerRequest):
     preset_overrides = _resolve_preset_overrides(req.preset)
     merged_overrides = {**(dataset_overrides or {}), **preset_overrides}
     pinned_sha, pinned_ref = _resolve_git_override(req.git_ref, req.git_commit)
-    job = history.create_job(
-        {
-            "trigger_source": "manual",
-            "dataset": req.dataset,
-            "dataset_path": dataset_path,
-            "dataset_overrides": merged_overrides if merged_overrides else None,
-            "preset": req.preset,
-            "config": req.config,
-            "assigned_runner_id": req.runner_id,
-            "git_commit": pinned_sha,
-            "git_ref": pinned_ref,
-            "tags": req.tags or [],
-            "nsys_profile": int(req.nsys_profile),
-        }
-    )
+
+    if req.graph_id is not None:
+        graph = history.get_graph(req.graph_id)
+        if not graph:
+            raise HTTPException(404, "Graph not found")
+        code = (graph.get("generated_code") or "").strip()
+        if not code:
+            raise HTTPException(400, "Graph has no generated code. Save the graph first.")
+
+        graph_name = graph.get("name") or f"graph-{req.graph_id}"
+        job = history.create_job(
+            {
+                "trigger_source": "graph",
+                "dataset": req.dataset,
+                "dataset_path": dataset_path,
+                "dataset_overrides": merged_overrides if merged_overrides else None,
+                "preset": req.preset,
+                "config": req.config,
+                "assigned_runner_id": req.runner_id,
+                "git_commit": pinned_sha,
+                "git_ref": pinned_ref,
+                "tags": req.tags or ["graph-run", graph_name],
+                "nsys_profile": int(req.nsys_profile),
+                "graph_code": code,
+                "graph_id": req.graph_id,
+            }
+        )
+    else:
+        job = history.create_job(
+            {
+                "trigger_source": "manual",
+                "dataset": req.dataset,
+                "dataset_path": dataset_path,
+                "dataset_overrides": merged_overrides if merged_overrides else None,
+                "preset": req.preset,
+                "config": req.config,
+                "assigned_runner_id": req.runner_id,
+                "git_commit": pinned_sha,
+                "git_ref": pinned_ref,
+                "tags": req.tags or [],
+                "nsys_profile": int(req.nsys_profile),
+            }
+        )
+
     return TriggerResponse(job_id=job["id"], status="pending")
 
 

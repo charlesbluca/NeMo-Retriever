@@ -378,6 +378,7 @@ try:
         sweep_overrides=args.get("sweep_overrides"),
         tags=args.get("tags"),
         skip_local_history=args.get("skip_local_history", True),
+        graph_code=args.get("graph_code"),
     )
 except Exception:
     traceback.print_exc()
@@ -752,6 +753,48 @@ def _validate_dataset_path(job: dict[str, Any]) -> str | None:
     return None
 
 
+def _enrich_standalone_graph_result(result: dict[str, Any], job: dict[str, Any]) -> None:
+    """Add harness-format fields to a standalone graph result so it appears
+    properly in the Runs view with basic metrics."""
+    if result.get("timestamp"):
+        return
+    from datetime import datetime, timezone
+
+    rows = result.get("rows", 0)
+    elapsed = result.get("elapsed_secs", 0)
+    pps = round(rows / elapsed, 2) if rows and elapsed and elapsed > 0 else None
+
+    result["timestamp"] = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_UTC")
+    result.setdefault("test_config", {
+        "dataset_label": job.get("dataset", "graph-run"),
+        "preset": job.get("preset"),
+        "input_type": "graph",
+        "graph_pipeline": True,
+    })
+    result.setdefault("metrics", {
+        "pages": rows,
+        "files": rows,
+        "ingest_secs": elapsed,
+        "pages_per_sec_ingest": pps,
+        "rows_processed": rows,
+    })
+    result.setdefault("summary_metrics", {
+        "pages": rows,
+        "files": rows,
+        "ingest_secs": elapsed,
+        "pages_per_sec_ingest": pps,
+    })
+    try:
+        import socket as _sock
+        host = _sock.gethostname().strip() or "unknown"
+    except Exception:
+        host = "unknown"
+    result.setdefault("run_metadata", {"host": host})
+    result.setdefault("artifacts", {})
+    if job.get("tags"):
+        result.setdefault("tags", job["tags"])
+
+
 def _execute_job_on_runner(base_url: str, job: dict[str, Any], runner_id: int = 0) -> None:
     """Claim a job, execute it locally, and report results back."""
     job_id = job["id"]
@@ -867,8 +910,71 @@ def _execute_job_on_runner(base_url: str, job: dict[str, Any], runner_id: int = 
     original_stdout = sys.stdout
     sys.stdout = _TeeWriter(original_stdout)
     try:
-        if is_graph_job:
-            # ---- Graph execution path ----
+        is_harness_graph = is_graph_job and job.get("graph_id")
+
+        if is_harness_graph:
+            # ---- Graph-as-preset: route through _run_entry for full metrics ----
+            if venv_dir is not None:
+                args_file = venv_dir / "job_args.json"
+                result_file = venv_dir / "job_result.json"
+                wrapper_file = venv_dir / "job_wrapper.py"
+
+                job_args = {
+                    "run_name": None,
+                    "config_file": job.get("config"),
+                    "session_dir": None,
+                    "dataset": dataset_value,
+                    "preset": job.get("preset"),
+                    "sweep_overrides": overrides if overrides else None,
+                    "tags": job.get("tags"),
+                    "skip_local_history": True,
+                    "graph_code": graph_code,
+                }
+                args_file.write_text(json_module.dumps(job_args))
+                wrapper_file.write_text(_JOB_WRAPPER_SCRIPT)
+
+                venv_python = str(venv_dir / "bin" / "python")
+                cmd = [venv_python, str(wrapper_file), str(args_file), str(result_file)]
+                if use_nsys:
+                    cmd = _nsys_prefix(str(nsys_output_dir / "profile")) + cmd
+                proc = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    cwd=str(repo_root),
+                )
+
+                for line in proc.stdout:
+                    sys.stdout.write(line)
+
+                proc.wait()
+
+                if result_file.exists():
+                    result = json_module.loads(result_file.read_text())
+                else:
+                    result = {
+                        "success": False,
+                        "failure_reason": f"Graph harness process terminated (exit code {proc.returncode})",
+                        "return_code": proc.returncode,
+                    }
+            else:
+                from nemo_retriever.harness.run import _run_entry
+
+                result = _run_entry(
+                    run_name=None,
+                    config_file=job.get("config"),
+                    session_dir=None,
+                    dataset=dataset_value,
+                    preset=job.get("preset"),
+                    sweep_overrides=overrides if overrides else None,
+                    tags=job.get("tags"),
+                    skip_local_history=True,
+                    graph_code=graph_code,
+                )
+
+        elif is_graph_job:
+            # ---- Standalone graph run (from Designer) — direct wrapper ----
             run_dir = venv_dir or Path(tempfile.mkdtemp(prefix=f"graph_{job_id}_"))
             code_file = run_dir / "graph_pipeline.py"
             result_file = run_dir / "job_result.json"
@@ -904,6 +1010,8 @@ def _execute_job_on_runner(base_url: str, job: dict[str, Any], runner_id: int = 
                     "failure_reason": f"Graph process terminated (exit code {proc.returncode})",
                     "return_code": proc.returncode,
                 }
+
+            _enrich_standalone_graph_result(result, job)
 
             if not venv_dir and run_dir.exists():
                 shutil.rmtree(run_dir, ignore_errors=True)

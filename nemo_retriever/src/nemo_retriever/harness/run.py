@@ -735,6 +735,358 @@ def _run_single(
     return result_payload
 
 
+_GRAPH_RUNNER_SCRIPT = """\
+import json, sys, os, traceback, time
+
+graph_code_file = sys.argv[1]
+result_file = sys.argv[2]
+ray_address = sys.argv[3] if len(sys.argv) > 3 and sys.argv[3] != "__none__" else None
+lancedb_uri = os.environ.get("NEMO_LANCEDB_URI", "")
+lancedb_table = os.environ.get("NEMO_LANCEDB_TABLE", "nv-ingest")
+
+def _root_cause(exc):
+    seen = set()
+    while exc.__cause__ is not None and id(exc.__cause__) not in seen:
+        seen.add(id(exc))
+        exc = exc.__cause__
+    return exc
+
+try:
+    import ray
+
+    effective_ray = ray_address or os.environ.get("RAY_ADDRESS") or "auto"
+    ray.init(address=effective_ray, ignore_reinit_error=True)
+    print(f"Ray initialized: {effective_ray}")
+
+    with open(graph_code_file) as f:
+        code = f.read()
+
+    ns = {"__name__": "__graph_runner__", "__file__": graph_code_file}
+
+    wall_start = time.perf_counter()
+    exec(compile(code, graph_code_file, "exec"), ns)
+
+    result_ds = ns.get("result")
+    graph = ns.get("graph")
+
+    lancedb_written = False
+    row_count = 0
+
+    if result_ds is not None:
+        elapsed = round(time.perf_counter() - wall_start, 2)
+        try:
+            import ray.data as _rd
+            if isinstance(result_ds, _rd.Dataset):
+                row_count = result_ds.count()
+                print(f"Pipeline complete: {row_count} rows in {elapsed}s")
+
+                if lancedb_uri:
+                    try:
+                        import lancedb as _ldb
+                        import pyarrow as _pa
+                        db = _ldb.connect(lancedb_uri)
+                        arrow_ds = result_ds.to_arrow_refs()
+                        table = _pa.concat_tables([ray.get(ref) for ref in arrow_ds])
+                        col_names = [f.name for f in table.schema]
+                        if "vector" in col_names:
+                            db.create_table(lancedb_table, table, mode="overwrite")
+                            lancedb_written = True
+                            print(f"LanceDB: wrote {table.num_rows} rows to {lancedb_uri}/{lancedb_table}")
+                        else:
+                            print(f"LanceDB: skipping write (no 'vector' column in output; columns: {col_names})")
+                    except Exception as ldb_err:
+                        print(f"LanceDB write failed (non-fatal): {ldb_err}")
+            else:
+                print(f"Pipeline complete in {elapsed}s (result type: {type(result_ds).__name__})")
+        except Exception:
+            elapsed = round(time.perf_counter() - wall_start, 2)
+            print(f"Pipeline complete in {elapsed}s")
+
+        result = {
+            "success": True, "return_code": 0, "rows": row_count,
+            "elapsed_secs": elapsed, "lancedb_written": lancedb_written,
+        }
+    elif graph is not None:
+        outputs = graph.execute(None)
+        elapsed = round(time.perf_counter() - wall_start, 2)
+        print(f"Graph.execute complete: {len(outputs)} output(s) in {elapsed}s")
+        result = {
+            "success": True, "return_code": 0, "outputs": len(outputs),
+            "elapsed_secs": elapsed, "lancedb_written": False,
+        }
+    else:
+        raise RuntimeError("Generated code did not produce a 'result' (Ray Data) or 'graph' variable")
+
+except Exception as exc:
+    full_tb = traceback.format_exc()
+    print(full_tb, file=sys.stderr)
+    print(full_tb)
+    root = _root_cause(exc)
+    root_msg = f"{type(root).__name__}: {root}"
+    failure_lines = [root_msg]
+    if len(full_tb) <= 4000:
+        failure_lines.append(full_tb)
+    else:
+        failure_lines.append(full_tb[-4000:])
+    result = {
+        "success": False, "failure_reason": root_msg,
+        "error_detail": "\\n".join(failure_lines), "return_code": 1,
+    }
+
+with open(result_file, "w") as f:
+    json.dump(result, f)
+"""
+
+
+def _run_graph_pipeline(
+    cfg: HarnessConfig,
+    graph_code: str,
+    artifact_dir: Path,
+    run_id: str,
+    tags: list[str] | None = None,
+    skip_local_history: bool = False,
+) -> dict[str, Any]:
+    """Execute a Designer graph pipeline and collect metrics, including recall/BEIR evaluation."""
+    import time as _time
+
+    runtime_dir = artifact_dir / "runtime_metrics"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+
+    code_file = artifact_dir / "graph_pipeline.py"
+    runner_file = artifact_dir / "graph_runner.py"
+    result_file = runtime_dir / f"{run_id}.graph_result.json"
+    code_file.write_text(graph_code, encoding="utf-8")
+    runner_file.write_text(_GRAPH_RUNNER_SCRIPT, encoding="utf-8")
+
+    lancedb_uri = _resolve_lancedb_uri(cfg, artifact_dir)
+    lancedb_path = Path(lancedb_uri)
+    if lancedb_path.is_dir():
+        shutil.rmtree(lancedb_path)
+    lancedb_path.mkdir(parents=True, exist_ok=True)
+    lancedb_table = "nv-ingest"
+
+    ray_addr = cfg.ray_address or "__none__"
+    cmd = [sys.executable, str(runner_file), str(code_file), str(result_file), ray_addr]
+
+    command_text = " ".join(shlex.quote(token) for token in cmd)
+    (artifact_dir / "command.txt").write_text(command_text + "\n", encoding="utf-8")
+
+    typer.echo(f"\n=== Running graph pipeline: {run_id} ===")
+    typer.echo(command_text)
+
+    env = os.environ.copy()
+    env["NEMO_LANCEDB_URI"] = lancedb_uri
+    env["NEMO_LANCEDB_TABLE"] = lancedb_table
+
+    metrics = StreamMetrics()
+    _wall_start = _time.perf_counter()
+
+    master_fd, slave_fd = pty.openpty()
+    parse_buffer = ""
+    try:
+        proc = subprocess.Popen(cmd, stdin=None, stdout=slave_fd, stderr=slave_fd, close_fds=True, env=env)
+    finally:
+        os.close(slave_fd)
+
+    try:
+        while True:
+            read_fds, _, _ = select.select([master_fd], [], [], 0.1)
+            if master_fd not in read_fds:
+                if proc.poll() is not None:
+                    break
+                continue
+            try:
+                chunk = os.read(master_fd, 4096)
+            except OSError as exc:
+                if exc.errno == errno.EIO:
+                    break
+                raise
+            if not chunk:
+                break
+            text = chunk.decode("utf-8", errors="replace")
+            sys.stdout.write(text)
+            sys.stdout.flush()
+            parse_buffer += text.replace("\r", "\n")
+            parse_buffer = _consume_parseable_output(metrics, parse_buffer)
+        if parse_buffer:
+            cleaned_tail = ANSI_ESCAPE_RE.sub("", parse_buffer)
+            metrics.consume(cleaned_tail)
+        process_rc = proc.wait()
+    finally:
+        os.close(master_fd)
+
+    subprocess_elapsed_secs = round(_time.perf_counter() - _wall_start, 2)
+    run_metadata = _collect_run_metadata()
+
+    if ray_addr and ray_addr not in ("__none__", "local"):
+        run_metadata["ray_cluster_mode"] = "existing"
+        if not run_metadata.get("ray_dashboard_url"):
+            dashboard = _derive_ray_dashboard_url(ray_addr)
+            if dashboard:
+                run_metadata["ray_dashboard_url"] = dashboard
+    else:
+        run_metadata["ray_cluster_mode"] = "local"
+
+    graph_result = _read_json_if_exists(result_file) or {}
+    rows = graph_result.get("rows", 0)
+    elapsed_secs = graph_result.get("elapsed_secs", subprocess_elapsed_secs)
+    lancedb_written = graph_result.get("lancedb_written", False)
+
+    recall_raw: dict[str, float] = {}
+    eval_raw: dict[str, float] = {}
+    effective_query_csv_path: Path | None = None
+
+    can_evaluate = lancedb_written and Path(lancedb_uri).is_dir()
+
+    if cfg.query_csv:
+        effective_query_csv_path = prepare_recall_query_file(
+            query_csv=Path(cfg.query_csv),
+            recall_adapter=cfg.recall_adapter,
+            output_dir=runtime_dir,
+        )
+
+    if can_evaluate and cfg.evaluation_mode == "recall" and effective_query_csv_path:
+        typer.echo("\n=== Running recall evaluation ===")
+        try:
+            from nemo_retriever.recall.core import RecallConfig, retrieve_and_score
+
+            recall_cfg = RecallConfig(
+                lancedb_uri=lancedb_uri,
+                lancedb_table=lancedb_table,
+                embedding_model=cfg.embed_model_name,
+                ks=list(cfg.beir_ks) if cfg.beir_ks else [1, 3, 5, 10],
+                match_mode=cfg.recall_match_mode or "pdf_page",
+                hybrid=cfg.hybrid,
+            )
+            _df_query, _gold, _raw_hits, _retrieved_keys, recall_raw = retrieve_and_score(
+                effective_query_csv_path, cfg=recall_cfg,
+            )
+            typer.echo(f"Recall results: {recall_raw}")
+        except Exception as recall_exc:
+            typer.echo(f"Recall evaluation failed (non-fatal): {recall_exc}", err=True)
+
+    elif can_evaluate and cfg.evaluation_mode == "beir" and cfg.beir_loader:
+        typer.echo("\n=== Running BEIR evaluation ===")
+        try:
+            from nemo_retriever.recall.beir import BeirConfig, evaluate_lancedb_beir
+
+            beir_cfg = BeirConfig(
+                lancedb_uri=lancedb_uri,
+                lancedb_table=lancedb_table,
+                embedding_model=cfg.embed_model_name,
+                loader=cfg.beir_loader,
+                dataset_name=cfg.beir_dataset_name or cfg.dataset_label,
+                split=cfg.beir_split,
+                query_language=cfg.beir_query_language,
+                doc_id_field=cfg.beir_doc_id_field,
+                ks=list(cfg.beir_ks) if cfg.beir_ks else [1, 3, 5, 10],
+                hybrid=cfg.hybrid,
+            )
+            _dataset, _hits, _per_query, eval_raw = evaluate_lancedb_beir(beir_cfg)
+            typer.echo(f"BEIR results: {eval_raw}")
+        except Exception as beir_exc:
+            typer.echo(f"BEIR evaluation failed (non-fatal): {beir_exc}", err=True)
+
+    recall_metrics_normalized: dict[str, float] = {
+        _normalize_recall_metric_key(k): v for k, v in recall_raw.items()
+    }
+    evaluation_metrics_normalized: dict[str, float] = {
+        _normalize_recall_metric_key(k): v for k, v in eval_raw.items()
+    }
+
+    effective_rc, failure_reason, success = _evaluate_run_outcome(
+        process_rc=process_rc,
+        evaluation_mode=cfg.evaluation_mode,
+        recall_required=bool(cfg.recall_required) if can_evaluate else False,
+        recall_metrics=recall_raw,
+        evaluation_metrics=eval_raw,
+    )
+
+    if not success and graph_result.get("failure_reason"):
+        failure_reason = graph_result["failure_reason"]
+    if not success and graph_result.get("return_code"):
+        effective_rc = graph_result["return_code"]
+
+    pm_files = metrics.files
+    pm_pages = rows or metrics.pages
+    pm_ingest_secs = elapsed_secs or metrics.ingest_secs
+    pm_pps = None
+    if pm_pages and pm_ingest_secs and pm_ingest_secs > 0:
+        pm_pps = round(pm_pages / pm_ingest_secs, 2)
+
+    metrics_payload = {
+        "files": pm_files,
+        "pages": pm_pages,
+        "ingest_secs": pm_ingest_secs,
+        "pages_per_sec_ingest": pm_pps,
+        "rows_processed": rows,
+        "rows_per_sec_ingest": round(rows / elapsed_secs, 2) if rows and elapsed_secs else None,
+        **recall_metrics_normalized,
+        **evaluation_metrics_normalized,
+    }
+    summary_metrics = _resolve_summary_metrics(cfg, metrics_payload, None, subprocess_elapsed_secs)
+
+    result_payload: dict[str, Any] = {
+        "timestamp": now_timestr(),
+        "latest_commit": last_commit(),
+        "success": success,
+        "return_code": effective_rc,
+        "failure_reason": failure_reason or None,
+        "error_detail": graph_result.get("error_detail"),
+        "test_config": {
+            "dataset_label": cfg.dataset_label,
+            "dataset_dir": cfg.dataset_dir,
+            "preset": cfg.preset,
+            "query_csv": cfg.query_csv,
+            "effective_query_csv": str(effective_query_csv_path) if effective_query_csv_path else None,
+            "input_type": "graph",
+            "recall_required": cfg.recall_required if can_evaluate else False,
+            "recall_match_mode": cfg.recall_match_mode,
+            "recall_adapter": cfg.recall_adapter,
+            "evaluation_mode": cfg.evaluation_mode,
+            "beir_loader": cfg.beir_loader,
+            "beir_dataset_name": cfg.beir_dataset_name,
+            "beir_split": cfg.beir_split,
+            "beir_query_language": cfg.beir_query_language,
+            "beir_doc_id_field": cfg.beir_doc_id_field,
+            "beir_ks": list(cfg.beir_ks),
+            "ray_address": cfg.ray_address,
+            "hybrid": cfg.hybrid,
+            "embed_model_name": cfg.embed_model_name,
+            "lancedb_uri": lancedb_uri,
+            "lancedb_written": lancedb_written,
+            "graph_pipeline": True,
+        },
+        "metrics": metrics_payload,
+        "summary_metrics": summary_metrics,
+        "run_metadata": run_metadata,
+        "runtime_summary": None,
+        "detection_summary": None,
+        "artifacts": {
+            "command_file": str((artifact_dir / "command.txt").resolve()),
+            "runtime_metrics_dir": str(runtime_dir.resolve()),
+            "graph_code_file": str(code_file.resolve()),
+        },
+    }
+    if tags:
+        result_payload["tags"] = list(tags)
+
+    write_json(artifact_dir / "results.json", result_payload)
+
+    if not skip_local_history:
+        try:
+            from nemo_retriever.harness.history import record_run as _record_history
+
+            _record_history(result_payload, artifact_dir)
+        except Exception:
+            pass
+
+    if failure_reason:
+        _print_failure_report(result_payload, command_text, artifact_dir, metrics.tail_lines)
+
+    return result_payload
+
+
 def _run_entry(
     *,
     run_name: str | None,
@@ -747,6 +1099,7 @@ def _run_entry(
     recall_required: bool | None = None,
     tags: list[str] | None = None,
     skip_local_history: bool = False,
+    graph_code: str | None = None,
 ) -> dict[str, Any]:
     cfg = load_harness_config(
         config_file=config_file,
@@ -766,9 +1119,17 @@ def _run_entry(
 
     resolved_run_name = run_name or cfg.dataset_label
     normalized_tags = _normalize_tags(tags)
-    result = _run_single(
-        cfg, artifact_dir, run_id=resolved_run_name, tags=normalized_tags, skip_local_history=skip_local_history
-    )
+
+    if graph_code:
+        result = _run_graph_pipeline(
+            cfg, graph_code, artifact_dir,
+            run_id=resolved_run_name, tags=normalized_tags,
+            skip_local_history=skip_local_history,
+        )
+    else:
+        result = _run_single(
+            cfg, artifact_dir, run_id=resolved_run_name, tags=normalized_tags, skip_local_history=skip_local_history
+        )
     return result
 
 

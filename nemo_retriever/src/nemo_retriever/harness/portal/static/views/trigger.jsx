@@ -2,9 +2,12 @@
 function TriggerModal({ onClose, onTriggered }) {
   const [datasets, setDatasets] = useState([]);
   const [presets, setPresets] = useState([]);
+  const [graphs, setGraphs] = useState([]);
   const [runners, setRunners] = useState([]);
   const [dataset, setDataset] = useState("");
   const [preset, setPreset] = useState("");
+  const [pipelineMode, setPipelineMode] = useState("preset");
+  const [graphId, setGraphId] = useState("");
   const [runnerId, setRunnerId] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
@@ -24,6 +27,11 @@ function TriggerModal({ onClose, onTriggered }) {
       if (cfg.presets?.length) setPreset(cfg.presets[0]);
     });
     fetch("/api/runners").then(r=>r.json()).then(setRunners).catch(()=>{});
+    fetch("/api/graphs").then(r=>r.json()).then(list => {
+      const arr = Array.isArray(list) ? list : [];
+      setGraphs(arr);
+      if (arr.length > 0) setGraphId(String(arr[0].id));
+    }).catch(()=>{});
     fetch("/api/portal-settings").then(r=>r.json()).then(s => {
       setDefaultRef(s.run_code_ref || "");
     }).catch(()=>{});
@@ -37,14 +45,18 @@ function TriggerModal({ onClose, onTriggered }) {
   async function handleSubmit(e) {
     e.preventDefault();
     if (!dataset) return;
+    if (pipelineMode === "graph" && !graphId) return;
     setSubmitting(true);
     try {
       const payload = {
         dataset,
-        preset: preset || null,
+        preset: pipelineMode === "preset" ? (preset || null) : null,
         runner_id: runnerId ? parseInt(runnerId, 10) : null,
         nsys_profile: nsysProfile,
       };
+      if (pipelineMode === "graph") {
+        payload.graph_id = parseInt(graphId, 10);
+      }
       if (gitMode === "branch" && gitRef.trim()) {
         payload.git_ref = gitRef.trim();
       } else if (gitMode === "commit" && gitRef.trim()) {
@@ -56,6 +68,7 @@ function TriggerModal({ onClose, onTriggered }) {
         body: JSON.stringify(payload),
       });
       const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
       onTriggered(data);
       onClose();
     } catch (err) {
@@ -67,6 +80,15 @@ function TriggerModal({ onClose, onTriggered }) {
 
   const labelStyle = {display:'block',fontSize:'12px',fontWeight:500,color:'var(--nv-text-muted)',marginBottom:'6px',textTransform:'uppercase',letterSpacing:'0.04em'};
   const hintStyle = {fontSize:'11px',color:'var(--nv-text-dim)',marginTop:'4px',lineHeight:'1.5'};
+  const modeBtn = (id, label) => ({
+    fontSize:'11px',padding:'5px 12px',flex:1,justifyContent:'center',textAlign:'center',
+    background: pipelineMode===id ? 'rgba(118,185,0,0.12)' : 'transparent',
+    color: pipelineMode===id ? 'var(--nv-green)' : 'var(--nv-text-dim)',
+    border: `1px solid ${pipelineMode===id ? 'rgba(118,185,0,0.3)' : 'var(--nv-border)'}`,
+    cursor:'pointer', borderRadius:'6px', fontWeight: pipelineMode===id ? 600 : 400,
+  });
+
+  const selectedGraph = graphs.find(g => String(g.id) === graphId);
 
   return (
     <div className="modal-overlay" onClick={onClose}>
@@ -83,12 +105,50 @@ function TriggerModal({ onClose, onTriggered }) {
                 {datasets.map(d=><option key={d} value={d}>{d}</option>)}
               </select>
             </div>
+
+            {/* Pipeline Mode Toggle */}
             <div>
-              <label style={labelStyle}>Preset</label>
-              <select value={preset} onChange={e=>setPreset(e.target.value)} className="select" style={{width:'100%'}}>
-                {presets.map(p=><option key={p} value={p}>{p}</option>)}
-              </select>
+              <label style={labelStyle}>Pipeline</label>
+              <div style={{display:'flex',gap:'6px'}}>
+                <button type="button" onClick={()=>setPipelineMode("preset")} className="btn btn-sm" style={modeBtn("preset")}>
+                  Preset
+                </button>
+                <button type="button" onClick={()=>setPipelineMode("graph")} className="btn btn-sm"
+                  style={modeBtn("graph")} disabled={graphs.length===0}>
+                  Graph Pipeline
+                </button>
+              </div>
+              {graphs.length === 0 && pipelineMode === "preset" && (
+                <div style={hintStyle}>No saved graphs available. Create one in the Designer view to enable graph pipeline runs.</div>
+              )}
             </div>
+
+            {pipelineMode === "preset" && (
+              <div>
+                <label style={labelStyle}>Preset</label>
+                <select value={preset} onChange={e=>setPreset(e.target.value)} className="select" style={{width:'100%'}}>
+                  {presets.map(p=><option key={p} value={p}>{p}</option>)}
+                </select>
+              </div>
+            )}
+
+            {pipelineMode === "graph" && (
+              <div>
+                <label style={labelStyle}>Graph</label>
+                <select value={graphId} onChange={e=>setGraphId(e.target.value)} className="select" style={{width:'100%'}}>
+                  {graphs.map(g=><option key={g.id} value={String(g.id)}>{g.name || `Graph #${g.id}`}</option>)}
+                </select>
+                {selectedGraph && (
+                  <div style={{...hintStyle,display:'flex',gap:'12px',alignItems:'center',marginTop:'6px'}}>
+                    <span style={{padding:'1px 6px',fontSize:'10px',borderRadius:'4px',background:'rgba(118,185,0,0.12)',color:'var(--nv-green)',fontWeight:600}}>
+                      GRAPH
+                    </span>
+                    <span>The graph pipeline replaces the batch_pipeline preset. Recall/BEIR evaluation runs against the dataset's query CSV after graph execution.</span>
+                  </div>
+                )}
+              </div>
+            )}
+
             <div>
               <label style={labelStyle}>Runner</label>
               <select value={runnerId} onChange={e=>setRunnerId(e.target.value)} className="select" style={{width:'100%'}}>
@@ -207,8 +267,8 @@ function TriggerModal({ onClose, onTriggered }) {
           </div>
           <div className="modal-foot">
             <button type="button" className="btn btn-secondary" onClick={onClose}>Cancel</button>
-            <button type="submit" disabled={submitting||!dataset} className="btn btn-primary" style={{flex:1,justifyContent:'center'}}>
-              {submitting ? <><span className="spinner" style={{marginRight:'8px'}}></span>Triggering…</> : "Start Run"}
+            <button type="submit" disabled={submitting||!dataset||(pipelineMode==='graph'&&!graphId)} className="btn btn-primary" style={{flex:1,justifyContent:'center'}}>
+              {submitting ? <><span className="spinner" style={{marginRight:'8px'}}></span>Triggering…</> : (pipelineMode==='graph' ? 'Run Graph Pipeline' : 'Start Run')}
             </button>
           </div>
         </form>

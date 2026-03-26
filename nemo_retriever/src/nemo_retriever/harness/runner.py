@@ -362,14 +362,14 @@ def _git_restore(prev_ref: str | None) -> None:
 _VENV_BASE_DIR = Path("/tmp/.nemo_runner_venvs")
 
 _JOB_WRAPPER_SCRIPT = """\
-import json, sys, traceback
+import json, sys, traceback, inspect
 
 with open(sys.argv[1]) as f:
     args = json.load(f)
 
 try:
     from nemo_retriever.harness.run import _run_entry
-    result = _run_entry(
+    kwargs = dict(
         run_name=args.get("run_name"),
         config_file=args.get("config_file"),
         session_dir=args.get("session_dir"),
@@ -380,6 +380,9 @@ try:
         skip_local_history=args.get("skip_local_history", True),
         graph_code=args.get("graph_code"),
     )
+    sig = inspect.signature(_run_entry)
+    kwargs = {k: v for k, v in kwargs.items() if k in sig.parameters}
+    result = _run_entry(**kwargs)
 except Exception:
     traceback.print_exc()
     result = {
@@ -889,6 +892,9 @@ def _execute_job_on_runner(base_url: str, job: dict[str, Any], runner_id: int = 
         except (json_module.JSONDecodeError, TypeError):
             pass
 
+    if is_graph_job and graph_meta.get("ray_address") and "ray_address" not in overrides:
+        overrides["ray_address"] = graph_meta["ray_address"]
+
     if is_graph_job and not graph_code.strip():
         logger.error("Job %s is a graph job but has no graph_code — completing as failed", job_id)
         _post_json(
@@ -921,7 +927,7 @@ def _execute_job_on_runner(base_url: str, job: dict[str, Any], runner_id: int = 
 
                 job_args = {
                     "run_name": None,
-                    "config_file": job.get("config"),
+                    "config_file": None,
                     "session_dir": None,
                     "dataset": dataset_value,
                     "preset": job.get("preset"),
@@ -963,7 +969,7 @@ def _execute_job_on_runner(base_url: str, job: dict[str, Any], runner_id: int = 
 
                 result = _run_entry(
                     run_name=None,
-                    config_file=job.get("config"),
+                    config_file=None,
                     session_dir=None,
                     dataset=dataset_value,
                     preset=job.get("preset"),

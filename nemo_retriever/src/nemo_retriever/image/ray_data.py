@@ -14,6 +14,7 @@ import pandas as pd
 
 from nemo_retriever.graph.abstract_operator import AbstractOperator
 from nemo_retriever.graph.cpu_operator import CPUOperator
+from nemo_retriever.graph.designer import designer_component
 
 from .load import image_bytes_to_pages_df
 
@@ -32,6 +33,13 @@ _PAGE_COLUMNS = [
 ]
 
 
+@designer_component(
+    name="Image Loader",
+    category="Text & Content",
+    compute="cpu",
+    description="Loads and prepares images for processing",
+    category_color="#42d6a4",
+)
 class ImageLoadActor(AbstractOperator, CPUOperator):
     """
     Ray Data map_batches callable: DataFrame with bytes, path -> DataFrame of page rows.

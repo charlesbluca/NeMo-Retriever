@@ -17,6 +17,7 @@ from nemo_retriever.params import RemoteRetryParams
 from nemo_retriever.graph.abstract_operator import AbstractOperator
 from nemo_retriever.graph.cpu_operator import CPUOperator
 from nemo_retriever.graph.gpu_operator import GPUOperator
+from nemo_retriever.graph.designer import designer_component
 
 try:
     import numpy as np
@@ -540,6 +541,12 @@ def graphic_elements_ocr_page_elements(
 # ---------------------------------------------------------------------------
 
 
+@designer_component(
+    name="Graphic Elements Detection",
+    category="Detection & OCR",
+    compute="gpu",
+    description="Detects and extracts charts and graphic elements",
+)
 class GraphicElementsActor(AbstractOperator, GPUOperator):
     """
     Ray-friendly callable that initializes both graphic-elements and OCR
@@ -639,6 +646,12 @@ class GraphicElementsActor(AbstractOperator, GPUOperator):
             ]
 
 
+@designer_component(
+    name="Graphic Elements Detection (CPU)",
+    category="Detection & OCR",
+    compute="cpu",
+    description="Detects charts and graphic elements using CPU",
+)
 class GraphicElementsCPUActor(AbstractOperator, CPUOperator):
     """CPU-only variant of :class:`GraphicElementsActor`.
 

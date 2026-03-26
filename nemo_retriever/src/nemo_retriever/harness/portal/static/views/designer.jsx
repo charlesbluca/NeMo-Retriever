@@ -3,9 +3,22 @@
 /* ---------- helpers ---------- */
 function _uid() { return 'n' + Math.random().toString(36).slice(2, 10); }
 
-function _categoryColor(cat) {
-  const map = { data: '#ff9f43', gpu: 'var(--nv-green)', cpu: '#64b4ff', graph: '#e06cff' };
-  return map[cat] || 'var(--nv-text-muted)';
+const _FALLBACK_PALETTE = ['#ff9f43', 'var(--nv-green)', '#64b4ff', '#e06cff', '#42d6a4', '#ff6b6b', '#a0a0a0', '#22d3ee', '#f472b6'];
+const _catColorCache = {};
+let _palIdx = 0;
+
+function _categoryColor(cat, explicitColor) {
+  if (explicitColor) { _catColorCache[cat] = explicitColor; return explicitColor; }
+  if (_catColorCache[cat]) return _catColorCache[cat];
+  const c = _FALLBACK_PALETTE[_palIdx % _FALLBACK_PALETTE.length];
+  _palIdx++;
+  _catColorCache[cat] = c;
+  return c;
+}
+
+function _resolvedCategoryColor(cat, operators) {
+  const sample = operators.find(o => o.category === cat && o.category_color);
+  return _categoryColor(cat, sample?.category_color);
 }
 
 function _toPythonValue(val) {
@@ -123,11 +136,18 @@ function _generateRayDataCode(nodes, edges) {
   lines.push(`ds = ${srcOp.ray_fn}(${srcArgParts.join(', ')})`);
   lines.push('');
 
+  const sinkNodes = [];
+  const evalNodes = [];
+
   for (let i = 1; i < chain.length; i++) {
     const n = chain[i];
     const op = n.operator;
     if (!op) continue;
-    const isGpu = op.category === 'gpu';
+
+    if (op.type === 'pipeline_sink') { sinkNodes.push(n); continue; }
+    if (op.type === 'pipeline_evaluator') { evalNodes.push(n); continue; }
+
+    const isGpu = op.compute === 'gpu';
 
     const kwargsEntries = _buildKwargsEntries(op.params || [], n.config || {});
 
@@ -136,7 +156,7 @@ function _generateRayDataCode(nodes, edges) {
       kwargsStr = '{' + kwargsEntries.join(', ') + '}';
     }
 
-    lines.push(`# Stage: ${op.class_name}`);
+    lines.push(`# Stage: ${op.display_name || op.class_name}`);
     lines.push(`ds = ds.map_batches(`);
     lines.push(`    ${op.class_name},`);
     lines.push(`    fn_constructor_kwargs=${kwargsStr},`);
@@ -150,8 +170,78 @@ function _generateRayDataCode(nodes, edges) {
     lines.push('');
   }
 
-  lines.push('result = ds.materialize()');
-  lines.push('');
+  if (sinkNodes.length > 0) {
+    lines.push('result = ds.materialize()');
+    lines.push('');
+    sinkNodes.forEach(sn => {
+      const sc = sn.config || {};
+      if (sn.operator?.class_name === 'LanceDBWriterActor') {
+        const uri = sc.uri || 'lancedb';
+        const tbl = sc.table_name || 'nv-ingest';
+        lines.push('# Sink: LanceDB Writer');
+        lines.push('import shutil, os, lancedb, pyarrow as pa');
+        lines.push(`_ldb_uri = ${_toPythonValue(uri)}`);
+        lines.push('if os.path.isdir(_ldb_uri):');
+        lines.push('    shutil.rmtree(_ldb_uri)');
+        lines.push('os.makedirs(_ldb_uri, exist_ok=True)');
+        lines.push('_arrow_refs = result.to_arrow_refs()');
+        lines.push('import ray as _ray');
+        lines.push('_table = pa.concat_tables([_ray.get(r) for r in _arrow_refs], promote_options="permissive")');
+        lines.push(`_db = lancedb.connect(_ldb_uri)`);
+        lines.push(`_db.create_table(${_toPythonValue(tbl)}, _table, mode="overwrite")`);
+        lines.push(`print(f"LanceDB: wrote {_table.num_rows} rows to {_ldb_uri}/${tbl}")`);
+        lines.push('');
+      }
+    });
+  } else {
+    lines.push('result = ds.materialize()');
+    lines.push('');
+  }
+
+  evalNodes.forEach(en => {
+    const ec = en.config || {};
+    if (en.operator?.class_name === 'RecallEvaluatorActor') {
+      imports.add('from nemo_retriever.recall.core import RecallConfig, retrieve_and_score');
+      const ksStr = (ec.ks || '1,3,5,10').split(',').map(s => s.trim()).filter(Boolean).join(', ');
+      lines.push('# Evaluation: Recall');
+      lines.push('_recall_cfg = RecallConfig(');
+      lines.push(`    lancedb_uri=${_toPythonValue(ec.lancedb_uri || 'lancedb')},`);
+      lines.push(`    lancedb_table=${_toPythonValue(ec.lancedb_table || 'nv-ingest')},`);
+      lines.push(`    embedding_model=${_toPythonValue(ec.embedding_model || 'nvidia/llama-nemotron-embed-1b-v2')},`);
+      lines.push(`    match_mode=${_toPythonValue(ec.match_mode || 'pdf_page')},`);
+      lines.push(`    ks=(${ksStr}),`);
+      lines.push(`    hybrid=${_toPythonValue(ec.hybrid || false)},`);
+      lines.push(')');
+      lines.push(`_query_csv = ${_toPythonValue(ec.query_csv || '')}`);
+      lines.push('from pathlib import Path as _Path');
+      lines.push('_df, _gold, _hits, _keys, _recall_results = retrieve_and_score(_Path(_query_csv), cfg=_recall_cfg)');
+      lines.push('print(f"Recall results: {_recall_results}")');
+      lines.push('');
+    } else if (en.operator?.class_name === 'BEIREvaluatorActor') {
+      imports.add('from nemo_retriever.recall.beir import BeirConfig, evaluate_lancedb_beir');
+      const ksStr = (ec.beir_ks || '1,3,5,10').split(',').map(s => s.trim()).filter(Boolean).join(', ');
+      lines.push('# Evaluation: BEIR');
+      lines.push('_beir_cfg = BeirConfig(');
+      lines.push(`    lancedb_uri=${_toPythonValue(ec.lancedb_uri || 'lancedb')},`);
+      lines.push(`    lancedb_table=${_toPythonValue(ec.lancedb_table || 'nv-ingest')},`);
+      lines.push(`    embedding_model=${_toPythonValue(ec.embedding_model || 'nvidia/llama-nemotron-embed-1b-v2')},`);
+      lines.push(`    loader=${_toPythonValue(ec.beir_loader || 'vidore_hf')},`);
+      lines.push(`    dataset_name=${_toPythonValue(ec.beir_dataset_name || '')},`);
+      lines.push(`    split=${_toPythonValue(ec.beir_split || 'test')},`);
+      if (ec.beir_query_language) lines.push(`    query_language=${_toPythonValue(ec.beir_query_language)},`);
+      lines.push(`    doc_id_field=${_toPythonValue(ec.beir_doc_id_field || 'pdf_basename')},`);
+      lines.push(`    ks=(${ksStr}),`);
+      lines.push(`    hybrid=${_toPythonValue(ec.hybrid || false)},`);
+      lines.push(')');
+      lines.push('_dataset, _hits, _per_query, _beir_results = evaluate_lancedb_beir(_beir_cfg)');
+      lines.push('print(f"BEIR results: {_beir_results}")');
+      lines.push('');
+    }
+  });
+
+  const importBlock = Array.from(imports).sort().join('\n');
+  lines[0] = importBlock;
+
   return lines.join('\n');
 }
 
@@ -278,16 +368,22 @@ function _toVarName(className) {
 }
 
 /* ---------- Operator Palette ---------- */
-function _categoryLabel(cat) {
-  const labels = { data: 'Data Sources', gpu: 'GPU Operators', cpu: 'CPU Operators', graph: 'Graph Utilities' };
-  return labels[cat] || cat;
-}
-
 function OperatorPalette({ operators, onDragStart, filter, setFilter }) {
-  const cats = ['data', 'cpu', 'gpu', 'graph'];
-  const filtered = operators.filter(op =>
-    !filter || op.class_name.toLowerCase().includes(filter.toLowerCase())
-  );
+  const filtered = operators.filter(op => {
+    if (op.hidden) return false;
+    if (!filter) return true;
+    const q = filter.toLowerCase();
+    return (op.display_name || op.class_name).toLowerCase().includes(q) || op.class_name.toLowerCase().includes(q);
+  });
+
+  const cats = useMemo(() => {
+    const priority = ['Data Sources', 'Document Processing', 'Text & Content', 'Detection & OCR', 'Embeddings & Ranking', 'Audio', 'Data Sinks', 'Evaluation', 'Graph Utilities'];
+    const seen = new Set();
+    operators.forEach(op => seen.add(op.category));
+    const ordered = priority.filter(c => seen.has(c));
+    seen.forEach(c => { if (!ordered.includes(c)) ordered.push(c); });
+    return ordered;
+  }, [operators]);
 
   return (
     <div style={{width:'220px',borderRight:'1px solid var(--nv-border)',display:'flex',flexDirection:'column',overflow:'hidden',flexShrink:0}}>
@@ -300,25 +396,30 @@ function OperatorPalette({ operators, onDragStart, filter, setFilter }) {
         {cats.map(cat => {
           const ops = filtered.filter(o => o.category === cat);
           if (ops.length === 0) return null;
+          const catColor = _resolvedCategoryColor(cat, operators);
           return (
             <div key={cat} style={{marginBottom:'14px'}}>
-              <div style={{fontSize:'10px',fontWeight:700,textTransform:'uppercase',color:_categoryColor(cat),marginBottom:'6px',letterSpacing:'0.05em'}}>
-                {_categoryLabel(cat)}
+              <div style={{fontSize:'10px',fontWeight:700,textTransform:'uppercase',color:catColor,marginBottom:'6px',letterSpacing:'0.05em'}}>
+                {cat}
               </div>
-              {ops.map(op => (
-                <div key={op.class_name + op.module} draggable
-                  onDragStart={e => { e.dataTransfer.setData('application/json', JSON.stringify(op)); onDragStart && onDragStart(op); }}
-                  style={{
-                    padding:'6px 8px',marginBottom:'3px',borderRadius:'6px',cursor:'grab',
-                    background:'rgba(255,255,255,0.03)',border:'1px solid var(--nv-border)',
-                    fontSize:'11px',color:'#fff',fontWeight:500,
-                    display:'flex',alignItems:'center',gap:'6px',
-                  }}
-                  title={op.type === 'ray_data_source' ? `ray.data · ${op.ray_fn}` : `${op.module}.${op.class_name}`}>
-                  <span style={{width:'6px',height:'6px',borderRadius: op.type === 'ray_data_source' ? '2px' : '50%',background:_categoryColor(cat),flexShrink:0}}></span>
-                  {op.class_name}
-                </div>
-              ))}
+              {ops.map(op => {
+                const displayLabel = op.display_name || op.class_name;
+                const isSpecial = op.type === 'ray_data_source' || op.type === 'pipeline_sink' || op.type === 'pipeline_evaluator';
+                return (
+                  <div key={op.class_name + op.module} draggable
+                    onDragStart={e => { e.dataTransfer.setData('application/json', JSON.stringify(op)); onDragStart && onDragStart(op); }}
+                    style={{
+                      padding:'6px 8px',marginBottom:'3px',borderRadius:'6px',cursor:'grab',
+                      background:'rgba(255,255,255,0.03)',border:'1px solid var(--nv-border)',
+                      fontSize:'11px',color:'#fff',fontWeight:500,
+                      display:'flex',alignItems:'center',gap:'6px',
+                    }}
+                    title={op.description || (op.type === 'ray_data_source' ? `ray.data · ${op.ray_fn}` : `${op.module}.${op.class_name}`)}>
+                    <span style={{width:'6px',height:'6px',borderRadius: isSpecial ? '2px' : '50%',background:catColor,flexShrink:0}}></span>
+                    {displayLabel}
+                  </div>
+                );
+              })}
             </div>
           );
         })}
@@ -332,9 +433,14 @@ function OperatorPalette({ operators, onDragStart, filter, setFilter }) {
 
 /* ---------- Canvas Node ---------- */
 function CanvasNode({ node, selected, onMouseDown, onSelect, onDelete }) {
-  const color = node.operator ? _categoryColor(node.operator.category) : 'var(--nv-text-dim)';
+  const color = node.operator ? _categoryColor(node.operator.category, node.operator.category_color) : 'var(--nv-text-dim)';
   const isSource = node.operator?.type === 'ray_data_source';
-  const nodeHeight = isSource ? 66 : 56;
+  const isSink = node.operator?.type === 'pipeline_sink';
+  const isEval = node.operator?.type === 'pipeline_evaluator';
+  const isSpecial = isSource || isSink || isEval;
+  const nodeHeight = isSpecial ? 66 : 56;
+  const typeLabel = isSource ? 'SOURCE' : isSink ? 'SINK' : isEval ? 'EVAL' : null;
+  const displayName = node.operator?.display_name || node.operator?.class_name || 'Unknown';
   return (
     <g transform={`translate(${node.x},${node.y})`}
       onMouseDown={e => { e.stopPropagation(); onMouseDown(e, node.id); }}
@@ -343,12 +449,12 @@ function CanvasNode({ node, selected, onMouseDown, onSelect, onDelete }) {
       <rect x="0" y="0" width="180" height={nodeHeight} rx="8"
         fill={selected ? 'rgba(255,255,255,0.08)' : 'rgba(255,255,255,0.04)'}
         stroke={selected ? color : 'var(--nv-border)'} strokeWidth={selected ? 2 : 1}
-        strokeDasharray={isSource ? '4 2' : undefined} />
+        strokeDasharray={isSpecial ? '4 2' : undefined} />
       {!isSource && <circle cx="0" cy={nodeHeight/2} r="7" fill="var(--nv-bg)" stroke={color} strokeWidth="2" pointerEvents="none" />}
-      <circle cx="180" cy={nodeHeight/2} r="7" fill="var(--nv-bg)" stroke={color} strokeWidth="2" pointerEvents="none" />
+      {!isSink && !isEval && <circle cx="180" cy={nodeHeight/2} r="7" fill="var(--nv-bg)" stroke={color} strokeWidth="2" pointerEvents="none" />}
       <rect x="6" y="6" width="4" height={nodeHeight - 12} rx="2" fill={color} opacity="0.6" />
-      {isSource && <text x="170" y="12" fill={color} fontSize="8" fontWeight="700" textAnchor="end" fontFamily="inherit">SOURCE</text>}
-      <text x="18" y={isSource ? 24 : 22} fill="#fff" fontSize="12" fontWeight="600" fontFamily="inherit">{node.operator?.class_name || 'Unknown'}</text>
+      {typeLabel && <text x="170" y="12" fill={color} fontSize="8" fontWeight="700" textAnchor="end" fontFamily="inherit">{typeLabel}</text>}
+      <text x="18" y={isSpecial ? 24 : 22} fill="#fff" fontSize="12" fontWeight="600" fontFamily="inherit">{displayName}</text>
       <text x="18" y={isSource ? 40 : 38} fill="var(--nv-text-dim)" fontSize="10" fontFamily="inherit">{node.varName}</text>
       {isSource && node.config?.paths && (
         <text x="18" y="54" fill="var(--nv-text-dim)" fontSize="8" fontFamily="inherit" opacity="0.6">
@@ -362,7 +468,10 @@ function CanvasNode({ node, selected, onMouseDown, onSelect, onDelete }) {
 }
 
 /* ---------- Edge Arrow ---------- */
-function _nodeHeight(n) { return n.operator?.type === 'ray_data_source' ? 66 : 56; }
+function _nodeHeight(n) {
+  const t = n.operator?.type;
+  return (t === 'ray_data_source' || t === 'pipeline_sink' || t === 'pipeline_evaluator') ? 66 : 56;
+}
 
 function EdgeArrow({ edge, nodes, selected, onSelect }) {
   const fromNode = nodes.find(n => n.id === edge.from);
@@ -453,8 +562,8 @@ function NodeConfigPanel({ node, onUpdate, onClose }) {
     <div style={{width:'300px',borderLeft:'1px solid var(--nv-border)',display:'flex',flexDirection:'column',overflow:'hidden',flexShrink:0,background:'var(--nv-surface)'}}>
       <div style={{padding:'12px',borderBottom:'1px solid var(--nv-border)',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
         <div>
-          <div style={{fontSize:'12px',fontWeight:700,color:'#fff'}}>{node.operator?.class_name}</div>
-          <div style={{fontSize:'10px',color:'var(--nv-text-dim)',marginTop:'2px'}}>{node.operator?.module}</div>
+          <div style={{fontSize:'12px',fontWeight:700,color:'#fff'}}>{node.operator?.display_name || node.operator?.class_name}</div>
+          <div style={{fontSize:'10px',color:'var(--nv-text-dim)',marginTop:'2px'}}>{node.operator?.class_name} · {node.operator?.module}</div>
         </div>
         <button className="btn btn-ghost btn-icon" onClick={onClose} style={{borderRadius:'50%',padding:'2px'}}><IconX /></button>
       </div>
@@ -468,20 +577,34 @@ function NodeConfigPanel({ node, onUpdate, onClose }) {
         {scalarParams.length > 0 && (
           <>
             <div style={{fontSize:'10px',fontWeight:700,color:'var(--nv-text-dim)',textTransform:'uppercase',marginBottom:'8px'}}>Parameters</div>
-            {scalarParams.map(p => {
+            {scalarParams.filter(p => !p.hidden).map(p => {
               const hasDefault = p.default !== undefined;
               const defaultStr = hasDefault ? (p.default === null ? '' : String(p.default)) : '';
               const curVal = cfg[p.name] !== undefined ? cfg[p.name] : defaultStr;
+              const displayLabel = p.label || p.name;
+              const hasChoices = p.choices && p.choices.length > 0;
               return (
                 <div key={p.name} style={{marginBottom:'10px'}}>
                   <label style={{display:'block',fontSize:'11px',color:'#fff',fontWeight:500,marginBottom:'3px'}}>
-                    {p.name}
+                    {displayLabel}
                     {p.type && <span style={{color:'var(--nv-text-dim)',fontWeight:400,marginLeft:'6px',fontSize:'10px'}}>{p.type}</span>}
                   </label>
-                  <input className="input" value={curVal}
-                    onChange={e => setCfg({...cfg, [p.name]: e.target.value})}
-                    placeholder={p.default === null ? 'None' : (hasDefault ? defaultStr : '')}
-                    style={{width:'100%',fontSize:'11px',fontFamily:'var(--font-mono)',padding:'4px 8px'}} />
+                  {p.description && (
+                    <div style={{fontSize:'9px',color:'var(--nv-text-dim)',marginBottom:'3px'}}>{p.description}</div>
+                  )}
+                  {hasChoices ? (
+                    <select className="input" value={curVal}
+                      onChange={e => setCfg({...cfg, [p.name]: e.target.value})}
+                      style={{width:'100%',fontSize:'11px',padding:'4px 8px'}}>
+                      {!curVal && <option value="">-- select --</option>}
+                      {p.choices.map(c => <option key={c} value={String(c)}>{String(c)}</option>)}
+                    </select>
+                  ) : (
+                    <input className="input" value={curVal}
+                      onChange={e => setCfg({...cfg, [p.name]: e.target.value})}
+                      placeholder={p.placeholder || (p.default === null ? 'None' : (hasDefault ? defaultStr : ''))}
+                      style={{width:'100%',fontSize:'11px',fontFamily:'var(--font-mono)',padding:'4px 8px'}} />
+                  )}
                   {hasDefault && (
                     <div style={{fontSize:'9px',color:'var(--nv-text-dim)',marginTop:'2px',fontFamily:'var(--font-mono)'}}>
                       default: {p.default === null ? 'None' : String(p.default)}
@@ -649,21 +772,6 @@ function RunGraphModal({ graphId, graphName, onClose }) {
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
 
-  const [enableRecall, setEnableRecall] = useState(false);
-  const [evalMode, setEvalMode] = useState('recall');
-  const [queryCsv, setQueryCsv] = useState('');
-  const [recallRequired, setRecallRequired] = useState(true);
-  const [recallMatchMode, setRecallMatchMode] = useState('pdf_page');
-  const [recallAdapter, setRecallAdapter] = useState('none');
-  const [beirLoader, setBeirLoader] = useState('vidore_hf');
-  const [beirDatasetName, setBeirDatasetName] = useState('');
-  const [beirSplit, setBeirSplit] = useState('test');
-  const [beirQueryLang, setBeirQueryLang] = useState('');
-  const [beirDocIdField, setBeirDocIdField] = useState('pdf_basename');
-  const [beirKs, setBeirKs] = useState('1, 3, 5, 10');
-  const [embedModel, setEmbedModel] = useState('');
-  const [hybrid, setHybrid] = useState(false);
-
   useEffect(() => {
     fetch('/api/runners').then(r => r.json()).then(list => {
       const online = (list || []).filter(r => r.status === 'online' || r.status === 'idle');
@@ -676,31 +784,11 @@ function RunGraphModal({ graphId, graphName, onClose }) {
     setError(null);
     setResult(null);
     try {
-      const body = { enable_recall: enableRecall };
+      const body = {};
       if (runnerId) body.runner_id = parseInt(runnerId, 10);
       if (rayAddress.trim()) body.ray_address = rayAddress.trim();
       if (gitRef.trim()) body.git_ref = gitRef.trim();
       if (gitCommit.trim()) body.git_commit = gitCommit.trim();
-
-      if (enableRecall) {
-        body.evaluation_mode = evalMode;
-        body.recall_required = recallRequired;
-        body.hybrid = hybrid;
-        if (queryCsv.trim()) body.query_csv = queryCsv.trim();
-        if (embedModel.trim()) body.embed_model_name = embedModel.trim();
-        if (evalMode === 'recall') {
-          body.recall_match_mode = recallMatchMode;
-          body.recall_adapter = recallAdapter;
-        } else {
-          if (beirLoader) body.beir_loader = beirLoader;
-          if (beirDatasetName.trim()) body.beir_dataset_name = beirDatasetName.trim();
-          if (beirSplit.trim()) body.beir_split = beirSplit.trim();
-          if (beirQueryLang.trim()) body.beir_query_language = beirQueryLang.trim();
-          if (beirDocIdField) body.beir_doc_id_field = beirDocIdField;
-          const parsedKs = beirKs.split(',').map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n) && n > 0);
-          if (parsedKs.length > 0) body.beir_ks = parsedKs;
-        }
-      }
 
       const res = await fetch(`/api/graphs/${graphId}/run`, {
         method: 'POST',
@@ -721,17 +809,15 @@ function RunGraphModal({ graphId, graphName, onClose }) {
   }
 
   const fieldLabel = { display: 'block', fontSize: '11px', fontWeight: 600, color: 'var(--nv-text-dim)', textTransform: 'uppercase', marginBottom: '5px' };
-  const sectionStyle = { padding: '12px', borderRadius: '8px', display: 'flex', flexDirection: 'column', gap: '10px' };
-  const isBeir = evalMode === 'beir';
 
   return (
     <div className="modal-overlay" onClick={onClose}>
-      <div className="modal-content" style={{ maxWidth: '580px', maxHeight: '85vh', display: 'flex', flexDirection: 'column' }} onClick={e => e.stopPropagation()}>
+      <div className="modal-content" style={{ maxWidth: '520px' }} onClick={e => e.stopPropagation()}>
         <div className="modal-head">
           <span>Run Graph: {graphName}</span>
           <button className="modal-close" onClick={onClose}>&times;</button>
         </div>
-        <div className="modal-body" style={{ display: 'flex', flexDirection: 'column', gap: '14px', overflowY: 'auto', flex: 1 }}>
+        <div className="modal-body" style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
           {result ? (
             <div style={{ textAlign: 'center', padding: '16px 0' }}>
               <div style={{ fontSize: '14px', color: 'var(--nv-green)', fontWeight: 600, marginBottom: '8px' }}>Job submitted successfully</div>
@@ -751,7 +837,7 @@ function RunGraphModal({ graphId, graphName, onClose }) {
           ) : (
             <>
               <div style={{ padding: '10px 12px', borderRadius: '6px', background: 'rgba(255,159,67,0.08)', border: '1px solid rgba(255,159,67,0.2)', fontSize: '12px', color: '#ff9f43' }}>
-                Data source (paths) is configured in the graph itself via the Data Source component.
+                Data source, sinks (LanceDB Writer), and evaluation (Recall / BEIR) are configured as components in the graph itself.
               </div>
               <div style={{ display: 'flex', gap: '10px' }}>
                 <div style={{ flex: 1 }}>
@@ -781,132 +867,6 @@ function RunGraphModal({ graphId, graphName, onClose }) {
                     style={{ width: '100%' }} placeholder="abc123…" />
                 </div>
               </div>
-
-              {/* Recall / Evaluation Toggle */}
-              <div style={{ borderTop: '1px solid var(--nv-border)', paddingTop: '14px' }}>
-                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '13px', color: '#fff' }}>
-                  <input type="checkbox" checked={enableRecall} onChange={e => setEnableRecall(e.target.checked)}
-                    style={{ width: '16px', height: '16px', accentColor: 'var(--nv-green)' }} />
-                  Enable Recall / BEIR Evaluation
-                </label>
-                <div style={{ fontSize: '11px', color: 'var(--nv-text-dim)', marginTop: '4px' }}>
-                  After the graph pipeline writes embeddings to LanceDB, run recall or BEIR evaluation against a query CSV or BEIR dataset.
-                </div>
-              </div>
-
-              {enableRecall && (
-                <div style={{ ...sectionStyle, background: 'rgba(118,185,0,0.04)', border: '1px solid rgba(118,185,0,0.15)' }}>
-                  <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--nv-green)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Evaluation Configuration</div>
-
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
-                    <div>
-                      <label style={fieldLabel}>Evaluation Mode</label>
-                      <select className="input" style={{ width: '100%' }} value={evalMode} onChange={e => setEvalMode(e.target.value)}>
-                        <option value="recall">recall</option>
-                        <option value="beir">beir</option>
-                      </select>
-                    </div>
-                    <div>
-                      <label style={fieldLabel}>Embed Model</label>
-                      <input className="input" style={{ width: '100%' }} value={embedModel} onChange={e => setEmbedModel(e.target.value)}
-                        placeholder="nvidia/llama-nemotron-embed-1b-v2" />
-                    </div>
-                  </div>
-
-                  {!isBeir && (
-                    <>
-                      <div>
-                        <label style={fieldLabel}>Query CSV</label>
-                        <input className="input" style={{ width: '100%' }} value={queryCsv} onChange={e => setQueryCsv(e.target.value)}
-                          placeholder="/path/to/query_gt.csv" />
-                      </div>
-                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '10px' }}>
-                        <div>
-                          <label style={fieldLabel}>Recall Required</label>
-                          <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '12px', color: '#fff', marginTop: '4px' }}>
-                            <input type="checkbox" checked={recallRequired} onChange={e => setRecallRequired(e.target.checked)} />
-                            {recallRequired ? 'Yes' : 'No'}
-                          </label>
-                        </div>
-                        <div>
-                          <label style={fieldLabel}>Match Mode</label>
-                          <select className="input" style={{ width: '100%' }} value={recallMatchMode} onChange={e => setRecallMatchMode(e.target.value)}>
-                            <option value="pdf_page">pdf_page</option>
-                            <option value="pdf_only">pdf_only</option>
-                          </select>
-                        </div>
-                        <div>
-                          <label style={fieldLabel}>Recall Adapter</label>
-                          <select className="input" style={{ width: '100%' }} value={recallAdapter} onChange={e => setRecallAdapter(e.target.value)}>
-                            <option value="none">none</option>
-                            <option value="page_plus_one">page_plus_one</option>
-                            <option value="financebench_json">financebench_json</option>
-                          </select>
-                        </div>
-                      </div>
-                      <div>
-                        <label style={fieldLabel}>Hybrid Search</label>
-                        <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '12px', color: '#fff', marginTop: '4px' }}>
-                          <input type="checkbox" checked={hybrid} onChange={e => setHybrid(e.target.checked)} />
-                          {hybrid ? 'Yes' : 'No'}
-                        </label>
-                      </div>
-                    </>
-                  )}
-
-                  {isBeir && (
-                    <>
-                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
-                        <div>
-                          <label style={fieldLabel}>BEIR Loader</label>
-                          <select className="input" style={{ width: '100%' }} value={beirLoader} onChange={e => setBeirLoader(e.target.value)}>
-                            <option value="vidore_hf">vidore_hf</option>
-                          </select>
-                        </div>
-                        <div>
-                          <label style={fieldLabel}>BEIR Dataset Name</label>
-                          <input className="input" style={{ width: '100%' }} value={beirDatasetName} onChange={e => setBeirDatasetName(e.target.value)}
-                            placeholder="e.g. vidore_v3_computer_science" />
-                        </div>
-                      </div>
-                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
-                        <div>
-                          <label style={fieldLabel}>BEIR Split</label>
-                          <input className="input" style={{ width: '100%' }} value={beirSplit} onChange={e => setBeirSplit(e.target.value)} placeholder="test" />
-                        </div>
-                        <div>
-                          <label style={fieldLabel}>BEIR Query Language</label>
-                          <input className="input" style={{ width: '100%' }} value={beirQueryLang} onChange={e => setBeirQueryLang(e.target.value)}
-                            placeholder="Optional (e.g. en, fr)" />
-                        </div>
-                      </div>
-                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
-                        <div>
-                          <label style={fieldLabel}>Doc ID Field</label>
-                          <select className="input" style={{ width: '100%' }} value={beirDocIdField} onChange={e => setBeirDocIdField(e.target.value)}>
-                            <option value="pdf_basename">pdf_basename</option>
-                            <option value="pdf_page">pdf_page</option>
-                            <option value="source_id">source_id</option>
-                            <option value="path">path</option>
-                          </select>
-                        </div>
-                        <div>
-                          <label style={fieldLabel}>K Values</label>
-                          <input className="input" style={{ width: '100%' }} value={beirKs} onChange={e => setBeirKs(e.target.value)} placeholder="1, 3, 5, 10" />
-                        </div>
-                      </div>
-                      <div>
-                        <label style={fieldLabel}>Hybrid Search</label>
-                        <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '12px', color: '#fff', marginTop: '4px' }}>
-                          <input type="checkbox" checked={hybrid} onChange={e => setHybrid(e.target.checked)} />
-                          {hybrid ? 'Yes' : 'No'}
-                        </label>
-                      </div>
-                    </>
-                  )}
-                </div>
-              )}
-
               {error && (
                 <div style={{ padding: '8px 12px', borderRadius: '6px', background: 'rgba(255,80,80,0.1)', border: '1px solid rgba(255,80,80,0.2)', color: '#ff5050', fontSize: '12px' }}>
                   {error}

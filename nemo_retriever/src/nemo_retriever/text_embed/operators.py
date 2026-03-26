@@ -9,11 +9,19 @@ from __future__ import annotations
 from typing import Any
 
 from nemo_retriever.graph.abstract_operator import AbstractOperator
+from nemo_retriever.graph.designer import designer_component
 from nemo_retriever.graph.gpu_operator import GPUOperator
 from nemo_retriever.params import EmbedParams
 from nemo_retriever.text_embed.runtime import embed_text_main_text_embed
 
 
+@designer_component(
+    name="Batch Embedder",
+    category="Embeddings & Ranking",
+    compute="gpu",
+    description="Generates embeddings in batches using configurable embedding parameters",
+    category_color="#e06cff",
+)
 class _BatchEmbedActor(AbstractOperator, GPUOperator):
     """Graph embedding actor that loads a local embedder or calls a remote endpoint."""
 

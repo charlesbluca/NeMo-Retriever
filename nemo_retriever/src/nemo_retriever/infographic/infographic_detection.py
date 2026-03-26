@@ -21,6 +21,7 @@ import traceback
 import pandas as pd
 from nemo_retriever.graph.abstract_operator import AbstractOperator
 from nemo_retriever.graph.gpu_operator import GPUOperator
+from nemo_retriever.graph.designer import designer_component
 from nemo_retriever.params import RemoteRetryParams
 from nemo_retriever.nim.nim import invoke_image_inference_batches
 
@@ -735,6 +736,12 @@ def detect_infographic_elements_v1_from_page_elements_v3(
     return out
 
 
+@designer_component(
+    name="Infographic Detection",
+    category="Detection & OCR",
+    compute="gpu",
+    description="Detects and extracts infographic content from documents",
+)
 class InfographicDetectionActor(AbstractOperator, GPUOperator):
     """
     Ray-friendly callable that initializes Nemotron Graphic Elements v1 once.

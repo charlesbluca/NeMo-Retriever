@@ -32,6 +32,7 @@ from nemo_retriever.table.table_detection import TableStructureActor
 from nemo_retriever.chart.chart_detection import GraphicElementsActor
 from nemo_retriever.txt.ray_data import TxtSplitActor
 from nemo_retriever.utils.convert.to_pdf import DocToPdfConversionActor
+from nemo_retriever.graph.designer import designer_component
 
 
 # Define file type mappings
@@ -43,6 +44,13 @@ IMAGE_EXTENSIONS = SUPPORTED_IMAGE_EXTENSIONS
 VIDEO_EXTENSIONS = {".mp4"}
 
 
+@designer_component(
+    name="Multi-Type Extractor",
+    category="Document Processing",
+    compute="gpu",
+    description="Extracts content from multiple file types (PDF, image, text, audio)",
+    category_color="#64b4ff",
+)
 class MultiTypeExtractOperator(AbstractOperator):
     """Extract mixed or single-type Ray batches without recursing into the ingestor API."""
 

@@ -12,6 +12,7 @@ import pandas as pd
 from PIL import Image
 
 from nemo_retriever.graph.abstract_operator import AbstractOperator
+from nemo_retriever.graph.designer import designer_component
 from nemo_retriever.graph.gpu_operator import GPUOperator
 from nemo_retriever.params import CaptionParams
 
@@ -50,6 +51,13 @@ def _get_cached_local_model(kwargs: dict) -> "Any":
     return _cached_local_model
 
 
+@designer_component(
+    name="Image Captioner",
+    category="Embeddings & Ranking",
+    compute="gpu",
+    description="Generates captions for images using a vision-language model",
+    category_color="#e06cff",
+)
 class CaptionActor(AbstractOperator, GPUOperator):
     """Ray Data actor that holds a local VLM captioner on a single GPU.
 

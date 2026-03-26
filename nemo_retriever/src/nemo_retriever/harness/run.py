@@ -736,20 +736,11 @@ def _run_single(
 
 
 _GRAPH_RUNNER_SCRIPT = """\
-import json, sys, os, traceback, time, shutil
+import json, sys, os, traceback, time
 
 graph_code_file = sys.argv[1]
 result_file = sys.argv[2]
 ray_address = sys.argv[3] if len(sys.argv) > 3 and sys.argv[3] != "__none__" else None
-lancedb_uri = os.environ.get("NEMO_LANCEDB_URI", "")
-lancedb_table = os.environ.get("NEMO_LANCEDB_TABLE", "nv-ingest")
-
-if lancedb_uri:
-    ldb_path = os.path.abspath(lancedb_uri)
-    if os.path.isdir(ldb_path):
-        shutil.rmtree(ldb_path)
-        print(f"Cleared stale LanceDB directory: {ldb_path}")
-    os.makedirs(ldb_path, exist_ok=True)
 
 def _root_cause(exc):
     seen = set()
@@ -775,8 +766,6 @@ try:
 
     result_ds = ns.get("result")
     graph = ns.get("graph")
-
-    lancedb_written = False
     row_count = 0
 
     if result_ds is not None:
@@ -786,33 +775,14 @@ try:
             if isinstance(result_ds, _rd.Dataset):
                 row_count = result_ds.count()
                 print(f"Pipeline complete: {row_count} rows in {elapsed}s")
-
-                if lancedb_uri:
-                    print(f"LanceDB target: uri={lancedb_uri} table={lancedb_table}")
-                    try:
-                        import lancedb as _ldb
-                        import pyarrow as _pa
-                        db = _ldb.connect(lancedb_uri)
-                        arrow_ds = result_ds.to_arrow_refs()
-                        table = _pa.concat_tables([ray.get(ref) for ref in arrow_ds], promote_options="permissive")
-                        col_names = [f.name for f in table.schema]
-                        if "vector" in col_names:
-                            db.create_table(lancedb_table, table, mode="overwrite")
-                            lancedb_written = True
-                            print(f"LanceDB: wrote {table.num_rows} rows to {lancedb_uri}/{lancedb_table}")
-                        else:
-                            print(f"LanceDB: skipping write (no 'vector' column in output; columns: {col_names})")
-                    except Exception as ldb_err:
-                        print(f"LanceDB write failed (non-fatal): {ldb_err}")
             else:
                 print(f"Pipeline complete in {elapsed}s (result type: {type(result_ds).__name__})")
         except Exception:
             elapsed = round(time.perf_counter() - wall_start, 2)
             print(f"Pipeline complete in {elapsed}s")
-
         result = {
             "success": True, "return_code": 0, "rows": row_count,
-            "elapsed_secs": elapsed, "lancedb_written": lancedb_written,
+            "elapsed_secs": elapsed,
         }
     elif graph is not None:
         outputs = graph.execute(None)
@@ -820,7 +790,7 @@ try:
         print(f"Graph.execute complete: {len(outputs)} output(s) in {elapsed}s")
         result = {
             "success": True, "return_code": 0, "outputs": len(outputs),
-            "elapsed_secs": elapsed, "lancedb_written": False,
+            "elapsed_secs": elapsed,
         }
     else:
         raise RuntimeError("Generated code did not produce a 'result' (Ray Data) or 'graph' variable")
@@ -854,7 +824,7 @@ def _run_graph_pipeline(
     tags: list[str] | None = None,
     skip_local_history: bool = False,
 ) -> dict[str, Any]:
-    """Execute a Designer graph pipeline and collect metrics, including recall/BEIR evaluation."""
+    """Execute a Designer graph pipeline and collect metrics."""
     import time as _time
 
     runtime_dir = artifact_dir / "runtime_metrics"
@@ -866,13 +836,6 @@ def _run_graph_pipeline(
     code_file.write_text(graph_code, encoding="utf-8")
     runner_file.write_text(_GRAPH_RUNNER_SCRIPT, encoding="utf-8")
 
-    lancedb_uri = _resolve_lancedb_uri(cfg, artifact_dir)
-    lancedb_path = Path(lancedb_uri)
-    if lancedb_path.is_dir():
-        shutil.rmtree(lancedb_path)
-    lancedb_path.mkdir(parents=True, exist_ok=True)
-    lancedb_table = "nv-ingest"
-
     ray_addr = cfg.ray_address or "__none__"
     cmd = [sys.executable, str(runner_file), str(code_file), str(result_file), ray_addr]
 
@@ -883,8 +846,6 @@ def _run_graph_pipeline(
     typer.echo(command_text)
 
     env = os.environ.copy()
-    env["NEMO_LANCEDB_URI"] = lancedb_uri
-    env["NEMO_LANCEDB_TABLE"] = lancedb_table
 
     metrics = StreamMetrics()
     _wall_start = _time.perf_counter()
@@ -938,82 +899,10 @@ def _run_graph_pipeline(
     graph_result = _read_json_if_exists(result_file) or {}
     rows = graph_result.get("rows", 0)
     elapsed_secs = graph_result.get("elapsed_secs", subprocess_elapsed_secs)
-    lancedb_written = graph_result.get("lancedb_written", False)
 
-    recall_raw: dict[str, float] = {}
-    eval_raw: dict[str, float] = {}
-    effective_query_csv_path: Path | None = None
-
-    can_evaluate = lancedb_written and Path(lancedb_uri).is_dir()
-
-    if cfg.query_csv:
-        effective_query_csv_path = prepare_recall_query_file(
-            query_csv=Path(cfg.query_csv),
-            recall_adapter=cfg.recall_adapter,
-            output_dir=runtime_dir,
-        )
-
-    if can_evaluate and cfg.evaluation_mode == "recall" and effective_query_csv_path:
-        typer.echo("\n=== Running recall evaluation ===")
-        try:
-            from nemo_retriever.recall.core import RecallConfig, retrieve_and_score
-
-            recall_cfg = RecallConfig(
-                lancedb_uri=lancedb_uri,
-                lancedb_table=lancedb_table,
-                embedding_model=cfg.embed_model_name,
-                ks=list(cfg.beir_ks) if cfg.beir_ks else [1, 3, 5, 10],
-                match_mode=cfg.recall_match_mode or "pdf_page",
-                hybrid=cfg.hybrid,
-            )
-            _df_query, _gold, _raw_hits, _retrieved_keys, recall_raw = retrieve_and_score(
-                effective_query_csv_path, cfg=recall_cfg,
-            )
-            typer.echo(f"Recall results: {recall_raw}")
-        except Exception as recall_exc:
-            typer.echo(f"Recall evaluation failed (non-fatal): {recall_exc}", err=True)
-
-    elif can_evaluate and cfg.evaluation_mode == "beir" and cfg.beir_loader:
-        typer.echo("\n=== Running BEIR evaluation ===")
-        try:
-            from nemo_retriever.recall.beir import BeirConfig, evaluate_lancedb_beir
-
-            beir_cfg = BeirConfig(
-                lancedb_uri=lancedb_uri,
-                lancedb_table=lancedb_table,
-                embedding_model=cfg.embed_model_name,
-                loader=cfg.beir_loader,
-                dataset_name=cfg.beir_dataset_name or cfg.dataset_label,
-                split=cfg.beir_split,
-                query_language=cfg.beir_query_language,
-                doc_id_field=cfg.beir_doc_id_field,
-                ks=list(cfg.beir_ks) if cfg.beir_ks else [1, 3, 5, 10],
-                hybrid=cfg.hybrid,
-            )
-            _dataset, _hits, _per_query, eval_raw = evaluate_lancedb_beir(beir_cfg)
-            typer.echo(f"BEIR results: {eval_raw}")
-        except Exception as beir_exc:
-            typer.echo(f"BEIR evaluation failed (non-fatal): {beir_exc}", err=True)
-
-    recall_metrics_normalized: dict[str, float] = {
-        _normalize_recall_metric_key(k): v for k, v in recall_raw.items()
-    }
-    evaluation_metrics_normalized: dict[str, float] = {
-        _normalize_recall_metric_key(k): v for k, v in eval_raw.items()
-    }
-
-    effective_rc, failure_reason, success = _evaluate_run_outcome(
-        process_rc=process_rc,
-        evaluation_mode=cfg.evaluation_mode,
-        recall_required=bool(cfg.recall_required) if can_evaluate else False,
-        recall_metrics=recall_raw,
-        evaluation_metrics=eval_raw,
-    )
-
-    if not success and graph_result.get("failure_reason"):
-        failure_reason = graph_result["failure_reason"]
-    if not success and graph_result.get("return_code"):
-        effective_rc = graph_result["return_code"]
+    success = graph_result.get("success", process_rc == 0)
+    effective_rc = graph_result.get("return_code", process_rc)
+    failure_reason = graph_result.get("failure_reason")
 
     pm_files = metrics.files
     pm_pages = rows or metrics.pages
@@ -1029,8 +918,6 @@ def _run_graph_pipeline(
         "pages_per_sec_ingest": pm_pps,
         "rows_processed": rows,
         "rows_per_sec_ingest": round(rows / elapsed_secs, 2) if rows and elapsed_secs else None,
-        **recall_metrics_normalized,
-        **evaluation_metrics_normalized,
     }
     summary_metrics = _resolve_summary_metrics(cfg, metrics_payload, None, subprocess_elapsed_secs)
 
@@ -1045,24 +932,8 @@ def _run_graph_pipeline(
             "dataset_label": cfg.dataset_label,
             "dataset_dir": cfg.dataset_dir,
             "preset": cfg.preset,
-            "query_csv": cfg.query_csv,
-            "effective_query_csv": str(effective_query_csv_path) if effective_query_csv_path else None,
             "input_type": "graph",
-            "recall_required": cfg.recall_required if can_evaluate else False,
-            "recall_match_mode": cfg.recall_match_mode,
-            "recall_adapter": cfg.recall_adapter,
-            "evaluation_mode": cfg.evaluation_mode,
-            "beir_loader": cfg.beir_loader,
-            "beir_dataset_name": cfg.beir_dataset_name,
-            "beir_split": cfg.beir_split,
-            "beir_query_language": cfg.beir_query_language,
-            "beir_doc_id_field": cfg.beir_doc_id_field,
-            "beir_ks": list(cfg.beir_ks),
             "ray_address": cfg.ray_address,
-            "hybrid": cfg.hybrid,
-            "embed_model_name": cfg.embed_model_name,
-            "lancedb_uri": lancedb_uri,
-            "lancedb_written": lancedb_written,
             "graph_pipeline": True,
         },
         "metrics": metrics_payload,

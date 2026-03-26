@@ -17,6 +17,7 @@ from nemo_retriever.params import RemoteRetryParams
 from nemo_retriever.graph.abstract_operator import AbstractOperator
 from nemo_retriever.graph.cpu_operator import CPUOperator
 from nemo_retriever.graph.gpu_operator import GPUOperator
+from nemo_retriever.graph.designer import designer_component
 
 try:
     import numpy as np
@@ -740,6 +741,12 @@ def detect_page_elements_v3(
     return out
 
 
+@designer_component(
+    name="Page Element Detection",
+    category="Detection & OCR",
+    compute="gpu",
+    description="Detects page elements (text blocks, tables, figures) using GPU inference",
+)
 class PageElementDetectionActor(AbstractOperator, GPUOperator):
     """
     Ray-friendly callable that initializes Nemotron Page Elements v3 once.
@@ -792,6 +799,12 @@ class PageElementDetectionActor(AbstractOperator, GPUOperator):
             return [{"page_elements_v3": _error_payload(stage="actor_call", exc=e)}]
 
 
+@designer_component(
+    name="Page Element Detection (CPU)",
+    category="Detection & OCR",
+    compute="cpu",
+    description="Detects page elements using CPU inference",
+)
 class PageElementDetectionCPUActor(AbstractOperator, CPUOperator):
     """CPU-only variant of :class:`PageElementDetectionActor`.
 

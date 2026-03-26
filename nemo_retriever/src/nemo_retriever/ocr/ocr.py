@@ -26,6 +26,7 @@ from nemo_retriever.nim.nim import invoke_image_inference_batches
 from nemo_retriever.graph.abstract_operator import AbstractOperator
 from nemo_retriever.graph.cpu_operator import CPUOperator
 from nemo_retriever.graph.gpu_operator import GPUOperator
+from nemo_retriever.graph.designer import designer_component
 from nemo_retriever.utils.table_and_chart import join_graphic_elements_and_ocr_output
 
 try:
@@ -742,6 +743,12 @@ def ocr_page_elements(
 # ---------------------------------------------------------------------------
 
 
+@designer_component(
+    name="OCR",
+    category="Detection & OCR",
+    compute="gpu",
+    description="Performs optical character recognition on document images",
+)
 class OCRActor(AbstractOperator, GPUOperator):
     """
     Ray-friendly callable that initializes Nemotron OCR v1 once per actor.
@@ -825,6 +832,12 @@ class OCRActor(AbstractOperator, GPUOperator):
             return [{"ocr_v1": _error_payload(stage="actor_call", exc=e)}]
 
 
+@designer_component(
+    name="OCR (CPU)",
+    category="Detection & OCR",
+    compute="cpu",
+    description="Performs optical character recognition using CPU",
+)
 class OCRCPUActor(AbstractOperator, CPUOperator):
     """CPU-only variant of :class:`OCRActor`.
 
@@ -1115,6 +1128,12 @@ def nemotron_parse_page_elements(
     return out
 
 
+@designer_component(
+    name="Nemotron Parse",
+    category="Detection & OCR",
+    compute="gpu",
+    description="Parses documents using Nemotron model for extraction",
+)
 class NemotronParseActor(AbstractOperator, GPUOperator):
     """
     Ray-friendly callable that initializes Nemotron Parse v1.2 once per actor.
@@ -1198,6 +1217,12 @@ class NemotronParseActor(AbstractOperator, GPUOperator):
             return [{"nemotron_parse_v1_2": _error_payload(stage="nemotron_parse_actor_call", exc=e)}]
 
 
+@designer_component(
+    name="Nemotron Parse (CPU)",
+    category="Detection & OCR",
+    compute="cpu",
+    description="Parses documents using Nemotron model on CPU",
+)
 class NemotronParseCPUActor(AbstractOperator, CPUOperator):
     """CPU-only variant of :class:`NemotronParseActor`.
 

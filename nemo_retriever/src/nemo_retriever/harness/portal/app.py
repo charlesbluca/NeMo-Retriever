@@ -2961,71 +2961,95 @@ async def export_runs_json(
 _RAY_DATA_SOURCES: list[dict[str, Any]] = [
     {
         "class_name": "ReadBinaryFiles",
+        "display_name": "Read Binary Files",
         "module": "ray.data",
         "import_path": "import ray.data",
         "type": "ray_data_source",
         "ray_fn": "ray.data.read_binary_files",
         "params": [
-            {"name": "paths", "type": "str"},
-            {"name": "include_paths", "type": "bool", "default": True},
+            {"name": "paths", "type": "str", "label": "Paths"},
+            {"name": "include_paths", "type": "bool", "default": True, "label": "Include Paths"},
         ],
-        "category": "data",
+        "category": "Data Sources",
+        "category_color": "#ff9f43",
+        "compute": "cpu",
+        "description": "Read binary files from a directory into a Ray Dataset",
     },
     {
         "class_name": "ReadCSV",
+        "display_name": "Read CSV",
         "module": "ray.data",
         "import_path": "import ray.data",
         "type": "ray_data_source",
         "ray_fn": "ray.data.read_csv",
         "params": [
-            {"name": "paths", "type": "str"},
+            {"name": "paths", "type": "str", "label": "Paths"},
         ],
-        "category": "data",
+        "category": "Data Sources",
+        "category_color": "#ff9f43",
+        "compute": "cpu",
+        "description": "Read CSV files into a Ray Dataset",
     },
     {
         "class_name": "ReadParquet",
+        "display_name": "Read Parquet",
         "module": "ray.data",
         "import_path": "import ray.data",
         "type": "ray_data_source",
         "ray_fn": "ray.data.read_parquet",
         "params": [
-            {"name": "paths", "type": "str"},
+            {"name": "paths", "type": "str", "label": "Paths"},
         ],
-        "category": "data",
+        "category": "Data Sources",
+        "category_color": "#ff9f43",
+        "compute": "cpu",
+        "description": "Read Parquet files into a Ray Dataset",
     },
     {
         "class_name": "ReadJSON",
+        "display_name": "Read JSON",
         "module": "ray.data",
         "import_path": "import ray.data",
         "type": "ray_data_source",
         "ray_fn": "ray.data.read_json",
         "params": [
-            {"name": "paths", "type": "str"},
+            {"name": "paths", "type": "str", "label": "Paths"},
         ],
-        "category": "data",
+        "category": "Data Sources",
+        "category_color": "#ff9f43",
+        "compute": "cpu",
+        "description": "Read JSON files into a Ray Dataset",
     },
     {
         "class_name": "ReadImages",
+        "display_name": "Read Images",
         "module": "ray.data",
         "import_path": "import ray.data",
         "type": "ray_data_source",
         "ray_fn": "ray.data.read_images",
         "params": [
-            {"name": "paths", "type": "str"},
-            {"name": "mode", "type": "str", "default": "RGB"},
+            {"name": "paths", "type": "str", "label": "Paths"},
+            {"name": "mode", "type": "str", "default": "RGB", "label": "Mode"},
         ],
-        "category": "data",
+        "category": "Data Sources",
+        "category_color": "#ff9f43",
+        "compute": "cpu",
+        "description": "Read image files into a Ray Dataset",
     },
     {
         "class_name": "ReadText",
+        "display_name": "Read Text",
         "module": "ray.data",
         "import_path": "import ray.data",
         "type": "ray_data_source",
         "ray_fn": "ray.data.read_text",
         "params": [
-            {"name": "paths", "type": "str"},
+            {"name": "paths", "type": "str", "label": "Paths"},
         ],
-        "category": "data",
+        "category": "Data Sources",
+        "category_color": "#ff9f43",
+        "compute": "cpu",
+        "description": "Read text files into a Ray Dataset",
     },
 ]
 
@@ -3068,97 +3092,163 @@ def _introspect_pydantic_fields(model_cls: type) -> list[dict[str, Any]] | None:
     return fields
 
 
+_operators_cache: list[dict[str, Any]] | None = None
+
+
+def _scan_nemo_retriever_package() -> None:
+    """Walk all ``nemo_retriever`` submodules to trigger ``@designer_component``
+    registrations.  Errors from individual modules are silently skipped."""
+    import importlib
+    import pkgutil
+
+    try:
+        import nemo_retriever as _pkg
+    except ImportError:
+        return
+    if not hasattr(_pkg, "__path__"):
+        return
+    for _importer, modname, _ispkg in pkgutil.walk_packages(
+        _pkg.__path__, prefix="nemo_retriever."
+    ):
+        try:
+            importlib.import_module(modname)
+        except Exception:
+            pass
+
+
+def _extract_param_annotation(resolved_type):
+    """If *resolved_type* is ``Annotated[T, Param(...), ...]``, return the
+    ``Param`` instance and the unwrapped base type.  Otherwise ``(None, None)``."""
+    import typing as _typing
+
+    origin = getattr(resolved_type, "__origin__", None)
+    if origin is not None:
+        type_name = getattr(origin, "__name__", "") or getattr(origin, "_name", "") or ""
+    else:
+        type_name = ""
+    args = getattr(resolved_type, "__metadata__", None)
+    if args is None:
+        args_full = _typing.get_args(resolved_type)
+        if args_full and len(args_full) >= 2:
+            from nemo_retriever.graph.designer import Param as _Param
+
+            for a in args_full[1:]:
+                if isinstance(a, _Param):
+                    return a, args_full[0]
+    else:
+        from nemo_retriever.graph.designer import Param as _Param
+
+        for a in args:
+            if isinstance(a, _Param):
+                base_args = _typing.get_args(resolved_type)
+                base_type = base_args[0] if base_args else resolved_type
+                return a, base_type
+    return None, None
+
+
 def _discover_operators() -> list[dict[str, Any]]:
-    """Discover all AbstractOperator subclasses available in the environment."""
+    """Discover all ``@designer_component``-decorated classes/functions and
+    build the operator list for the Designer palette."""
+    global _operators_cache
+    if _operators_cache is not None:
+        return _operators_cache
+
     import inspect as _inspect
     import typing as _typing
 
+    _scan_nemo_retriever_package()
+
+    from nemo_retriever.graph.designer import get_registry
+
     registry: list[dict[str, Any]] = []
 
-    operator_sources = [
-        ("nemo_retriever.graph", ["UDFOperator", "FileListLoaderOperator", "MultiTypeExtractOperator"]),
-        ("nemo_retriever.graph.content_operators", ["ExplodeContentActor"]),
-        ("nemo_retriever.pdf.split", ["PDFSplitActor"]),
-        ("nemo_retriever.pdf.extract", ["PDFExtractionActor"]),
-        ("nemo_retriever.txt.ray_data", ["TextChunkActor", "TxtSplitActor"]),
-        ("nemo_retriever.html.ray_data", ["HtmlSplitActor"]),
-        ("nemo_retriever.image.ray_data", ["ImageLoadActor"]),
-        ("nemo_retriever.audio.chunk_actor", ["MediaChunkActor"]),
-        ("nemo_retriever.audio.asr_actor", ["ASRActor"]),
-        ("nemo_retriever.text_embed.text_embed", ["TextEmbedActor"]),
-        ("nemo_retriever.text_embed.operators", ["_BatchEmbedActor"]),
-        ("nemo_retriever.caption.caption", ["CaptionActor"]),
-        ("nemo_retriever.rerank.rerank", ["NemotronRerankActor"]),
-        ("nemo_retriever.page_elements.page_elements", ["PageElementDetectionActor", "PageElementDetectionCPUActor"]),
-        ("nemo_retriever.table.table_detection", ["TableStructureActor", "TableStructureCPUActor"]),
-        ("nemo_retriever.chart.chart_detection", ["GraphicElementsActor", "GraphicElementsCPUActor"]),
-        ("nemo_retriever.infographic.infographic_detection", ["InfographicDetectionActor"]),
-        ("nemo_retriever.ocr.ocr", ["OCRActor", "OCRCPUActor", "NemotronParseActor", "NemotronParseCPUActor"]),
-        ("nemo_retriever.utils.convert.to_pdf", ["DocToPdfConversionActor"]),
-    ]
+    for _key, meta in get_registry().items():
+        target = meta["target"]
+        class_name = target.__name__
+        module_path = target.__module__
 
-    for module_path, class_names in operator_sources:
-        for class_name in class_names:
-            try:
-                mod = __import__(module_path, fromlist=[class_name])
-                cls = getattr(mod, class_name)
-                sig = _inspect.signature(cls.__init__)
+        try:
+            init_fn = target.__init__ if isinstance(target, type) else target
+            sig = _inspect.signature(init_fn)
+        except (ValueError, TypeError):
+            sig = None
 
-                try:
-                    resolved_hints = _typing.get_type_hints(cls.__init__)
-                except Exception:
-                    resolved_hints = {}
+        try:
+            resolved_hints = _typing.get_type_hints(init_fn, include_extras=True)
+        except Exception:
+            resolved_hints = {}
 
-                params = []
-                for pname, param in sig.parameters.items():
-                    if pname == "self" or param.kind in (
-                        _inspect.Parameter.VAR_POSITIONAL,
-                        _inspect.Parameter.VAR_KEYWORD,
-                    ):
-                        continue
-                    p_info: dict[str, Any] = {"name": pname}
+        params: list[dict[str, Any]] = []
+        if sig is not None:
+            for pname, param in sig.parameters.items():
+                if pname == "self" or param.kind in (
+                    _inspect.Parameter.VAR_POSITIONAL,
+                    _inspect.Parameter.VAR_KEYWORD,
+                ):
+                    continue
+                p_info: dict[str, Any] = {"name": pname}
 
-                    resolved_type = resolved_hints.get(pname)
-                    if resolved_type is not None:
-                        pydantic_fields = _introspect_pydantic_fields(resolved_type)
-                        if pydantic_fields is not None:
-                            p_info["pydantic"] = True
-                            p_info["pydantic_class"] = resolved_type.__name__
-                            p_info["pydantic_module"] = resolved_type.__module__
-                            p_info["pydantic_import"] = (
-                                f"from {resolved_type.__module__} import {resolved_type.__name__}"
-                            )
-                            p_info["fields"] = pydantic_fields
+                resolved_type = resolved_hints.get(pname)
 
-                    if param.default is not _inspect.Parameter.empty:
-                        try:
-                            json_module.dumps(param.default)
-                            p_info["default"] = param.default
-                        except (TypeError, ValueError):
-                            p_info["default"] = str(param.default)
-                    if param.annotation is not _inspect.Parameter.empty:
-                        p_info["type"] = str(param.annotation)
-                    params.append(p_info)
+                param_meta, base_type = _extract_param_annotation(resolved_type) if resolved_type else (None, None)
+                if param_meta is not None:
+                    if param_meta.label:
+                        p_info["label"] = param_meta.label
+                    if param_meta.description:
+                        p_info["description"] = param_meta.description
+                    if param_meta.choices:
+                        p_info["choices"] = param_meta.choices
+                    if param_meta.min_val is not None:
+                        p_info["min_val"] = param_meta.min_val
+                    if param_meta.max_val is not None:
+                        p_info["max_val"] = param_meta.max_val
+                    if param_meta.hidden:
+                        p_info["hidden"] = True
+                    if param_meta.placeholder:
+                        p_info["placeholder"] = param_meta.placeholder
+                    effective_type = base_type
+                else:
+                    effective_type = resolved_type
 
-                category = "graph"
-                if "CPU" in class_name:
-                    category = "cpu"
-                elif any(g in class_name for g in ("Embed", "Caption", "Rerank", "Detection", "OCR", "Parse", "Table", "Graphic", "Infographic")):
-                    category = "gpu"
-                elif any(t in class_name for t in ("Split", "Chunk", "Load", "Convert", "Explode", "Txt", "Html", "Image", "ASR", "Media")):
-                    category = "cpu"
+                if effective_type is not None:
+                    pydantic_fields = _introspect_pydantic_fields(effective_type)
+                    if pydantic_fields is not None:
+                        p_info["pydantic"] = True
+                        p_info["pydantic_class"] = effective_type.__name__
+                        p_info["pydantic_module"] = effective_type.__module__
+                        p_info["pydantic_import"] = (
+                            f"from {effective_type.__module__} import {effective_type.__name__}"
+                        )
+                        p_info["fields"] = pydantic_fields
 
-                registry.append({
-                    "class_name": class_name,
-                    "module": module_path,
-                    "import_path": f"from {module_path} import {class_name}",
-                    "params": params,
-                    "category": category,
-                })
-            except Exception as exc:
-                logger.debug("Failed to introspect %s.%s: %s", module_path, class_name, exc)
+                if param.default is not _inspect.Parameter.empty:
+                    try:
+                        json_module.dumps(param.default)
+                        p_info["default"] = param.default
+                    except (TypeError, ValueError):
+                        p_info["default"] = str(param.default)
+                if param.annotation is not _inspect.Parameter.empty:
+                    p_info["type"] = str(param.annotation)
+                params.append(p_info)
+
+        entry: dict[str, Any] = {
+            "class_name": class_name,
+            "module": module_path,
+            "import_path": f"from {module_path} import {class_name}",
+            "params": params,
+            "category": meta["category"],
+            "display_name": meta["name"],
+            "compute": meta["compute"],
+            "description": meta.get("description", ""),
+        }
+        if meta.get("category_color"):
+            entry["category_color"] = meta["category_color"]
+        if meta.get("component_type"):
+            entry["type"] = meta["component_type"]
+        registry.append(entry)
 
     registry.extend(_RAY_DATA_SOURCES)
+    _operators_cache = registry
     return registry
 
 
@@ -3222,20 +3312,6 @@ class GraphRunRequest(BaseModel):
     git_ref: str | None = None
     git_commit: str | None = None
     ray_address: str | None = None
-    enable_recall: bool = False
-    evaluation_mode: str | None = None
-    query_csv: str | None = None
-    recall_required: bool = True
-    recall_match_mode: str | None = None
-    recall_adapter: str | None = None
-    beir_loader: str | None = None
-    beir_dataset_name: str | None = None
-    beir_split: str | None = None
-    beir_query_language: str | None = None
-    beir_doc_id_field: str | None = None
-    beir_ks: list[int] | None = None
-    embed_model_name: str | None = None
-    hybrid: bool = False
 
 
 class GraphRunResponse(BaseModel):
@@ -3275,39 +3351,10 @@ async def run_graph_endpoint(graph_id: int, req: GraphRunRequest):
     except Exception:
         pass
 
-    eval_overrides: dict[str, Any] = {}
-    if req.enable_recall:
-        if req.evaluation_mode:
-            eval_overrides["evaluation_mode"] = req.evaluation_mode
-        if req.query_csv:
-            eval_overrides["query_csv"] = req.query_csv
-        eval_overrides["recall_required"] = req.recall_required
-        if req.recall_match_mode:
-            eval_overrides["recall_match_mode"] = req.recall_match_mode
-        if req.recall_adapter:
-            eval_overrides["recall_adapter"] = req.recall_adapter
-        if req.beir_loader:
-            eval_overrides["beir_loader"] = req.beir_loader
-        if req.beir_dataset_name:
-            eval_overrides["beir_dataset_name"] = req.beir_dataset_name
-        if req.beir_split:
-            eval_overrides["beir_split"] = req.beir_split
-        if req.beir_query_language:
-            eval_overrides["beir_query_language"] = req.beir_query_language
-        if req.beir_doc_id_field:
-            eval_overrides["beir_doc_id_field"] = req.beir_doc_id_field
-        if req.beir_ks:
-            eval_overrides["beir_ks"] = req.beir_ks
-        if req.embed_model_name:
-            eval_overrides["embed_model_name"] = req.embed_model_name
-        if req.hybrid:
-            eval_overrides["hybrid"] = True
-
     job = history.create_job(
         {
             "trigger_source": "graph",
             "dataset": input_path,
-            "dataset_overrides": eval_overrides if eval_overrides else None,
             "preset": graph_name,
             "assigned_runner_id": req.runner_id,
             "git_commit": pinned_sha,

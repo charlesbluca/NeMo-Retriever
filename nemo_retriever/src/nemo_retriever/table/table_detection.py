@@ -14,6 +14,7 @@ from nemo_retriever.params import RemoteRetryParams
 from nemo_retriever.graph.abstract_operator import AbstractOperator
 from nemo_retriever.graph.cpu_operator import CPUOperator
 from nemo_retriever.graph.gpu_operator import GPUOperator
+from nemo_retriever.graph.designer import designer_component
 
 try:
     import torch
@@ -447,6 +448,12 @@ def table_structure_ocr_page_elements(
 # ---------------------------------------------------------------------------
 
 
+@designer_component(
+    name="Table Structure Detection",
+    category="Detection & OCR",
+    compute="gpu",
+    description="Detects and extracts table structure from documents",
+)
 class TableStructureActor(AbstractOperator, GPUOperator):
     """
     Ray-friendly callable that initializes both table-structure and OCR
@@ -555,6 +562,12 @@ class TableStructureActor(AbstractOperator, GPUOperator):
             ]
 
 
+@designer_component(
+    name="Table Structure Detection (CPU)",
+    category="Detection & OCR",
+    compute="cpu",
+    description="Detects and extracts table structure using CPU",
+)
 class TableStructureCPUActor(AbstractOperator, CPUOperator):
     """CPU-only variant of :class:`TableStructureActor`.
 

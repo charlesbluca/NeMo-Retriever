@@ -790,18 +790,31 @@ def _execute_job_on_runner(base_url: str, job: dict[str, Any], runner_id: int = 
         else:
             logger.warning("Job %s — venv creation failed, falling back to current environment", job_id)
 
-    graph_code = job.get("graph_code")
+    is_graph_job = job.get("trigger_source") == "graph"
+    graph_code = job.get("graph_code") or ""
     graph_meta: dict[str, Any] = {}
-    if graph_code and job.get("config"):
+    if is_graph_job and job.get("config"):
         try:
             graph_meta = json_module.loads(job["config"])
         except (json_module.JSONDecodeError, TypeError):
             pass
 
+    if is_graph_job and not graph_code.strip():
+        logger.error("Job %s is a graph job but has no graph_code — completing as failed", job_id)
+        _post_json(
+            f"{base_url}/api/jobs/{job_id}/complete",
+            {"success": False, "error": "Graph job has no graph_code. Save the graph and retry."},
+        )
+        _job_tracker.finish_job()
+        if prev_head:
+            _git_restore(prev_head)
+        _destroy_job_venv(job_id)
+        return
+
     original_stdout = sys.stdout
     sys.stdout = _TeeWriter(original_stdout)
     try:
-        if graph_code:
+        if is_graph_job:
             # ---- Graph execution path ----
             run_dir = venv_dir or Path(tempfile.mkdtemp(prefix=f"graph_{job_id}_"))
             code_file = run_dir / "graph_pipeline.py"
@@ -811,7 +824,7 @@ def _execute_job_on_runner(base_url: str, job: dict[str, Any], runner_id: int = 
             code_file.write_text(graph_code)
             wrapper_file.write_text(_GRAPH_WRAPPER_SCRIPT)
 
-            ray_addr = graph_meta.get("ray_address") or overrides.get("ray_address", "__none__")
+            ray_addr = graph_meta.get("ray_address") or overrides.get("ray_address") or "__none__"
             input_path = graph_meta.get("input_path") or "__none__"
 
             python_bin = str(venv_dir / "bin" / "python") if venv_dir else sys.executable

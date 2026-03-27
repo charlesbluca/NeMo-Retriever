@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import List, Optional
 
 from nemo_retriever.utils.hf_cache import configure_global_hf_cache_base
+from nemo_retriever.utils.nvtx import gpu_inference_range
 from ..model import BaseModel, RunMode
 
 
@@ -156,7 +157,8 @@ class NemotronRerankV2(BaseModel):
                     max_length=max_length,
                 )
                 batch = {k: v.to(self._device) for k, v in batch.items()}
-                logits = self._model(**batch).logits
+                with gpu_inference_range("NemotronRerankV2", batch_size=len(chunk)):
+                    logits = self._model(**batch).logits
                 all_scores.extend(logits.view(-1).cpu().tolist())
 
         return all_scores
@@ -204,7 +206,8 @@ class NemotronRerankV2(BaseModel):
                     max_length=max_length,
                 )
                 batch = {k: v.to(self._device) for k, v in batch.items()}
-                logits = self._model(**batch).logits
+                with gpu_inference_range("NemotronRerankV2", batch_size=len(chunk)):
+                    logits = self._model(**batch).logits
                 all_scores.extend(logits.view(-1).cpu().tolist())
 
         return all_scores

@@ -531,8 +531,20 @@ def _nsys_available() -> bool:
 
 
 def _nsys_prefix(output_path: str) -> list[str]:
-    """Return the command prefix to wrap a subprocess with nsys profile."""
-    return ["nsys", "profile", "-o", output_path, "--force-overwrite=true", "-t", "cuda,nvtx"]
+    """Return the command prefix to wrap a subprocess with nsys profile.
+
+    Uses NVTX-triggered capture so only code inside ``gpu_inference_range``
+    context managers is profiled, rather than the entire multi-hour process.
+    """
+    return [
+        "nsys", "profile",
+        "-o", output_path,
+        "--force-overwrite=true",
+        "-t", "cuda,nvtx",
+        "--capture-range=nvtx",
+        "--nvtx-capture=gpu_inference",
+        "--capture-range-end=repeat",
+    ]
 
 
 def _copy_nsys_profiles(src_dir: Path, dest_dir: Path) -> None:

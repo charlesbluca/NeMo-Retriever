@@ -13,6 +13,7 @@ from PIL import Image
 
 from nemo_retriever.utils.hf_cache import configure_global_hf_cache_base
 from nemo_retriever.utils.hf_model_registry import get_hf_revision
+from nemo_retriever.utils.nvtx import gpu_inference_range
 from ..model import BaseModel, RunMode
 
 
@@ -135,7 +136,8 @@ class NemotronParseV12(BaseModel):
         ).to(self._device)
 
         with torch.inference_mode():
-            outputs = self._model.generate(**inputs, generation_config=self._generation_config)
+            with gpu_inference_range("NemotronParseV12", batch_size=1):
+                outputs = self._model.generate(**inputs, generation_config=self._generation_config)
 
         decoded = self._processor.batch_decode(outputs, skip_special_tokens=True)
         return decoded[0] if decoded else ""

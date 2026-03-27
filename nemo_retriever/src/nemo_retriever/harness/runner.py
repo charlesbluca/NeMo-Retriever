@@ -411,11 +411,20 @@ def _root_cause(exc):
     return exc
 
 try:
+    import torch
+    print(f"[diag] torch.cuda.is_available() = {torch.cuda.is_available()}")
+    print(f"[diag] torch.cuda.device_count() = {torch.cuda.device_count()}")
+    print(f"[diag] CUDA_VISIBLE_DEVICES = {os.environ.get('CUDA_VISIBLE_DEVICES', '<not set>')}")
+    if torch.cuda.is_available():
+        for i in range(torch.cuda.device_count()):
+            print(f"[diag]   GPU {i}: {torch.cuda.get_device_name(i)}")
+
     import ray
 
     effective_ray = ray_address or os.environ.get("RAY_ADDRESS") or "auto"
     ray.init(address=effective_ray, ignore_reinit_error=True)
     print(f"Ray initialized: {effective_ray}")
+    print(f"[diag] Ray cluster resources: {ray.cluster_resources()}")
 
     with open(graph_code_file) as f:
         code = f.read()
@@ -510,12 +519,17 @@ def _copy_nsys_profiles(src_dir: Path, dest_dir: Path) -> None:
 def _create_job_venv(job_id: str, repo_root: Path) -> Path | None:
     """Create a uv venv for *job_id* and install nemo_retriever into it.
 
+    Uses ``uv sync`` so that ``[tool.uv.sources]`` (e.g. the CUDA torch
+    index) are respected.  Falls back to ``uv pip install`` if the project
+    has no lock-file or ``uv sync`` is unavailable.
+
     Returns the venv directory on success, or ``None`` on failure.
     """
     venv_dir = _VENV_BASE_DIR / job_id
     _VENV_BASE_DIR.mkdir(parents=True, exist_ok=True)
 
     try:
+        print(f"[venv] Creating isolated uv venv for job {job_id} at {venv_dir} …")
         result = subprocess.run(
             ["uv", "venv", str(venv_dir), "--python", sys.executable],
             cwd=str(repo_root),
@@ -524,6 +538,7 @@ def _create_job_venv(job_id: str, repo_root: Path) -> Path | None:
             check=True,
             timeout=120,
         )
+        print(f"[venv] Created venv for job {job_id}")
         logger.info("Created venv for job %s at %s", job_id, venv_dir)
     except FileNotFoundError:
         logger.error("uv is not installed — cannot create job venv")
@@ -532,8 +547,39 @@ def _create_job_venv(job_id: str, repo_root: Path) -> Path | None:
         logger.error("Failed to create venv for job %s: %s", job_id, exc)
         return None
 
+    nemo_dir = repo_root / "nemo_retriever"
+    use_sync = (nemo_dir / "pyproject.toml").exists()
+
+    if use_sync:
+        env = {**os.environ, "UV_PROJECT_ENVIRONMENT": str(venv_dir)}
+        try:
+            print(f"[venv] Running uv sync (respects [tool.uv.sources] for CUDA torch) …")
+            result = subprocess.run(
+                ["uv", "sync", "--no-dev"],
+                cwd=str(nemo_dir),
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=900,
+                env=env,
+            )
+            if result.stdout:
+                for line in result.stdout.strip().splitlines()[-5:]:
+                    logger.info("  sync: %s", line)
+            print(f"[venv] uv sync complete for job {job_id}")
+            logger.info("uv sync complete for job venv %s", job_id)
+            return venv_dir
+        except Exception as exc:
+            stderr_text = getattr(exc, "stderr", "") or ""
+            logger.warning(
+                "uv sync failed for job %s, falling back to uv pip install: %s\n%s",
+                job_id, exc, stderr_text[:1000],
+            )
+            print(f"[venv] uv sync failed, falling back to uv pip install …")
+
     venv_python = str(venv_dir / "bin" / "python")
     try:
+        print(f"[venv] Running uv pip install -e ./nemo_retriever …")
         result = subprocess.run(
             ["uv", "pip", "install", "-e", "./nemo_retriever",
              "--python", venv_python],
@@ -546,6 +592,7 @@ def _create_job_venv(job_id: str, repo_root: Path) -> Path | None:
         if result.stdout:
             for line in result.stdout.strip().splitlines()[-5:]:
                 logger.info("  pip: %s", line)
+        print(f"[venv] Installed nemo_retriever into job venv {job_id}")
         logger.info("Installed nemo_retriever into job venv %s", job_id)
     except Exception as exc:
         logger.error("Failed to install into job venv %s: %s", job_id, exc)
@@ -557,12 +604,33 @@ def _create_job_venv(job_id: str, repo_root: Path) -> Path | None:
     return venv_dir
 
 
+def _capture_pip_list(job_id: str) -> str:
+    """Run ``uv pip list`` in the job's venv and return the output as a string."""
+    venv_dir = _VENV_BASE_DIR / job_id
+    venv_python = str(venv_dir / "bin" / "python")
+    if not venv_dir.exists():
+        return ""
+    try:
+        result = subprocess.run(
+            ["uv", "pip", "list", "--python", venv_python],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        return result.stdout.strip() if result.stdout else ""
+    except Exception as exc:
+        logger.warning("Failed to capture pip list for job %s: %s", job_id, exc)
+        return ""
+
+
 def _destroy_job_venv(job_id: str) -> None:
     """Remove the venv for a specific job (safe to call even if it doesn't exist)."""
     venv_dir = _VENV_BASE_DIR / job_id
     if venv_dir.exists():
         try:
+            print(f"[venv] Deactivating and removing venv for job {job_id} at {venv_dir} …")
             shutil.rmtree(venv_dir)
+            print(f"[venv] Removed venv for job {job_id}")
             logger.info("Removed venv for job %s", job_id)
         except Exception as exc:
             logger.warning("Failed to remove venv for job %s: %s", job_id, exc)
@@ -1081,6 +1149,8 @@ def _execute_job_on_runner(base_url: str, job: dict[str, Any], runner_id: int = 
                 skip_local_history=True,
             )
 
+        pip_list_output = _capture_pip_list(job_id)
+
         final_log_tail = _job_tracker.get_log_tail(_LOG_TAIL_MAX)
         if _job_tracker.is_cancel_requested():
             complete_resp = _post_json(
@@ -1092,6 +1162,7 @@ def _execute_job_on_runner(base_url: str, job: dict[str, Any], runner_id: int = 
                     "execution_commit": execution_commit,
                     "num_gpus": _runner_num_gpus,
                     "log_tail": final_log_tail,
+                    "pip_list": pip_list_output,
                 },
             )
             logger.info("Job %s cancelled by user", job_id)
@@ -1105,6 +1176,7 @@ def _execute_job_on_runner(base_url: str, job: dict[str, Any], runner_id: int = 
                     "execution_commit": execution_commit,
                     "num_gpus": _runner_num_gpus,
                     "log_tail": final_log_tail,
+                    "pip_list": pip_list_output,
                 },
             )
             logger.info("Job %s completed (success=%s)", job_id, success)
@@ -1141,6 +1213,7 @@ def _execute_job_on_runner(base_url: str, job: dict[str, Any], runner_id: int = 
             error_msg = f"{exc}\n\n{tb}"
             if _job_tracker.is_cancel_requested():
                 error_msg = "Cancelled by user"
+            err_pip_list = _capture_pip_list(job_id)
             _post_json(
                 f"{base_url}/api/jobs/{job_id}/complete",
                 {
@@ -1149,6 +1222,7 @@ def _execute_job_on_runner(base_url: str, job: dict[str, Any], runner_id: int = 
                     "execution_commit": execution_commit,
                     "num_gpus": _runner_num_gpus,
                     "log_tail": _job_tracker.get_log_tail(_LOG_TAIL_MAX),
+                    "pip_list": err_pip_list,
                 },
             )
         except Exception:

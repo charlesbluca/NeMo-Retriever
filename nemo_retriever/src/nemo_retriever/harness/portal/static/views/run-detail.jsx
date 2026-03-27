@@ -12,6 +12,9 @@ function RunDetailModal({ run, onClose, onDelete, githubRepoUrl }) {
   const [showLogs, setShowLogs] = useState(false);
   const [logLines, setLogLines] = useState(null);
   const [logLoading, setLogLoading] = useState(false);
+  const [showPipList, setShowPipList] = useState(false);
+  const [pipListText, setPipListText] = useState(null);
+  const [pipListLoading, setPipListLoading] = useState(false);
   const logRef = useRef(null);
   const raw = run.raw_json && typeof run.raw_json === 'object' && Object.keys(run.raw_json).length > 0 ? run.raw_json : run;
 
@@ -31,6 +34,17 @@ function RunDetailModal({ run, onClose, onDelete, githubRepoUrl }) {
       logRef.current.scrollTop = logRef.current.scrollHeight;
     }
   }, [showLogs, logLines]);
+
+  useEffect(() => {
+    if (showPipList && pipListText === null && !pipListLoading && run.job_id) {
+      setPipListLoading(true);
+      fetch(`/api/jobs/${run.job_id}`)
+        .then(r => r.json())
+        .then(data => setPipListText(data.pip_list || ""))
+        .catch(() => setPipListText(""))
+        .finally(() => setPipListLoading(false));
+    }
+  }, [showPipList, pipListText, pipListLoading, run.job_id]);
 
   useEffect(() => {
     if (showCommand && commandText === null && !commandLoading) {
@@ -338,6 +352,40 @@ function RunDetailModal({ run, onClose, onDelete, githubRepoUrl }) {
                   </div>
                 ) : (
                   <div style={{padding:'12px',color:'var(--nv-text-dim)',fontSize:'13px',fontStyle:'italic'}}>No log output available for this run.</div>
+                )
+              )}
+            </div>
+          )}
+
+          {/* Installed Packages */}
+          {run.job_id && (
+            <div style={{marginBottom:'28px'}}>
+              <div className="section-title"
+                style={{cursor:'pointer',userSelect:'none',display:'flex',alignItems:'center',gap:'8px'}}
+                onClick={()=>setShowPipList(!showPipList)}
+              >
+                <span style={{transform:showPipList?'rotate(90deg)':'rotate(0deg)',transition:'transform 0.15s',display:'inline-block',fontSize:'10px'}}>{"\u25B6"}</span>
+                Installed Packages
+              </div>
+              {showPipList && (
+                pipListLoading ? (
+                  <div style={{padding:'12px',color:'var(--nv-text-muted)',fontSize:'13px'}}><span className="spinner" style={{marginRight:'8px'}}></span>Loading…</div>
+                ) : pipListText ? (
+                  <div style={{position:'relative'}}>
+                    <button className="btn btn-ghost btn-sm"
+                      style={{position:'absolute',top:'6px',right:'6px',fontSize:'10px',zIndex:1,color:'var(--nv-text-dim)'}}
+                      onClick={() => navigator.clipboard.writeText(pipListText)}>Copy</button>
+                    <pre className="mono" style={{
+                      fontSize:'11px',color:'var(--nv-text-muted)',margin:0,
+                      whiteSpace:'pre',lineHeight:'1.4',
+                      maxHeight:'250px',overflow:'auto',
+                      background:'rgba(0,0,0,0.25)',padding:'10px',borderRadius:'6px',
+                      border:'1px solid rgba(255,255,255,0.06)',
+                    }}>{pipListText}</pre>
+                    <span style={{fontSize:'11px',color:'var(--nv-text-dim)',marginTop:'4px',display:'inline-block'}}>{pipListText.split('\n').length} lines</span>
+                  </div>
+                ) : (
+                  <div style={{padding:'12px',color:'var(--nv-text-dim)',fontSize:'13px',fontStyle:'italic'}}>No package list available for this run.</div>
                 )
               )}
             </div>

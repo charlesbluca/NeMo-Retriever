@@ -262,6 +262,7 @@ _MIGRATIONS = [
     "ALTER TABLE preset_matrices ADD COLUMN nsys_profile INTEGER DEFAULT 0",
     "ALTER TABLE runs ADD COLUMN nsys_profile INTEGER DEFAULT 0",
     "ALTER TABLE jobs ADD COLUMN graph_id INTEGER",
+    "ALTER TABLE jobs ADD COLUMN pip_list TEXT",
 ]
 
 RUNNER_MISSED_HEARTBEATS_THRESHOLD = 4
@@ -1907,6 +1908,29 @@ def get_job_log(job_id: str, db_path: str | None = None) -> list[str]:
             except (json.JSONDecodeError, TypeError):
                 pass
         return []
+    finally:
+        conn.close()
+
+
+def update_job_pip_list(job_id: str, pip_list: str, db_path: str | None = None) -> None:
+    """Store the captured ``uv pip list`` output for a completed job."""
+    conn = _connect(db_path)
+    try:
+        conn.execute(
+            "UPDATE jobs SET pip_list = ? WHERE id = ?",
+            (pip_list, job_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_job_pip_list(job_id: str, db_path: str | None = None) -> str:
+    """Return the stored pip list for a job."""
+    conn = _connect(db_path)
+    try:
+        row = conn.execute("SELECT pip_list FROM jobs WHERE id = ?", (job_id,)).fetchone()
+        return row[0] if row and row[0] else ""
     finally:
         conn.close()
 

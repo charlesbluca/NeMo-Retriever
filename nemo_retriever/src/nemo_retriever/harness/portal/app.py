@@ -275,6 +275,7 @@ class JobCompleteRequest(BaseModel):
     execution_commit: str | None = None
     num_gpus: int | None = None
     log_tail: list[str] | None = None
+    pip_list: str | None = None
 
 
 class PresetCreateRequest(BaseModel):
@@ -1999,6 +2000,9 @@ async def complete_job_endpoint(job_id: str, req: JobCompleteRequest):
 
     if req.log_tail:
         history.update_job_log(job_id, req.log_tail)
+
+    if req.pip_list:
+        history.update_job_pip_list(job_id, req.pip_list)
 
     if was_cancelling and not req.success:
         history.complete_job(job_id, success=False, result=req.result, error=req.error or "Cancelled by user")

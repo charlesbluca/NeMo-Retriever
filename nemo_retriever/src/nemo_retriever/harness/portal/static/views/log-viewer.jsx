@@ -3,6 +3,7 @@ function LogViewerModal({ jobId, onClose }) {
   const [logData, setLogData] = useState({ log_tail: [], status: null });
   const [jobDetail, setJobDetail] = useState(null);
   const [autoScroll, setAutoScroll] = useState(true);
+  const [showPipList, setShowPipList] = useState(false);
   const logRef = useRef(null);
 
   const fetchLogs = useCallback(async () => {
@@ -131,6 +132,29 @@ function LogViewerModal({ jobId, onClose }) {
               lines.map((line, i) => <div key={i} className="log-line">{line}</div>)
             )}
           </div>
+
+          {jd.pip_list && (
+            <div style={{marginTop:'12px'}}>
+              <button className="btn btn-secondary" style={{fontSize:'11px',padding:'4px 10px',display:'flex',alignItems:'center',gap:'6px'}}
+                onClick={() => setShowPipList(v => !v)}>
+                <span style={{transform: showPipList ? 'rotate(90deg)' : 'rotate(0deg)', transition:'transform 0.15s', display:'inline-block'}}>&#9654;</span>
+                Installed Packages ({jd.pip_list.split('\n').length} lines)
+              </button>
+              {showPipList && (
+                <div style={{marginTop:'8px',position:'relative'}}>
+                  <button className="btn btn-secondary" style={{position:'absolute',top:'6px',right:'6px',fontSize:'10px',padding:'2px 6px',zIndex:1}}
+                    onClick={() => navigator.clipboard.writeText(jd.pip_list)}>Copy</button>
+                  <pre className="mono" style={{
+                    fontSize:'11px',color:'var(--nv-text-muted)',margin:0,
+                    whiteSpace:'pre',lineHeight:'1.4',
+                    maxHeight:'250px',overflow:'auto',
+                    background:'rgba(0,0,0,0.25)',padding:'10px',borderRadius:'6px',
+                    border:'1px solid rgba(255,255,255,0.06)',
+                  }}>{jd.pip_list}</pre>
+                </div>
+              )}
+            </div>
+          )}
         </div>
         <div className="modal-foot">
           {(logData.status === "running" || logData.status === "pending") && (

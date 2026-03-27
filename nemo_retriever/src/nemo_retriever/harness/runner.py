@@ -532,7 +532,7 @@ def _nsys_available() -> bool:
 
 def _nsys_prefix(output_path: str) -> list[str]:
     """Return the command prefix to wrap a subprocess with nsys profile."""
-    return ["nsys", "profile", "-o", output_path, "--force-overwrite=true", "-t", "cuda,nvtx,osrt"]
+    return ["nsys", "profile", "-o", output_path, "--force-overwrite=true", "-t", "cuda,nvtx"]
 
 
 def _copy_nsys_profiles(src_dir: Path, dest_dir: Path) -> None:

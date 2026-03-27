@@ -3235,6 +3235,16 @@ def _discover_operators() -> list[dict[str, Any]]:
                     p_info["type"] = str(param.annotation)
                 params.append(p_info)
 
+        concurrency_param: dict[str, Any] = {
+            "name": "concurrency",
+            "label": "Concurrency",
+            "description": "Number of parallel actor instances for this stage",
+            "type": "int",
+        }
+        if meta["compute"] == "gpu":
+            concurrency_param["default"] = 1
+        params.append(concurrency_param)
+
         entry: dict[str, Any] = {
             "class_name": class_name,
             "module": module_path,

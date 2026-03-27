@@ -82,7 +82,14 @@ def designer_component(
             "component_type": component_type,
         }
         _REGISTRY[key] = meta
-        cls_or_fn._designer_meta = meta
+        cls_or_fn._designer_meta = {
+            "name": name,
+            "category": category,
+            "compute": compute,
+            "description": description,
+            "category_color": category_color,
+            "component_type": component_type,
+        }
         return cls_or_fn
 
     return decorator

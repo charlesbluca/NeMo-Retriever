@@ -34,9 +34,12 @@ function _toPythonValue(val) {
   return JSON.stringify(String(val));
 }
 
+const _MAP_BATCHES_PARAMS = new Set(['concurrency']);
+
 function _buildKwargsEntries(opParams, nodeCfg) {
   const entries = [];
   opParams.forEach(p => {
+    if (_MAP_BATCHES_PARAMS.has(p.name)) return;
     if (p.pydantic && p.fields) {
       const subCfg = nodeCfg[p.name] || {};
       const subEntries = Object.entries(subCfg).filter(([, v]) => v !== '' && v !== undefined);
@@ -114,8 +117,6 @@ function _generateRayDataCode(nodes, edges) {
   const lines = [];
   lines.push(Array.from(imports).sort().join('\n'));
   lines.push('');
-  lines.push('ray.init(ignore_reinit_error=True)');
-  lines.push('');
 
   const src = chain[0];
   const srcOp = src.operator;
@@ -156,6 +157,8 @@ function _generateRayDataCode(nodes, edges) {
       kwargsStr = '{' + kwargsEntries.join(', ') + '}';
     }
 
+    const concurrencyVal = (n.config || {}).concurrency;
+
     lines.push(`# Stage: ${op.display_name || op.class_name}`);
     lines.push(`ds = ds.map_batches(`);
     lines.push(`    ${op.class_name},`);
@@ -165,6 +168,9 @@ function _generateRayDataCode(nodes, edges) {
     if (isGpu) {
       lines.push(`    num_cpus=0,`);
       lines.push(`    num_gpus=1,`);
+    }
+    if (concurrencyVal !== undefined && concurrencyVal !== '') {
+      lines.push(`    concurrency=${parseInt(concurrencyVal, 10) || 1},`);
     }
     lines.push(`)`);
     lines.push('');
@@ -181,12 +187,17 @@ function _generateRayDataCode(nodes, edges) {
       kwargsStr = '{' + kwargsEntries.join(', ') + '}';
     }
 
+    const sinkConcurrency = (sn.config || {}).concurrency;
+
     lines.push(`# Sink: ${op.display_name || op.class_name}`);
     lines.push(`ds = ds.map_batches(`);
     lines.push(`    ${op.class_name},`);
     lines.push(`    fn_constructor_kwargs=${kwargsStr},`);
     lines.push(`    batch_size=1,`);
     lines.push(`    batch_format="pandas",`);
+    if (sinkConcurrency !== undefined && sinkConcurrency !== '') {
+      lines.push(`    concurrency=${parseInt(sinkConcurrency, 10) || 1},`);
+    }
     lines.push(`)`);
     lines.push('');
   });

@@ -514,13 +514,20 @@ async def download_nsys_profile(run_id: int):
 
     dataset = row.get("dataset", "unknown")
 
+    # Check the raw_json for nsys_status diagnostics to give a helpful error
+    raw = row.get("raw_json") or {}
+    nsys_status = raw.get("nsys_status") or {}
+
     uploaded_zip = history.portal_artifacts_dir() / f"run_{run_id}.zip"
     if uploaded_zip.is_file():
         try:
             with zipfile.ZipFile(uploaded_zip, "r") as zf:
                 nsys_files = [n for n in zf.namelist() if n.endswith(".nsys-rep")]
                 if not nsys_files:
-                    raise HTTPException(status_code=404, detail="No nsys profile found in artifacts")
+                    detail = "No .nsys-rep file found in uploaded artifact zip."
+                    if nsys_status.get("error"):
+                        detail += f" Runner reported: {nsys_status['error']}"
+                    raise HTTPException(status_code=404, detail=detail)
                 nsys_name = nsys_files[0]
                 buf = io.BytesIO(zf.read(nsys_name))
                 download_name = f"run_{run_id}_{dataset}.nsys-rep"
@@ -542,7 +549,16 @@ async def download_nsys_profile(run_id: int):
                 filename=download_name,
             )
 
-    raise HTTPException(status_code=404, detail="No nsys profile found for this run")
+    detail = "No nsys profile found for this run."
+    if not nsys_status.get("requested"):
+        detail = "Nsys profiling was not requested for this run."
+    elif not nsys_status.get("enabled"):
+        detail += f" {nsys_status.get('error', 'nsys was not available on the runner.')}"
+    elif not nsys_status.get("found"):
+        detail += f" {nsys_status.get('error', 'nsys ran but produced no report file.')}"
+    else:
+        detail += " The report file was generated but could not be uploaded to the portal."
+    raise HTTPException(status_code=404, detail=detail)
 
 
 @app.post("/api/runs/{run_id}/upload-artifacts")

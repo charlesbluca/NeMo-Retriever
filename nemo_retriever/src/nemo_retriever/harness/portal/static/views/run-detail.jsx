@@ -592,6 +592,30 @@ function RunDetailModal({ run, onClose, onDelete, githubRepoUrl }) {
               </pre>
             )}
           </div>
+
+          {/* Nsys Profiling Status */}
+          {raw.nsys_status && raw.nsys_status.requested && (
+            <div style={{
+              marginTop:'20px',padding:'12px 16px',borderRadius:'8px',
+              background: raw.nsys_status.found ? 'rgba(118,185,0,0.08)' : raw.nsys_status.enabled ? 'rgba(255,165,0,0.08)' : 'rgba(255,60,60,0.08)',
+              border: `1px solid ${raw.nsys_status.found ? 'rgba(118,185,0,0.2)' : raw.nsys_status.enabled ? 'rgba(255,165,0,0.2)' : 'rgba(255,60,60,0.2)'}`,
+            }}>
+              <div style={{display:'flex',alignItems:'center',gap:'8px',flexWrap:'wrap'}}>
+                <span style={{fontSize:'14px'}}>{raw.nsys_status.found ? '\u2705' : raw.nsys_status.enabled ? '\u26A0\uFE0F' : '\u274C'}</span>
+                <span style={{fontSize:'13px',fontWeight:600,color: raw.nsys_status.found ? '#76b900' : raw.nsys_status.enabled ? '#ffa500' : '#ff5050'}}>
+                  Nsight Systems Profile: {raw.nsys_status.found ? 'Captured' : raw.nsys_status.enabled ? 'No Report Generated' : 'Not Available'}
+                </span>
+                {raw.nsys_status.files && raw.nsys_status.files.length > 0 && (
+                  <span style={{fontSize:'12px',color:'var(--nv-text-muted)'}}>
+                    ({raw.nsys_status.files.map(f => `${f.name}: ${f.size_mb} MB`).join(', ')})
+                  </span>
+                )}
+              </div>
+              {raw.nsys_status.error && (
+                <div style={{fontSize:'12px',color:'var(--nv-text-muted)',marginTop:'6px'}}>{raw.nsys_status.error}</div>
+              )}
+            </div>
+          )}
         </div>
 
         <div className="modal-foot">

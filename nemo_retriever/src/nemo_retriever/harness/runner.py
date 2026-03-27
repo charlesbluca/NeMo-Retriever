@@ -61,6 +61,9 @@ def _get_json(url: str, timeout: int = 10) -> Any:
 _ARTIFACT_UPLOAD_EXCLUDES = {"lancedb"}
 
 
+_ARTIFACT_MAX_UPLOAD_MB = 500
+
+
 def _upload_artifacts(base_url: str, run_id: int, artifact_dir: str, timeout: int = 120) -> None:
     """Zip the artifact directory (excluding large data like lancedb) and upload to the portal."""
     import io as _io
@@ -71,13 +74,26 @@ def _upload_artifacts(base_url: str, run_id: int, artifact_dir: str, timeout: in
         logger.warning("Artifact directory %s does not exist — skipping upload", artifact_dir)
         return
 
+    has_nsys = any(art_path.rglob("*.nsys-rep"))
+
     buf = _io.BytesIO()
     with _zipfile.ZipFile(buf, "w", _zipfile.ZIP_DEFLATED) as zf:
         for fp in sorted(art_path.rglob("*")):
             if fp.is_file() and not any(excl in fp.parts for excl in _ARTIFACT_UPLOAD_EXCLUDES):
-                zf.write(fp, fp.relative_to(art_path))
+                file_mb = fp.stat().st_size / (1024 * 1024)
+                if file_mb > _ARTIFACT_MAX_UPLOAD_MB:
+                    logger.warning(
+                        "Skipping large file %s (%.1f MB > %d MB limit)",
+                        fp.name, file_mb, _ARTIFACT_MAX_UPLOAD_MB,
+                    )
+                    continue
+                compress = _zipfile.ZIP_STORED if fp.suffix == ".nsys-rep" else _zipfile.ZIP_DEFLATED
+                zf.write(fp, fp.relative_to(art_path), compress_type=compress)
     raw = buf.getvalue()
-    logger.info("Uploading %d bytes of artifacts for run %d", len(raw), run_id)
+    zip_mb = len(raw) / (1024 * 1024)
+    logger.info("Uploading %.1f MB of artifacts for run %d", zip_mb, run_id)
+
+    effective_timeout = max(timeout, 300) if has_nsys else timeout
 
     boundary = f"----RunnerUpload{run_id}"
     body = (
@@ -93,9 +109,9 @@ def _upload_artifacts(base_url: str, run_id: int, artifact_dir: str, timeout: in
         headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        result = json_module.loads(resp.read().decode("utf-8"))
-    logger.info("Artifact upload complete for run %d: %s", run_id, result)
+    with urllib.request.urlopen(req, timeout=effective_timeout) as resp:
+        resp_data = json_module.loads(resp.read().decode("utf-8"))
+    logger.info("Artifact upload complete for run %d: %s", run_id, resp_data)
 
 
 # ---------------------------------------------------------------------------
@@ -435,6 +451,7 @@ try:
     runtime_env = {"env_vars": {"VIRTUAL_ENV": os.path.dirname(os.path.dirname(sys.executable))}}
 
     if is_local:
+        os.environ.pop("RAY_ADDRESS", None)
         detected_gpus = _detect_gpu_count()
         print(f"[diag] Starting fresh local Ray cluster (nvidia-smi detected {detected_gpus} GPU(s))")
         ray.init(
@@ -535,11 +552,14 @@ with open(result_file, "w") as f:
 
 
 def _nsys_available() -> bool:
-    """Return True if ``nsys`` is on PATH."""
+    """Return True if ``nsys`` is on PATH and report its version."""
     try:
-        subprocess.run(["nsys", "--version"], capture_output=True, timeout=5)
+        result = subprocess.run(["nsys", "--version"], capture_output=True, text=True, timeout=5)
+        version = (result.stdout or result.stderr or "").strip()
+        logger.info("nsys found: %s", version)
         return True
-    except (FileNotFoundError, subprocess.TimeoutExpired):
+    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+        logger.warning("nsys not available: %s", exc)
         return False
 
 
@@ -548,6 +568,8 @@ def _nsys_prefix(output_path: str) -> list[str]:
 
     Uses NVTX-triggered capture so only code inside ``gpu_inference_range``
     context managers is profiled, rather than the entire multi-hour process.
+    ``--trace-fork-before-exec=true`` ensures Ray worker child processes
+    are also instrumented so their NVTX ranges trigger capture.
     """
     return [
         "nsys", "profile",
@@ -557,19 +579,62 @@ def _nsys_prefix(output_path: str) -> list[str]:
         "--capture-range=nvtx",
         "--nvtx-capture=gpu_inference",
         "--capture-range-end=repeat",
+        "--trace-fork-before-exec=true",
     ]
 
 
-def _copy_nsys_profiles(src_dir: Path, dest_dir: Path) -> None:
-    """Copy any .nsys-rep files from *src_dir* into *dest_dir*."""
+def _collect_nsys_report_info(nsys_output_dir: Path | None) -> dict[str, Any]:
+    """Check for nsys report files and return diagnostic info.
+
+    Returns a dict with ``found`` (bool), ``files`` (list of dicts with
+    name/size_mb), and ``error`` (str or None) keys.
+    """
+    info: dict[str, Any] = {"found": False, "files": [], "error": None}
+    if nsys_output_dir is None or not nsys_output_dir.exists():
+        info["error"] = "nsys output directory does not exist"
+        return info
+
+    nsys_files = list(nsys_output_dir.glob("*.nsys-rep"))
+    if not nsys_files:
+        all_files = list(nsys_output_dir.iterdir())
+        if all_files:
+            info["error"] = (
+                f"No .nsys-rep files found in {nsys_output_dir}. "
+                f"Files present: {[f.name for f in all_files[:10]]}"
+            )
+        else:
+            info["error"] = (
+                "nsys produced no output files. This usually means no NVTX "
+                "'gpu_inference' ranges were hit during execution (e.g. model "
+                "inference ran in Ray worker processes that nsys could not follow)."
+            )
+        return info
+
+    info["found"] = True
+    for fp in nsys_files:
+        size_mb = round(fp.stat().st_size / (1024 * 1024), 2)
+        info["files"].append({"name": fp.name, "size_mb": size_mb})
+        logger.info("nsys report: %s (%.2f MB)", fp.name, size_mb)
+    return info
+
+
+def _copy_nsys_profiles(src_dir: Path, dest_dir: Path) -> list[str]:
+    """Copy any .nsys-rep files from *src_dir* into *dest_dir*.
+
+    Returns list of copied file names.
+    """
+    copied: list[str] = []
     if not dest_dir.is_dir():
-        return
+        logger.warning("nsys copy destination %s is not a directory", dest_dir)
+        return copied
     for fp in src_dir.glob("*.nsys-rep"):
         try:
             shutil.copy2(fp, dest_dir / fp.name)
             logger.info("Copied nsys profile %s -> %s", fp, dest_dir / fp.name)
+            copied.append(fp.name)
         except Exception as exc:
             logger.warning("Failed to copy nsys profile %s: %s", fp, exc)
+    return copied
 
 
 def _create_job_venv(job_id: str, repo_root: Path) -> Path | None:
@@ -1033,9 +1098,15 @@ def _execute_job_on_runner(base_url: str, job: dict[str, Any], runner_id: int = 
 
     nsys_profile = bool(job.get("nsys_profile"))
     use_nsys = nsys_profile and _nsys_available()
+    nsys_diag: dict[str, Any] = {"requested": nsys_profile, "enabled": use_nsys}
     if nsys_profile and not use_nsys:
+        nsys_diag["error"] = "nsys is not installed or not on PATH"
         logger.warning("Job %s requested nsys profiling but nsys is not on PATH — proceeding without", job_id)
     nsys_output_dir = Path(tempfile.mkdtemp(prefix=f"nsys_{job_id}_")) if use_nsys else None
+    if nsys_output_dir:
+        nsys_diag["output_dir"] = str(nsys_output_dir)
+
+    result: dict[str, Any] | None = None
 
     original_stdout = sys.stdout
     sys.stdout = _TeeWriter(original_stdout)
@@ -1205,6 +1276,19 @@ def _execute_job_on_runner(base_url: str, job: dict[str, Any], runner_id: int = 
                 skip_local_history=True,
             )
 
+        # --- Collect nsys profiling diagnostics ---
+        if use_nsys:
+            report_info = _collect_nsys_report_info(nsys_output_dir)
+            nsys_diag.update(report_info)
+            if report_info["found"]:
+                total_mb = sum(f["size_mb"] for f in report_info["files"])
+                print(f"[nsys] Profile captured: {len(report_info['files'])} file(s), {total_mb:.1f} MB total")
+            else:
+                print(f"[nsys] WARNING: No profile captured. {report_info.get('error', 'Unknown reason')}")
+
+        if isinstance(result, dict):
+            result["nsys_status"] = nsys_diag
+
         pip_list_output = _capture_pip_list(job_id)
 
         final_log_tail = _job_tracker.get_log_tail(_LOG_TAIL_MAX)
@@ -1247,10 +1331,15 @@ def _execute_job_on_runner(base_url: str, job: dict[str, Any], runner_id: int = 
                 cmd_file = artifacts.get("command_file", "")
                 art_dir = str(Path(cmd_file).parent) if cmd_file else None
 
-            if use_nsys and nsys_output_dir and art_dir and Path(art_dir).is_dir():
-                _copy_nsys_profiles(nsys_output_dir, Path(art_dir))
+            if use_nsys and nsys_output_dir:
+                if art_dir and Path(art_dir).is_dir():
+                    copied = _copy_nsys_profiles(nsys_output_dir, Path(art_dir))
+                    if copied:
+                        logger.info("Copied %d nsys file(s) to artifact dir", len(copied))
+                    else:
+                        logger.warning("No nsys profiles to copy to artifact dir")
 
-            if art_dir:
+            if art_dir and Path(art_dir).is_dir():
                 try:
                     _upload_artifacts(base_url, resp_run_id, art_dir)
                 except Exception as upload_exc:
@@ -1258,13 +1347,22 @@ def _execute_job_on_runner(base_url: str, job: dict[str, Any], runner_id: int = 
             elif use_nsys and nsys_output_dir:
                 nsys_files = list(nsys_output_dir.glob("*.nsys-rep"))
                 if nsys_files:
+                    logger.info(
+                        "No artifact dir — uploading nsys files directly (%d file(s), %.1f MB)",
+                        len(nsys_files),
+                        sum(f.stat().st_size for f in nsys_files) / (1024 * 1024),
+                    )
                     try:
                         _upload_artifacts(base_url, resp_run_id, str(nsys_output_dir))
                     except Exception as upload_exc:
                         logger.warning("Failed to upload nsys artifacts for run %d: %s", resp_run_id, upload_exc)
+                else:
+                    logger.warning("nsys profiling was enabled but no .nsys-rep files found to upload")
     except Exception as exc:
         tb = traceback.format_exc()
         logger.error("Job %s failed: %s\n%s", job_id, exc, tb)
+        if isinstance(result, dict):
+            result.setdefault("nsys_status", nsys_diag)
         try:
             error_msg = f"{exc}\n\n{tb}"
             if _job_tracker.is_cancel_requested():
@@ -1275,6 +1373,7 @@ def _execute_job_on_runner(base_url: str, job: dict[str, Any], runner_id: int = 
                 {
                     "success": False,
                     "error": error_msg,
+                    "result": result if isinstance(result, dict) else None,
                     "execution_commit": execution_commit,
                     "num_gpus": _runner_num_gpus,
                     "log_tail": _job_tracker.get_log_tail(_LOG_TAIL_MAX),

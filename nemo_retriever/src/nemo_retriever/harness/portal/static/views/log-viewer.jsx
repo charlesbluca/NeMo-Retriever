@@ -106,6 +106,29 @@ function LogViewerModal({ jobId, onClose }) {
             </div>
           )}
 
+          {resultData.nsys_status && resultData.nsys_status.requested && (
+            <div style={{
+              marginBottom:'12px',padding:'10px 14px',borderRadius:'8px',
+              background: resultData.nsys_status.found ? 'rgba(118,185,0,0.08)' : resultData.nsys_status.enabled ? 'rgba(255,165,0,0.08)' : 'rgba(255,60,60,0.08)',
+              border: `1px solid ${resultData.nsys_status.found ? 'rgba(118,185,0,0.2)' : resultData.nsys_status.enabled ? 'rgba(255,165,0,0.2)' : 'rgba(255,60,60,0.2)'}`,
+            }}>
+              <div style={{display:'flex',alignItems:'center',gap:'8px',flexWrap:'wrap'}}>
+                <span style={{fontSize:'13px'}}>{resultData.nsys_status.found ? '\u2705' : resultData.nsys_status.enabled ? '\u26A0\uFE0F' : '\u274C'}</span>
+                <span style={{fontSize:'12px',fontWeight:600,color: resultData.nsys_status.found ? '#76b900' : resultData.nsys_status.enabled ? '#ffa500' : '#ff5050'}}>
+                  Nsight Systems Profile: {resultData.nsys_status.found ? 'Captured' : resultData.nsys_status.enabled ? 'No Report Generated' : 'Not Available'}
+                </span>
+                {resultData.nsys_status.files && resultData.nsys_status.files.length > 0 && (
+                  <span style={{fontSize:'11px',color:'var(--nv-text-muted)'}}>
+                    ({resultData.nsys_status.files.map(f => `${f.name}: ${f.size_mb} MB`).join(', ')})
+                  </span>
+                )}
+              </div>
+              {resultData.nsys_status.error && (
+                <div style={{fontSize:'11px',color:'var(--nv-text-muted)',marginTop:'4px'}}>{resultData.nsys_status.error}</div>
+              )}
+            </div>
+          )}
+
           <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'10px'}}>
             <span style={{fontSize:'12px',color:'var(--nv-text-muted)'}}>{lines.length} line{lines.length!==1?'s':''}</span>
             <div style={{display:'flex',gap:'8px',alignItems:'center'}}>

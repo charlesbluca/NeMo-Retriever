@@ -771,6 +771,7 @@ try:
     runtime_env = {"env_vars": {"VIRTUAL_ENV": os.path.dirname(os.path.dirname(sys.executable))}}
 
     if is_local:
+        os.environ.pop("RAY_ADDRESS", None)
         detected_gpus = _detect_gpu_count()
         print(f"[ray] Starting fresh local cluster ({detected_gpus} GPU(s) detected)")
         ray.init(

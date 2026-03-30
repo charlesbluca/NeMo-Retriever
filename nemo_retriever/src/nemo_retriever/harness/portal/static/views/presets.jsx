@@ -32,6 +32,7 @@ function PresetsView({ managedPresets, yamlPresets, loading, onRefresh, presetMa
   const [showMatrixForm, setShowMatrixForm] = useState(false);
   const [editMatrix, setEditMatrix] = useState(null);
   const [expandedMatrixId, setExpandedMatrixId] = useState(null);
+  const [importing, setImporting] = useState(false);
   const allPresets = managedPresets;
   const pg = usePagination(allPresets, 25);
   const matrices = presetMatrices || [];
@@ -45,6 +46,39 @@ function PresetsView({ managedPresets, yamlPresets, loading, onRefresh, presetMa
       await fetch(`/api/managed-presets/${id}`, { method: "DELETE" });
       onRefresh();
     } catch {}
+  }
+
+  function handleExport() {
+    window.location.href = "/api/managed-presets/export.yaml";
+  }
+
+  function handleImport() {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = ".yaml,.yml";
+    input.onchange = async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      setImporting(true);
+      try {
+        const formData = new FormData();
+        formData.append("file", file);
+        const res = await fetch("/api/managed-presets/import", { method: "POST", body: formData });
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          alert("Import failed: " + (data.detail || `HTTP ${res.status}`));
+          return;
+        }
+        const data = await res.json();
+        alert(`Import complete: ${data.created} created, ${data.updated} updated`);
+        onRefresh();
+      } catch (err) {
+        alert("Import failed: " + err.message);
+      } finally {
+        setImporting(false);
+      }
+    };
+    input.click();
   }
 
   function handleCreateMatrix() { setEditMatrix(null); setShowMatrixForm(true); }
@@ -68,6 +102,10 @@ function PresetsView({ managedPresets, yamlPresets, loading, onRefresh, presetMa
         <div style={{display:'flex',gap:'8px'}}>
           <button className="btn btn-primary" onClick={handleCreate}><IconPlus /> Add Preset</button>
           <button className="btn btn-secondary" onClick={handleCreateMatrix}><IconPlus /> Add Matrix</button>
+          <button className="btn btn-secondary" onClick={handleExport} disabled={allPresets.length===0} title="Export all presets to YAML"><IconDownload /> Export YAML</button>
+          <button className="btn btn-secondary" onClick={handleImport} disabled={importing} title="Import presets from a YAML file">
+            {importing ? <><span className="spinner" style={{marginRight:'6px'}}></span>Importing…</> : <><IconUpload /> Import YAML</>}
+          </button>
         </div>
         <button className="btn btn-secondary btn-icon" onClick={onRefresh} title="Refresh"><IconRefresh /></button>
       </div>
@@ -117,16 +155,35 @@ function PresetsView({ managedPresets, yamlPresets, loading, onRefresh, presetMa
                         </div>
                       </td>
                     </tr>
-                    {isExpanded && (
+                    {isExpanded && (() => {
+                      const tuningKeys = new Set(TUNING_FIELDS.map(f=>f.key));
+                      const extraCfgEntries = Object.entries(cfg).filter(([k])=>!tuningKeys.has(k));
+                      const setTuningFields = TUNING_FIELDS.filter(f=>cfg[f.key]!=null);
+                      return (
                       <tr><td colSpan="5" style={{padding:'0 16px 16px',background:'rgba(255,255,255,0.01)'}}>
+                        {setTuningFields.length > 0 && (
                         <div style={{display:'grid',gridTemplateColumns:'repeat(4, 1fr)',gap:'8px 16px',fontSize:'12px',padding:'12px',borderRadius:'8px',background:'var(--nv-bg)',border:'1px solid var(--nv-border)'}}>
-                          {TUNING_FIELDS.map(f => (
+                          {setTuningFields.map(f => (
                             <div key={f.key} style={{display:'flex',justifyContent:'space-between',gap:'8px'}}>
                               <span style={{color:'var(--nv-text-dim)'}}>{f.label}</span>
-                              <span className="mono" style={{color:cfg[f.key]!=null?'var(--nv-green)':'var(--nv-text-dim)',fontWeight:cfg[f.key]!=null?600:400}}>{cfg[f.key] != null ? cfg[f.key] : "\u2014"}</span>
+                              <span className="mono" style={{color:'var(--nv-green)',fontWeight:600}}>{cfg[f.key]}</span>
                             </div>
                           ))}
                         </div>
+                        )}
+                        {extraCfgEntries.length > 0 && (
+                          <div style={{marginTop:setTuningFields.length>0?'10px':0,padding:'12px',borderRadius:'8px',background:'var(--nv-bg)',border:'1px solid var(--nv-border)'}}>
+                            <div style={{fontSize:'11px',fontWeight:600,color:'#64b4ff',textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:'8px'}}>Additional Config</div>
+                            <div style={{display:'grid',gridTemplateColumns:'repeat(3, 1fr)',gap:'6px 16px',fontSize:'12px'}}>
+                              {extraCfgEntries.map(([k, v]) => (
+                                <div key={k} style={{display:'flex',justifyContent:'space-between',gap:'8px'}}>
+                                  <span style={{color:'var(--nv-text-dim)'}}>{k}</span>
+                                  <span className="mono" style={{color:'#64b4ff',fontWeight:600}}>{String(v)}</span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
                         {overrideCount > 0 && (
                           <div style={{marginTop:'10px',padding:'12px',borderRadius:'8px',background:'var(--nv-bg)',border:'1px solid var(--nv-border)'}}>
                             <div style={{fontSize:'11px',fontWeight:600,color:'var(--nv-green)',textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:'8px'}}>Custom Overrides</div>
@@ -140,8 +197,12 @@ function PresetsView({ managedPresets, yamlPresets, loading, onRefresh, presetMa
                             </div>
                           </div>
                         )}
+                        {setTuningFields.length===0 && extraCfgEntries.length===0 && overrideCount===0 && (
+                          <div style={{padding:'12px',textAlign:'center',color:'var(--nv-text-dim)',fontSize:'12px'}}>No configuration set</div>
+                        )}
                       </td></tr>
-                    )}
+                      );
+                    })()}
                   </React.Fragment>
                 );
               })}
@@ -441,6 +502,7 @@ function PresetFormModal({ preset, onClose, onSaved }) {
   const isEdit = !!preset;
   const existingConfig = (isEdit && typeof preset.config === 'object') ? preset.config : {};
   const existingOverrides = (isEdit && typeof preset.overrides === 'object') ? preset.overrides : {};
+  const tuningKeySet = new Set(TUNING_FIELDS.map(f => f.key));
   const [name, setName] = useState(preset?.name || "");
   const [description, setDescription] = useState(preset?.description || "");
   const [tags, setTags] = useState((preset?.tags || []).join(", "));
@@ -448,6 +510,11 @@ function PresetFormModal({ preset, onClose, onSaved }) {
     const c = {};
     TUNING_FIELDS.forEach(f => { c[f.key] = existingConfig[f.key] != null ? String(existingConfig[f.key]) : ""; });
     return c;
+  });
+  const [extraConfig, setExtraConfig] = useState(() => {
+    return Object.entries(existingConfig)
+      .filter(([k]) => !tuningKeySet.has(k))
+      .map(([k, v]) => ({ key: k, value: String(v) }));
   });
   const [overrides, setOverrides] = useState(() => {
     return Object.entries(existingOverrides).map(([k, v]) => ({ key: k, value: String(v) }));
@@ -457,10 +524,24 @@ function PresetFormModal({ preset, onClose, onSaved }) {
 
   function setField(key, val) { setConfig(c=>({...c,[key]:val})); }
 
+  function addExtraConfig() { setExtraConfig(prev => [...prev, { key: "", value: "" }]); }
+  function removeExtraConfig(idx) { setExtraConfig(prev => prev.filter((_, i) => i !== idx)); }
+  function updateExtraConfig(idx, field, val) {
+    setExtraConfig(prev => prev.map((o, i) => i === idx ? { ...o, [field]: val } : o));
+  }
+
   function addOverride() { setOverrides(prev => [...prev, { key: "", value: "" }]); }
   function removeOverride(idx) { setOverrides(prev => prev.filter((_, i) => i !== idx)); }
   function updateOverride(idx, field, val) {
     setOverrides(prev => prev.map((o, i) => i === idx ? { ...o, [field]: val } : o));
+  }
+
+  function _parseValue(v) {
+    const s = v.trim();
+    if (s === "true") return true;
+    if (s === "false") return false;
+    if (s !== "" && !isNaN(Number(s))) return Number(s);
+    return s;
   }
 
   async function handleSubmit(e) {
@@ -475,15 +556,14 @@ function PresetFormModal({ preset, onClose, onSaved }) {
         parsedConfig[f.key] = f.type === "int" ? parseInt(raw, 10) : parseFloat(raw);
       }
     });
+    extraConfig.forEach(o => {
+      const k = o.key.trim();
+      if (k) parsedConfig[k] = _parseValue(o.value);
+    });
     const parsedOverrides = {};
     overrides.forEach(o => {
       const k = o.key.trim();
-      if (!k) return;
-      const v = o.value.trim();
-      if (v === "true") parsedOverrides[k] = true;
-      else if (v === "false") parsedOverrides[k] = false;
-      else if (v !== "" && !isNaN(Number(v))) parsedOverrides[k] = Number(v);
-      else parsedOverrides[k] = v;
+      if (k) parsedOverrides[k] = _parseValue(o.value);
     });
     const payload = {
       name: name.trim(),
@@ -549,6 +629,37 @@ function PresetFormModal({ preset, onClose, onSaved }) {
                 </div>
               </div>
             ))}
+
+            <div>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'8px'}}>
+                <div style={{fontSize:'12px',fontWeight:600,color:'#64b4ff',textTransform:'uppercase',letterSpacing:'0.05em'}}>Additional Config</div>
+                <button type="button" className="btn btn-ghost btn-sm" onClick={addExtraConfig} style={{fontSize:'11px'}}>
+                  <IconPlus /> Add Config Field
+                </button>
+              </div>
+              <div style={{fontSize:'11px',color:'var(--nv-text-dim)',marginBottom:'8px'}}>
+                Arbitrary key=value pairs stored in the preset config (e.g. ray_address, hybrid)
+              </div>
+              {extraConfig.length === 0 ? (
+                <div style={{padding:'12px',textAlign:'center',color:'var(--nv-text-dim)',fontSize:'12px',border:'1px dashed var(--nv-border)',borderRadius:'8px'}}>
+                  No additional config fields
+                </div>
+              ) : (
+                <div style={{display:'flex',flexDirection:'column',gap:'6px'}}>
+                  {extraConfig.map((o, idx) => (
+                    <div key={idx} style={{display:'flex',gap:'8px',alignItems:'center'}}>
+                      <input className="input" style={{flex:1,fontSize:'13px'}} value={o.key} onChange={e=>updateExtraConfig(idx,'key',e.target.value)} placeholder="key (e.g. ray_address)" />
+                      <span style={{color:'var(--nv-text-dim)',fontSize:'13px'}}>=</span>
+                      <input className="input" style={{flex:1,fontSize:'13px'}} value={o.value} onChange={e=>updateExtraConfig(idx,'value',e.target.value)} placeholder="value" />
+                      <button type="button" className="btn btn-ghost btn-sm btn-icon" onClick={()=>removeExtraConfig(idx)}
+                        style={{color:'#ff5050',flexShrink:0}} title="Remove">
+                        <IconTrash />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
 
             <div>
               <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'8px'}}>

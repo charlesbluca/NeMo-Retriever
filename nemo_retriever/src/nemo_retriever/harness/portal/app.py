@@ -1576,6 +1576,78 @@ async def delete_managed_preset(preset_id: int):
     return {"ok": True}
 
 
+@app.get("/api/managed-presets/export.yaml")
+async def export_presets_yaml():
+    """Export all managed presets as a downloadable YAML file."""
+    import yaml as _yaml
+
+    presets = history.get_all_presets()
+    export: dict[str, Any] = {}
+    for p in presets:
+        entry: dict[str, Any] = {}
+        if p.get("description"):
+            entry["description"] = p["description"]
+        cfg = p.get("config")
+        if isinstance(cfg, dict) and cfg:
+            entry["config"] = cfg
+        ovr = p.get("overrides")
+        if isinstance(ovr, dict) and ovr:
+            entry["overrides"] = ovr
+        tags = p.get("tags")
+        if isinstance(tags, list) and tags:
+            entry["tags"] = tags
+        export[p["name"]] = entry
+
+    content = _yaml.dump(export, default_flow_style=False, sort_keys=False, allow_unicode=True)
+    return Response(
+        content=content,
+        media_type="application/x-yaml",
+        headers={"Content-Disposition": "attachment; filename=presets.yaml"},
+    )
+
+
+@app.post("/api/managed-presets/import")
+async def import_presets_yaml(file: UploadFile = File(...)):
+    """Import presets from an uploaded YAML file.
+
+    Each top-level key is a preset name.  Existing presets with the same name
+    are updated; new names are inserted.
+    """
+    import yaml as _yaml
+
+    raw = await file.read()
+    try:
+        data = _yaml.safe_load(raw)
+    except _yaml.YAMLError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid YAML: {exc}")
+
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=400, detail="YAML root must be a mapping of preset names to their config")
+
+    created = 0
+    updated = 0
+    for name, body in data.items():
+        if not isinstance(name, str) or not name.strip():
+            continue
+        body = body if isinstance(body, dict) else {}
+        existing = history.get_preset_by_name(name.strip())
+        payload = {
+            "name": name.strip(),
+            "description": body.get("description"),
+            "config": body.get("config") or {},
+            "tags": body.get("tags") or [],
+            "overrides": body.get("overrides") or {},
+        }
+        if existing:
+            history.update_preset(existing["id"], payload)
+            updated += 1
+        else:
+            history.create_preset(payload)
+            created += 1
+
+    return {"ok": True, "created": created, "updated": updated}
+
+
 # ---------------------------------------------------------------------------
 # Preset Matrix CRUD
 # ---------------------------------------------------------------------------

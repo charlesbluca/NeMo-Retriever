@@ -610,16 +610,46 @@ def _run_single(
     if not cfg.write_detection_file and detection_summary_file.exists():
         detection_summary_file.unlink()
 
-    # ----- Metrics: prefer the structured JSON written by batch_pipeline -----
+    # ----- Metrics: structured JSON written by batch_pipeline is authoritative.
+    # The stream parser (StreamMetrics) is only a fallback for legacy pipelines
+    # that don't write the JSON file.  This avoids coupling to stdout formatting.
     pipeline_metrics = _read_json_if_exists(metrics_output_file)
 
-    if isinstance(pipeline_metrics, dict) and (
-        pipeline_metrics.get("recall_metrics") or pipeline_metrics.get("evaluation_metrics")
-    ):
+    if isinstance(pipeline_metrics, dict):
         recall_raw: dict[str, float] = pipeline_metrics.get("recall_metrics") or {}
         eval_raw: dict[str, float] = pipeline_metrics.get("evaluation_metrics") or {}
+        pm_files = pipeline_metrics.get("files")
+        pm_pages = pipeline_metrics.get("pages")
+        pm_ingest_secs = pipeline_metrics.get("ingest_secs")
+        pm_pps = pipeline_metrics.get("pages_per_sec_ingest")
+        if pm_files is not None:
+            pm_files = int(pm_files)
+        if pm_pages is not None:
+            pm_pages = int(pm_pages)
+        if pm_ingest_secs is not None:
+            pm_ingest_secs = float(pm_ingest_secs)
+        if pm_pps is not None:
+            pm_pps = float(pm_pps)
     else:
+        recall_raw = {}
+        eval_raw = {}
+        pm_files = None
+        pm_pages = None
+        pm_ingest_secs = None
+        pm_pps = None
+
+    # Stream-parsed values serve as fallback when the JSON is unavailable or incomplete
+    if pm_files is None:
+        pm_files = metrics.files
+    if pm_pages is None:
+        pm_pages = metrics.pages
+    if pm_ingest_secs is None:
+        pm_ingest_secs = metrics.ingest_secs
+    if pm_pps is None:
+        pm_pps = metrics.pages_per_sec_ingest
+    if not recall_raw:
         recall_raw = dict(metrics.recall_metrics)
+    if not eval_raw:
         eval_raw = dict(metrics.evaluation_metrics)
 
     recall_metrics_normalized: dict[str, float] = {}
@@ -636,20 +666,6 @@ def _run_single(
         recall_metrics=recall_raw,
         evaluation_metrics=eval_raw,
     )
-
-    pm_files = metrics.files
-    pm_pages = metrics.pages
-    pm_ingest_secs = metrics.ingest_secs
-    pm_pps = metrics.pages_per_sec_ingest
-    if isinstance(pipeline_metrics, dict):
-        if pm_files is None and pipeline_metrics.get("files") is not None:
-            pm_files = int(pipeline_metrics["files"])
-        if pm_pages is None and pipeline_metrics.get("pages") is not None:
-            pm_pages = int(pipeline_metrics["pages"])
-        if pm_ingest_secs is None and pipeline_metrics.get("ingest_secs") is not None:
-            pm_ingest_secs = float(pipeline_metrics["ingest_secs"])
-        if pm_pps is None and pipeline_metrics.get("pages_per_sec_ingest") is not None:
-            pm_pps = float(pipeline_metrics["pages_per_sec_ingest"])
 
     metrics_payload = {
         "files": pm_files,

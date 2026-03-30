@@ -2059,6 +2059,11 @@ def _record_run_from_job(
     if result and isinstance(result, dict) and result.get("timestamp"):
         run_result = result
     else:
+        logger.warning(
+            "Job %s completed without a full result (result=%s) — metrics will be empty in the Runs view",
+            job.get("id"),
+            "None" if result is None else f"dict(keys={list(result.keys()) if isinstance(result, dict) else type(result).__name__})",
+        )
         now_ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_UTC")
         run_result = {
             "timestamp": now_ts,

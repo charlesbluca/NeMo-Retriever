@@ -526,10 +526,22 @@ function PresetFormModal({ preset, onClose, onSaved }) {
   const [overrides, setOverrides] = useState(() => {
     return Object.entries(existingOverrides).map(([k, v]) => ({ key: k, value: String(v) }));
   });
+  const [useDefaults, setUseDefaults] = useState(() => {
+    return isEdit && TUNING_FIELDS.every(f => existingConfig[f.key] == null);
+  });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
   function setField(key, val) { setConfig(c=>({...c,[key]:val})); }
+
+  function handleToggleDefaults(checked) {
+    setUseDefaults(checked);
+    if (checked) {
+      const cleared = {};
+      TUNING_FIELDS.forEach(f => { cleared[f.key] = ""; });
+      setConfig(cleared);
+    }
+  }
 
   function addExtraConfig() { setExtraConfig(prev => [...prev, { key: "", value: "" }]); }
   function removeExtraConfig(idx) { setExtraConfig(prev => prev.filter((_, i) => i !== idx)); }
@@ -623,7 +635,18 @@ function PresetFormModal({ preset, onClose, onSaved }) {
               </div>
             </div>
 
-            {TUNING_GROUPS.map(g => (
+            <div style={{padding:'12px 16px',borderRadius:'8px',background:useDefaults?'rgba(118,185,0,0.06)':'rgba(255,255,255,0.02)',border:'1px solid '+(useDefaults?'rgba(118,185,0,0.2)':'var(--nv-border)'),transition:'all 0.15s'}}>
+              <label style={{display:'flex',alignItems:'center',gap:'8px',cursor:'pointer',fontSize:'13px',color:useDefaults?'var(--nv-green)':'var(--nv-text-muted)'}}>
+                <input type="checkbox" checked={useDefaults} onChange={e=>handleToggleDefaults(e.target.checked)}
+                  style={{width:'16px',height:'16px',accentColor:'var(--nv-green)'}} />
+                Use Default Heuristics
+              </label>
+              <div style={{fontSize:'11px',color:'var(--nv-text-dim)',marginTop:'4px',lineHeight:'1.5'}}>
+                When enabled, no tuning parameters are stored — the system will compute optimal worker counts, batch sizes, and GPU allocations automatically at runtime.
+              </div>
+            </div>
+
+            {!useDefaults && TUNING_GROUPS.map(g => (
               <div key={g.label}>
                 <div style={{fontSize:'12px',fontWeight:600,color:'var(--nv-green)',marginBottom:'8px',textTransform:'uppercase',letterSpacing:'0.05em'}}>{g.label}</div>
                 <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill, minmax(140px, 1fr))',gap:'8px'}}>

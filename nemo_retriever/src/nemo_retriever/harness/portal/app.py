@@ -1552,30 +1552,6 @@ async def create_managed_preset(req: PresetCreateRequest):
         raise HTTPException(status_code=400, detail=str(exc))
 
 
-@app.get("/api/managed-presets/{preset_id}")
-async def get_managed_preset(preset_id: int):
-    row = history.get_preset_by_id(preset_id)
-    if row is None:
-        raise HTTPException(status_code=404, detail="Preset not found")
-    return row
-
-
-@app.put("/api/managed-presets/{preset_id}")
-async def update_managed_preset(preset_id: int, req: PresetUpdateRequest):
-    data = {k: v for k, v in req.model_dump().items() if v is not None}
-    row = history.update_preset(preset_id, data)
-    if row is None:
-        raise HTTPException(status_code=404, detail="Preset not found")
-    return row
-
-
-@app.delete("/api/managed-presets/{preset_id}")
-async def delete_managed_preset(preset_id: int):
-    if not history.delete_preset(preset_id):
-        raise HTTPException(status_code=404, detail="Preset not found")
-    return {"ok": True}
-
-
 @app.get("/api/managed-presets/export.yaml")
 async def export_presets_yaml():
     """Export all managed presets as a downloadable YAML file."""
@@ -1646,6 +1622,30 @@ async def import_presets_yaml(file: UploadFile = File(...)):
             created += 1
 
     return {"ok": True, "created": created, "updated": updated}
+
+
+@app.get("/api/managed-presets/{preset_id}")
+async def get_managed_preset(preset_id: int):
+    row = history.get_preset_by_id(preset_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Preset not found")
+    return row
+
+
+@app.put("/api/managed-presets/{preset_id}")
+async def update_managed_preset(preset_id: int, req: PresetUpdateRequest):
+    data = {k: v for k, v in req.model_dump().items() if v is not None}
+    row = history.update_preset(preset_id, data)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Preset not found")
+    return row
+
+
+@app.delete("/api/managed-presets/{preset_id}")
+async def delete_managed_preset(preset_id: int):
+    if not history.delete_preset(preset_id):
+        raise HTTPException(status_code=404, detail="Preset not found")
+    return {"ok": True}
 
 
 # ---------------------------------------------------------------------------

@@ -414,7 +414,7 @@ function RunsView({ runs, datasets, loading, filterDataset, setFilterDataset, fi
           <table className="runs-table">
             <thead>
               <tr>
-                <th>Status</th><th>Source</th><th>Timestamp</th><th>Host</th><th style={{textAlign:'right'}}>GPUs</th><th>Commit</th><th>Exec Commit</th><th>Dataset</th>
+                <th>Status</th><th>Source</th><th>Timestamp</th><th>Host</th><th style={{textAlign:'right'}}>GPUs</th><th>Commit</th><th>Dataset</th>
                 <th>Preset</th><th style={{textAlign:'right'}}>Pages</th>
                 <th style={{textAlign:'right'}}>PPS</th><th style={{textAlign:'right'}}>Recall@5</th>
                 <th style={{textAlign:'right'}}>Ingest (s)</th>
@@ -423,11 +423,11 @@ function RunsView({ runs, datasets, loading, filterDataset, setFilterDataset, fi
             </thead>
             <tbody>
               {loading ? (
-                <tr><td colSpan="14" style={{textAlign:'center',padding:'60px',color:'var(--nv-text-muted)'}}>
+                <tr><td colSpan="13" style={{textAlign:'center',padding:'60px',color:'var(--nv-text-muted)'}}>
                   <div className="spinner spinner-lg" style={{margin:'0 auto 12px'}}></div><div>Loading runs…</div>
                 </td></tr>
               ) : runs.length === 0 ? (
-                <tr><td colSpan="14" style={{textAlign:'center',padding:'60px',color:'var(--nv-text-muted)'}}>
+                <tr><td colSpan="13" style={{textAlign:'center',padding:'60px',color:'var(--nv-text-muted)'}}>
                   <div style={{marginBottom:'8px',fontSize:'15px'}}>No runs found</div>
                   <div style={{fontSize:'12px',color:'var(--nv-text-dim)'}}>
                     Trigger a run or use <code className="mono" style={{background:'rgba(255,255,255,0.06)',padding:'2px 6px',borderRadius:'4px'}}>retriever harness backfill</code> to import existing results.
@@ -449,7 +449,6 @@ function RunsView({ runs, datasets, loading, filterDataset, setFilterDataset, fi
                   </td>
                   <td style={{textAlign:'right',color:'var(--nv-text-muted)',fontSize:'12px'}}>{run.num_gpus != null ? run.num_gpus : "\u2014"}</td>
                   <td><CommitLink sha={run.git_commit} repoUrl={githubRepoUrl} /></td>
-                  <td><CommitLink sha={run.execution_commit} repoUrl={githubRepoUrl} /></td>
                   <td style={{color:'#fff',fontWeight:500}}>{run.dataset}</td>
                   <td style={{color:'var(--nv-text-muted)'}}>{run.preset || "\u2014"}</td>
                   <td style={{textAlign:'right'}}>{fmt(run.pages,0)}</td>

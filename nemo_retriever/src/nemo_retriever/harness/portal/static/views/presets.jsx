@@ -527,7 +527,7 @@ function PresetFormModal({ preset, onClose, onSaved }) {
     return Object.entries(existingOverrides).map(([k, v]) => ({ key: k, value: String(v) }));
   });
   const [useDefaults, setUseDefaults] = useState(() => {
-    return isEdit && TUNING_FIELDS.every(f => existingConfig[f.key] == null);
+    return isEdit && TUNING_FIELDS.every(f => existingConfig[f.key] == null || existingConfig[f.key] === 0);
   });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -537,9 +537,9 @@ function PresetFormModal({ preset, onClose, onSaved }) {
   function handleToggleDefaults(checked) {
     setUseDefaults(checked);
     if (checked) {
-      const cleared = {};
-      TUNING_FIELDS.forEach(f => { cleared[f.key] = ""; });
-      setConfig(cleared);
+      const zeroed = {};
+      TUNING_FIELDS.forEach(f => { zeroed[f.key] = "0"; });
+      setConfig(zeroed);
     }
   }
 

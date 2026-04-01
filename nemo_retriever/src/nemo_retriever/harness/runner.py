@@ -383,7 +383,7 @@ def _git_restore(prev_ref: str | None) -> None:
 # Per-job virtual environment
 # ---------------------------------------------------------------------------
 
-_VENV_BASE_DIR = Path("/tmp/.nemo_runner_venvs")
+_VENV_BASE_DIR = Path(f"/tmp/.nemo_runner_venvs_{os.getenv('USER', os.getenv('LOGNAME', str(os.getuid())))}")
 
 _JOB_WRAPPER_SCRIPT = """\
 import json, sys, traceback, inspect

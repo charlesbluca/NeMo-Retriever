@@ -11,6 +11,7 @@ import hmac
 import io
 import json as json_module
 import logging
+import mimetypes
 import os
 import re
 import shutil
@@ -35,6 +36,8 @@ from apscheduler.triggers.cron import CronTrigger
 
 from nemo_retriever.harness import history
 from nemo_retriever.harness import scheduler as sched_module
+
+mimetypes.add_type("text/javascript", ".jsx")
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 if not STATIC_DIR.is_dir():
@@ -179,6 +182,9 @@ class TriggerRequest(BaseModel):
     tags: list[str] | None = None
     runner_id: int | None = None
     git_ref: str | None = None
+    git_commit: str | None = None
+    nsys_profile: bool = False
+    graph_id: int | None = None
     extra_packages: list[str] | None = None
 
 
@@ -269,6 +275,8 @@ class JobCompleteRequest(BaseModel):
     error: str | None = None
     execution_commit: str | None = None
     num_gpus: int | None = None
+    log_tail: list[str] | None = None
+    pip_list: str | None = None
 
 
 class PresetCreateRequest(BaseModel):
@@ -295,6 +303,9 @@ class PresetMatrixCreateRequest(BaseModel):
     tags: list[str] | None = None
     preferred_runner_id: int | None = None
     gpu_type_filter: str | None = None
+    git_ref: str | None = None
+    git_commit: str | None = None
+    nsys_profile: bool = False
 
 
 class PresetMatrixUpdateRequest(BaseModel):
@@ -305,11 +316,21 @@ class PresetMatrixUpdateRequest(BaseModel):
     tags: list[str] | None = None
     preferred_runner_id: int | None = None
     gpu_type_filter: str | None = None
+    git_ref: str | None = None
+    git_commit: str | None = None
+    nsys_profile: bool | None = None
+
+
+class MatrixTriggerRequest(BaseModel):
+    git_ref: str | None = None
+    git_commit: str | None = None
+    nsys_profile: bool | None = None
 
 
 class MatrixTriggerResponse(BaseModel):
     matrix_id: int
     matrix_name: str
+    matrix_run_id: str
     job_ids: list[str]
     job_count: int
 
@@ -322,6 +343,18 @@ class DatasetCreateRequest(BaseModel):
     recall_required: bool = False
     recall_match_mode: str = "pdf_page"
     recall_adapter: str = "none"
+    evaluation_mode: str = "recall"
+    beir_loader: str | None = None
+    beir_dataset_name: str | None = None
+    beir_split: str = "test"
+    beir_query_language: str | None = None
+    beir_doc_id_field: str = "pdf_basename"
+    beir_ks: list[int] | None = None
+    embed_model_name: str | None = None
+    embed_modality: str = "text"
+    embed_granularity: str = "element"
+    extract_page_as_image: bool = False
+    extract_infographics: bool = False
     description: str | None = None
     tags: list[str] | None = None
     runner_ids: list[int] | None = None
@@ -335,6 +368,18 @@ class DatasetUpdateRequest(BaseModel):
     recall_required: bool | None = None
     recall_match_mode: str | None = None
     recall_adapter: str | None = None
+    evaluation_mode: str | None = None
+    beir_loader: str | None = None
+    beir_dataset_name: str | None = None
+    beir_split: str | None = None
+    beir_query_language: str | None = None
+    beir_doc_id_field: str | None = None
+    beir_ks: list[int] | None = None
+    embed_model_name: str | None = None
+    embed_modality: str | None = None
+    embed_granularity: str | None = None
+    extract_page_as_image: bool | None = None
+    extract_infographics: bool | None = None
     description: str | None = None
     tags: list[str] | None = None
     runner_ids: list[int] | None = None
@@ -462,6 +507,61 @@ async def download_run_zip(run_id: int):
     )
 
 
+@app.get("/api/runs/{run_id}/download/nsys-profile")
+async def download_nsys_profile(run_id: int):
+    row = history.get_run_by_id(run_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    dataset = row.get("dataset", "unknown")
+
+    # Check the raw_json for nsys_status diagnostics to give a helpful error
+    raw = row.get("raw_json") or {}
+    nsys_status = raw.get("nsys_status") or {}
+
+    uploaded_zip = history.portal_artifacts_dir() / f"run_{run_id}.zip"
+    if uploaded_zip.is_file():
+        try:
+            with zipfile.ZipFile(uploaded_zip, "r") as zf:
+                nsys_files = [n for n in zf.namelist() if n.endswith(".nsys-rep")]
+                if not nsys_files:
+                    detail = "No .nsys-rep file found in uploaded artifact zip."
+                    if nsys_status.get("error"):
+                        detail += f" Runner reported: {nsys_status['error']}"
+                    raise HTTPException(status_code=404, detail=detail)
+                nsys_name = nsys_files[0]
+                buf = io.BytesIO(zf.read(nsys_name))
+                download_name = f"run_{run_id}_{dataset}.nsys-rep"
+                return StreamingResponse(
+                    buf,
+                    media_type="application/octet-stream",
+                    headers={"Content-Disposition": f'attachment; filename="{download_name}"'},
+                )
+        except zipfile.BadZipFile:
+            raise HTTPException(status_code=500, detail="Corrupt artifact zip")
+
+    artifact_dir = row.get("artifact_dir")
+    if artifact_dir and Path(artifact_dir).is_dir():
+        for fp in Path(artifact_dir).rglob("*.nsys-rep"):
+            download_name = f"run_{run_id}_{dataset}.nsys-rep"
+            return FileResponse(
+                path=str(fp),
+                media_type="application/octet-stream",
+                filename=download_name,
+            )
+
+    detail = "No nsys profile found for this run."
+    if not nsys_status.get("requested"):
+        detail = "Nsys profiling was not requested for this run."
+    elif not nsys_status.get("enabled"):
+        detail += f" {nsys_status.get('error', 'nsys was not available on the runner.')}"
+    elif not nsys_status.get("found"):
+        detail += f" {nsys_status.get('error', 'nsys ran but produced no report file.')}"
+    else:
+        detail += " The report file was generated but could not be uploaded to the portal."
+    raise HTTPException(status_code=404, detail=detail)
+
+
 @app.post("/api/runs/{run_id}/upload-artifacts")
 async def upload_run_artifacts(run_id: int, file: UploadFile = File(...)):
     row = history.get_run_by_id(run_id)
@@ -581,8 +681,30 @@ async def rerun_run(run_id: int, req: RerunRequest | None = None):
         overrides["ray_address"] = test_config["ray_address"]
     if test_config.get("hybrid") is not None:
         overrides["hybrid"] = test_config["hybrid"]
+    if test_config.get("evaluation_mode"):
+        overrides["evaluation_mode"] = test_config["evaluation_mode"]
+    if test_config.get("beir_loader"):
+        overrides["beir_loader"] = test_config["beir_loader"]
+    if test_config.get("beir_dataset_name"):
+        overrides["beir_dataset_name"] = test_config["beir_dataset_name"]
+    if test_config.get("beir_split"):
+        overrides["beir_split"] = test_config["beir_split"]
+    if test_config.get("beir_query_language"):
+        overrides["beir_query_language"] = test_config["beir_query_language"]
+    if test_config.get("beir_doc_id_field"):
+        overrides["beir_doc_id_field"] = test_config["beir_doc_id_field"]
+    if test_config.get("beir_ks"):
+        overrides["beir_ks"] = test_config["beir_ks"]
     if test_config.get("embed_model_name"):
         overrides["embed_model_name"] = test_config["embed_model_name"]
+    if test_config.get("embed_modality"):
+        overrides["embed_modality"] = test_config["embed_modality"]
+    if test_config.get("embed_granularity"):
+        overrides["embed_granularity"] = test_config["embed_granularity"]
+    if test_config.get("extract_page_as_image") is not None:
+        overrides["extract_page_as_image"] = test_config["extract_page_as_image"]
+    if test_config.get("extract_infographics") is not None:
+        overrides["extract_infographics"] = test_config["extract_infographics"]
     if test_config.get("write_detection_file") is not None:
         overrides["write_detection_file"] = test_config["write_detection_file"]
     tuning = test_config.get("tuning") or {}
@@ -1355,7 +1477,7 @@ async def get_config():
 
 @app.get("/api/yaml-config")
 async def get_yaml_config():
-    """Legacy endpoint — returns empty config since YAML seeding is disabled."""
+    """Return empty config — all datasets and presets are managed via the Portal UI."""
     return {"datasets": {}, "presets": {}, "active": {}}
 
 
@@ -1436,6 +1558,78 @@ async def create_managed_preset(req: PresetCreateRequest):
         raise HTTPException(status_code=400, detail=str(exc))
 
 
+@app.get("/api/managed-presets/export.yaml")
+async def export_presets_yaml():
+    """Export all managed presets as a downloadable YAML file."""
+    import yaml as _yaml
+
+    presets = history.get_all_presets()
+    export: dict[str, Any] = {}
+    for p in presets:
+        entry: dict[str, Any] = {}
+        if p.get("description"):
+            entry["description"] = p["description"]
+        cfg = p.get("config")
+        if isinstance(cfg, dict) and cfg:
+            entry["config"] = cfg
+        ovr = p.get("overrides")
+        if isinstance(ovr, dict) and ovr:
+            entry["overrides"] = ovr
+        tags = p.get("tags")
+        if isinstance(tags, list) and tags:
+            entry["tags"] = tags
+        export[p["name"]] = entry
+
+    content = _yaml.dump(export, default_flow_style=False, sort_keys=False, allow_unicode=True)
+    return Response(
+        content=content,
+        media_type="application/x-yaml",
+        headers={"Content-Disposition": "attachment; filename=presets.yaml"},
+    )
+
+
+@app.post("/api/managed-presets/import")
+async def import_presets_yaml(file: UploadFile = File(...)):
+    """Import presets from an uploaded YAML file.
+
+    Each top-level key is a preset name.  Existing presets with the same name
+    are updated; new names are inserted.
+    """
+    import yaml as _yaml
+
+    raw = await file.read()
+    try:
+        data = _yaml.safe_load(raw)
+    except _yaml.YAMLError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid YAML: {exc}")
+
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=400, detail="YAML root must be a mapping of preset names to their config")
+
+    created = 0
+    updated = 0
+    for name, body in data.items():
+        if not isinstance(name, str) or not name.strip():
+            continue
+        body = body if isinstance(body, dict) else {}
+        existing = history.get_preset_by_name(name.strip())
+        payload = {
+            "name": name.strip(),
+            "description": body.get("description"),
+            "config": body.get("config") or {},
+            "tags": body.get("tags") or [],
+            "overrides": body.get("overrides") or {},
+        }
+        if existing:
+            history.update_preset(existing["id"], payload)
+            updated += 1
+        else:
+            history.create_preset(payload)
+            created += 1
+
+    return {"ok": True, "created": created, "updated": updated}
+
+
 @app.get("/api/managed-presets/{preset_id}")
 async def get_managed_preset(preset_id: int):
     row = history.get_preset_by_id(preset_id)
@@ -1506,7 +1700,7 @@ async def delete_preset_matrix(matrix_id: int):
 
 
 @app.post("/api/preset-matrices/{matrix_id}/trigger", response_model=MatrixTriggerResponse)
-async def trigger_preset_matrix(matrix_id: int):
+async def trigger_preset_matrix(matrix_id: int, req: MatrixTriggerRequest | None = None):
     from nemo_retriever.harness.scheduler import match_runner
 
     matrix = history.get_preset_matrix_by_id(matrix_id)
@@ -1518,9 +1712,21 @@ async def trigger_preset_matrix(matrix_id: int):
     if not dataset_names or not preset_names:
         raise HTTPException(status_code=400, detail="Matrix must have at least one dataset and one preset")
 
+    req_ref = req.git_ref if req else None
+    req_commit = req.git_commit if req else None
+    if not req_ref and not req_commit:
+        req_ref = matrix.get("git_ref")
+        req_commit = matrix.get("git_commit")
+    pinned_sha, pinned_ref = _resolve_git_override(req_ref, req_commit)
+
+    matrix_run_id = str(uuid.uuid4())
     preferred_runner_id = matrix.get("preferred_runner_id")
     gpu_type_filter = matrix.get("gpu_type_filter")
     matrix_tags = matrix.get("tags") or []
+
+    nsys_flag = req.nsys_profile if (req and req.nsys_profile is not None) else bool(matrix.get("nsys_profile"))
+    nsys_val = int(bool(nsys_flag))
+
     job_ids: list[str] = []
     for ds_name in dataset_names:
         dataset_path, dataset_overrides = _resolve_dataset_config(ds_name)
@@ -1540,7 +1746,12 @@ async def trigger_preset_matrix(matrix_id: int):
                     "dataset_overrides": merged_overrides if merged_overrides else None,
                     "preset": pr_name,
                     "assigned_runner_id": runner["id"] if runner else None,
+                    "git_commit": pinned_sha,
+                    "git_ref": pinned_ref,
                     "tags": matrix_tags,
+                    "matrix_run_id": matrix_run_id,
+                    "matrix_name": matrix["name"],
+                    "nsys_profile": nsys_val,
                 }
             )
             job_ids.append(job["id"])
@@ -1548,6 +1759,7 @@ async def trigger_preset_matrix(matrix_id: int):
     return MatrixTriggerResponse(
         matrix_id=matrix["id"],
         matrix_name=matrix["name"],
+        matrix_run_id=matrix_run_id,
         job_ids=job_ids,
         job_count=len(job_ids),
     )
@@ -1578,6 +1790,34 @@ def _resolve_dataset_config(dataset_name: str) -> tuple[str | None, dict[str, An
             overrides["recall_match_mode"] = managed["recall_match_mode"]
         if managed.get("recall_adapter"):
             overrides["recall_adapter"] = managed["recall_adapter"]
+
+        eval_mode = managed.get("evaluation_mode")
+        if eval_mode:
+            overrides["evaluation_mode"] = eval_mode
+        if managed.get("beir_loader"):
+            overrides["beir_loader"] = managed["beir_loader"]
+        if managed.get("beir_dataset_name"):
+            overrides["beir_dataset_name"] = managed["beir_dataset_name"]
+        if managed.get("beir_split"):
+            overrides["beir_split"] = managed["beir_split"]
+        if managed.get("beir_query_language"):
+            overrides["beir_query_language"] = managed["beir_query_language"]
+        if managed.get("beir_doc_id_field"):
+            overrides["beir_doc_id_field"] = managed["beir_doc_id_field"]
+        beir_ks = managed.get("beir_ks")
+        if beir_ks and isinstance(beir_ks, list):
+            overrides["beir_ks"] = beir_ks
+        if managed.get("embed_model_name"):
+            overrides["embed_model_name"] = managed["embed_model_name"]
+        if managed.get("embed_modality"):
+            overrides["embed_modality"] = managed["embed_modality"]
+        if managed.get("embed_granularity"):
+            overrides["embed_granularity"] = managed["embed_granularity"]
+        if managed.get("extract_page_as_image") is not None:
+            overrides["extract_page_as_image"] = managed["extract_page_as_image"]
+        if managed.get("extract_infographics") is not None:
+            overrides["extract_infographics"] = managed["extract_infographics"]
+
         return managed["path"], overrides
 
     return None, None
@@ -1609,25 +1849,52 @@ async def trigger_run(req: TriggerRequest):
     dataset_path, dataset_overrides = _resolve_dataset_config(req.dataset)
     preset_overrides = _resolve_preset_overrides(req.preset)
     merged_overrides = {**(dataset_overrides or {}), **preset_overrides}
+    pinned_sha, pinned_ref = _resolve_git_override(req.git_ref, req.git_commit)
 
-    git_commit: str | None = req.git_ref or None
-    git_ref: str | None = req.git_ref.split("/")[-1] if req.git_ref and "/" in req.git_ref else req.git_ref
+    if req.graph_id is not None:
+        graph = history.get_graph(req.graph_id)
+        if not graph:
+            raise HTTPException(404, "Graph not found")
+        code = (graph.get("generated_code") or "").strip()
+        if not code:
+            raise HTTPException(400, "Graph has no generated code. Save the graph first.")
 
-    job = history.create_job(
-        {
-            "trigger_source": "manual",
-            "dataset": req.dataset,
-            "dataset_path": dataset_path,
-            "dataset_overrides": merged_overrides if merged_overrides else None,
-            "preset": req.preset,
-            "config": req.config,
-            "assigned_runner_id": req.runner_id,
-            "tags": req.tags or [],
-            "git_commit": git_commit,
-            "git_ref": git_ref,
-            "extra_packages": req.extra_packages or [],
-        }
-    )
+        graph_name = graph.get("name") or f"graph-{req.graph_id}"
+        job = history.create_job(
+            {
+                "trigger_source": "graph",
+                "dataset": req.dataset,
+                "dataset_path": dataset_path,
+                "dataset_overrides": merged_overrides if merged_overrides else None,
+                "preset": req.preset,
+                "config": req.config,
+                "assigned_runner_id": req.runner_id,
+                "git_commit": pinned_sha,
+                "git_ref": pinned_ref,
+                "tags": req.tags or ["graph-run", graph_name],
+                "nsys_profile": int(req.nsys_profile),
+                "graph_code": code,
+                "graph_id": req.graph_id,
+            }
+        )
+    else:
+        job = history.create_job(
+            {
+                "trigger_source": "manual",
+                "dataset": req.dataset,
+                "dataset_path": dataset_path,
+                "dataset_overrides": merged_overrides if merged_overrides else None,
+                "preset": req.preset,
+                "config": req.config,
+                "assigned_runner_id": req.runner_id,
+                "git_commit": pinned_sha,
+                "git_ref": pinned_ref,
+                "tags": req.tags or [],
+                "nsys_profile": int(req.nsys_profile),
+                "extra_packages": req.extra_packages or [],
+            }
+        )
+
     return TriggerResponse(job_id=job["id"], status="pending")
 
 
@@ -1745,6 +2012,13 @@ async def cancel_job_endpoint(job_id: str):
     return {"ok": True}
 
 
+@app.post("/api/matrix-runs/{matrix_run_id}/cancel")
+async def cancel_matrix_run(matrix_run_id: str):
+    """Cancel all pending and running jobs that belong to a matrix run."""
+    count = history.cancel_jobs_by_matrix_run_id(matrix_run_id)
+    return {"ok": True, "cancelled_count": count}
+
+
 @app.delete("/api/jobs/{job_id}")
 async def force_delete_job(job_id: str):
     """Permanently delete a job regardless of its current status."""
@@ -1819,6 +2093,12 @@ async def complete_job_endpoint(job_id: str, req: JobCompleteRequest):
     job_before = history.get_job_by_id(job_id)
     was_cancelling = job_before and job_before.get("status") == "cancelling"
 
+    if req.log_tail:
+        history.update_job_log(job_id, req.log_tail)
+
+    if req.pip_list:
+        history.update_job_pip_list(job_id, req.pip_list)
+
     if was_cancelling and not req.success:
         history.complete_job(job_id, success=False, result=req.result, error=req.error or "Cancelled by user")
         history.update_job_status(job_id, "cancelled", error=req.error or "Cancelled by user")
@@ -1840,6 +2120,57 @@ async def complete_job_endpoint(job_id: str, req: JobCompleteRequest):
     return {"ok": True, "run_id": run_id}
 
 
+def _normalize_runner_result(
+    result: dict[str, Any],
+    job: dict[str, Any],
+    success: bool,
+    error: str | None,
+    execution_commit: str | None,
+) -> dict[str, Any]:
+    """Normalise a runner result dict into the canonical ``record_run`` format.
+
+    The runner may send either the full ``_run_entry`` payload (which already
+    has ``timestamp``, ``test_config``, ``summary_metrics``, ``run_metadata``,
+    etc.) or a compact/legacy payload with top-level ``dataset``, ``preset``,
+    and a flat ``metrics`` dict.  This function fills in the structural keys
+    that ``record_run`` relies on so metrics are never silently discarded.
+    """
+    run_result = dict(result)
+
+    if not run_result.get("timestamp"):
+        run_result["timestamp"] = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_UTC")
+
+    run_result.setdefault("latest_commit", execution_commit)
+    run_result.setdefault("success", success)
+    run_result.setdefault("failure_reason", error or (None if success else "Job failed"))
+
+    if "test_config" not in run_result:
+        run_result["test_config"] = {
+            "dataset_label": result.get("dataset") or job.get("dataset", "unknown"),
+            "preset": result.get("preset") or job.get("preset"),
+        }
+
+    if "summary_metrics" not in run_result:
+        run_result["summary_metrics"] = dict(result.get("metrics") or {})
+
+    if "run_metadata" not in run_result:
+        runner_id = job.get("assigned_runner_id")
+        runner = history.get_runner_by_id(runner_id) if runner_id else None
+        run_result["run_metadata"] = {
+            "host": (runner or {}).get("hostname"),
+            "gpu_type": (runner or {}).get("gpu_type"),
+        }
+
+    if "artifacts" not in run_result and result.get("artifact_dir"):
+        art = str(result["artifact_dir"])
+        run_result["artifacts"] = {
+            "runtime_metrics_dir": str(Path(art) / "runtime_metrics"),
+        }
+
+    run_result.setdefault("tags", job.get("tags"))
+    return run_result
+
+
 def _record_run_from_job(
     job: dict[str, Any] | None,
     success: bool,
@@ -1850,22 +2181,27 @@ def _record_run_from_job(
 ) -> int | None:
     """Create a run record in the runs table from a completed job.
 
-    When the runner sends back a full ``result`` dict (from ``_run_entry``),
-    use that directly.  Otherwise synthesise a minimal result so that failed
-    jobs still appear in the Runs view.
+    When the runner sends back a ``result`` dict it is normalised into the
+    canonical format expected by ``record_run``.  If no result is available at
+    all, a minimal stub is synthesised so the job still appears in the Runs
+    view.
 
     Returns the newly created run row id, or ``None`` on failure.
     """
     if job is None:
         return None
 
-    if result and isinstance(result, dict) and result.get("timestamp"):
-        run_result = result
+    if result and isinstance(result, dict):
+        run_result = _normalize_runner_result(result, job, success, error, execution_commit)
     else:
+        logger.warning(
+            "Job %s completed with no result dict — metrics will be empty in the Runs view",
+            job.get("id"),
+        )
         now_ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_UTC")
         run_result = {
             "timestamp": now_ts,
-            "latest_commit": None,
+            "latest_commit": execution_commit,
             "success": success,
             "return_code": None,
             "failure_reason": error or (None if success else "Job failed (no result returned)"),
@@ -1888,7 +2224,7 @@ def _record_run_from_job(
         artifact_dir = str(Path(runtime_metrics_dir).parent)
     else:
         command_file = artifacts.get("command_file", "")
-        artifact_dir = str(Path(command_file).parent) if command_file else ""
+        artifact_dir = str(Path(command_file).parent) if command_file else run_result.get("artifact_dir", "")
 
     try:
         run_row_id = history.record_run(
@@ -1898,6 +2234,8 @@ def _record_run_from_job(
             schedule_id=schedule_id,
             execution_commit=execution_commit,
             num_gpus=num_gpus,
+            job_id=job.get("id"),
+            nsys_profile=int(bool(job.get("nsys_profile"))),
         )
         if run_row_id:
             run_row = history.get_run_by_id(run_row_id)
@@ -2355,6 +2693,59 @@ def _git_run(*args: str, cwd: str | None = None, timeout: int = 30) -> str:
     ).strip()
 
 
+def _resolve_run_code_ref_sha() -> tuple[str | None, str | None]:
+    """Resolve the portal ``run_code_ref`` setting to a concrete SHA.
+
+    Fetches the latest refs and runs ``git rev-parse`` so that callers
+    get a pinned commit hash instead of a symbolic ref like
+    ``nvidia/main``.  Returns ``(sha, ref)`` — both may be ``None`` if
+    the setting is missing or the resolve fails.
+    """
+    ref = history.get_portal_setting("run_code_ref")
+    if not ref:
+        return None, None
+    try:
+        if "/" in ref and not ref.startswith("origin/"):
+            remote_name = ref.split("/")[0]
+            _git_run("fetch", remote_name, "--prune")
+        else:
+            _git_run("fetch", "--all", "--prune")
+        sha = _git_run("rev-parse", ref)
+        return sha, ref
+    except Exception as exc:
+        logger.warning("Failed to resolve run_code_ref '%s' to SHA: %s", ref, exc)
+        return ref, ref
+
+
+def _resolve_git_override(git_ref: str | None, git_commit: str | None) -> tuple[str | None, str | None]:
+    """Resolve explicit per-trigger git overrides, falling back to the global setting.
+
+    Returns ``(sha, ref)``.
+
+    * If *git_commit* is provided it is used as-is (exact SHA checkout).
+      *git_ref* is stored alongside it for display purposes.
+    * If only *git_ref* is provided the latest SHA for that ref is resolved
+      via ``git fetch`` + ``git rev-parse``.
+    * If neither is provided the global ``run_code_ref`` portal setting is
+      used (existing behaviour).
+    """
+    if git_commit:
+        return git_commit, git_ref or git_commit
+    if git_ref:
+        try:
+            if "/" in git_ref and not git_ref.startswith("origin/"):
+                remote_name = git_ref.split("/")[0]
+                _git_run("fetch", remote_name, "--prune")
+            else:
+                _git_run("fetch", "--all", "--prune")
+            sha = _git_run("rev-parse", git_ref)
+            return sha, git_ref
+        except Exception as exc:
+            logger.warning("Failed to resolve git_ref '%s' to SHA: %s", git_ref, exc)
+            return git_ref, git_ref
+    return _resolve_run_code_ref_sha()
+
+
 # ---------------------------------------------------------------------------
 # Portal settings (key/value config)
 # ---------------------------------------------------------------------------
@@ -2398,14 +2789,17 @@ async def get_git_info():
         current_sha = _git_run("rev-parse", "HEAD", cwd=repo_root)
         current_short = _git_run("rev-parse", "--short", "HEAD", cwd=repo_root)
 
-        remotes_raw = _git_run("remote", "-v", cwd=repo_root)
+        remote_names_raw = _git_run("remote", cwd=repo_root)
         remotes: list[dict[str, str]] = []
-        seen: set[str] = set()
-        for line in remotes_raw.splitlines():
-            parts = line.split()
-            if len(parts) >= 2 and parts[0] not in seen:
-                seen.add(parts[0])
-                remotes.append({"name": parts[0], "url": parts[1]})
+        for rname in remote_names_raw.splitlines():
+            rname = rname.strip()
+            if not rname:
+                continue
+            try:
+                rurl = _git_run("remote", "get-url", rname, cwd=repo_root)
+            except Exception:
+                rurl = ""
+            remotes.append({"name": rname, "url": rurl})
 
         nvidia_remote_name, _ = _detect_nvidia_remote()
         if nvidia_remote_name:
@@ -2468,6 +2862,7 @@ async def get_git_info():
 class DeployRequest(BaseModel):
     branch: str = "main"
     remote: str = ""
+    update_runners: bool = True
 
 
 @app.post("/api/settings/deploy")
@@ -2534,9 +2929,13 @@ async def deploy_latest(req: DeployRequest):
     new_sha_full = _git_run("rev-parse", "HEAD", cwd=repo_root)
     log_lines.append(f"Now at {new_sha_short} on {req.branch}")
 
-    updated_count = history.set_pending_update_all_runners(new_sha_full)
-    if updated_count:
-        log_lines.append(f"Signalled {updated_count} runner(s) to update to {new_sha_short}")
+    updated_count = 0
+    if req.update_runners:
+        updated_count = history.set_pending_update_all_runners(new_sha_full)
+        if updated_count:
+            log_lines.append(f"Signalled {updated_count} runner(s) to update to {new_sha_short}")
+    else:
+        log_lines.append("Runner update skipped (portal-only deploy)")
 
     def _restart_after_delay():
         import time
@@ -2551,13 +2950,61 @@ async def deploy_latest(req: DeployRequest):
 
     threading.Thread(target=_restart_after_delay, daemon=True).start()
 
+    runners_msg = f" {updated_count} runner(s) will update." if req.update_runners else " Runners were not updated."
     return {
         "ok": True,
         "new_sha": new_sha_short,
         "branch": req.branch,
         "remote": req.remote,
+        "update_runners": req.update_runners,
+        "runners_updated": updated_count,
         "log": log_lines,
-        "message": f"Deployed {req.branch} ({new_sha_short}). Portal will restart in ~2 seconds. {updated_count} runner(s) will update.",
+        "message": f"Deployed {req.branch} ({new_sha_short}). Portal will restart in ~2 seconds.{runners_msg}",
+    }
+
+
+class UpdateRunnersRequest(BaseModel):
+    branch: str = "main"
+    remote: str = ""
+
+
+@app.post("/api/settings/update-runners")
+async def update_runners_only(req: UpdateRunnersRequest):
+    """Signal all online/paused runners to update to the latest commit on a branch.
+
+    This does NOT restart the portal — it only resolves the branch to a SHA
+    and sets ``pending_update_commit`` on every eligible runner.
+    """
+    try:
+        repo_root = _git_run("rev-parse", "--show-toplevel")
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Git not available: {exc}")
+
+    if not req.remote:
+        nvidia_name, _ = _detect_nvidia_remote()
+        req.remote = nvidia_name or "origin"
+
+    try:
+        _git_run("fetch", req.remote, "--prune", cwd=repo_root, timeout=30)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"git fetch failed: {exc}")
+
+    ref = f"{req.remote}/{req.branch}"
+    try:
+        sha = _git_run("rev-parse", ref, cwd=repo_root)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Could not resolve {ref}: {exc}")
+
+    short_sha = sha[:12]
+    updated_count = history.set_pending_update_all_runners(sha)
+
+    return {
+        "ok": True,
+        "sha": sha,
+        "short_sha": short_sha,
+        "ref": ref,
+        "runners_updated": updated_count,
+        "message": f"Signalled {updated_count} runner(s) to update to {short_sha} ({ref}).",
     }
 
 
@@ -2661,3 +3108,424 @@ async def export_runs_json(
         media_type="application/json",
         headers={"Content-Disposition": f'attachment; filename="harness_runs_export_{ts}.json"'},
     )
+
+
+# ---------------------------------------------------------------------------
+# Graph Designer API
+# ---------------------------------------------------------------------------
+
+
+_RAY_DATA_SOURCES: list[dict[str, Any]] = [
+    {
+        "class_name": "ReadBinaryFiles",
+        "display_name": "Read Binary Files",
+        "module": "ray.data",
+        "import_path": "import ray.data",
+        "type": "ray_data_source",
+        "ray_fn": "ray.data.read_binary_files",
+        "params": [
+            {"name": "paths", "type": "str", "label": "Paths"},
+            {"name": "include_paths", "type": "bool", "default": True, "label": "Include Paths"},
+        ],
+        "category": "Data Sources",
+        "category_color": "#ff9f43",
+        "compute": "cpu",
+        "description": "Read binary files from a directory into a Ray Dataset",
+    },
+    {
+        "class_name": "ReadCSV",
+        "display_name": "Read CSV",
+        "module": "ray.data",
+        "import_path": "import ray.data",
+        "type": "ray_data_source",
+        "ray_fn": "ray.data.read_csv",
+        "params": [
+            {"name": "paths", "type": "str", "label": "Paths"},
+        ],
+        "category": "Data Sources",
+        "category_color": "#ff9f43",
+        "compute": "cpu",
+        "description": "Read CSV files into a Ray Dataset",
+    },
+    {
+        "class_name": "ReadParquet",
+        "display_name": "Read Parquet",
+        "module": "ray.data",
+        "import_path": "import ray.data",
+        "type": "ray_data_source",
+        "ray_fn": "ray.data.read_parquet",
+        "params": [
+            {"name": "paths", "type": "str", "label": "Paths"},
+        ],
+        "category": "Data Sources",
+        "category_color": "#ff9f43",
+        "compute": "cpu",
+        "description": "Read Parquet files into a Ray Dataset",
+    },
+    {
+        "class_name": "ReadJSON",
+        "display_name": "Read JSON",
+        "module": "ray.data",
+        "import_path": "import ray.data",
+        "type": "ray_data_source",
+        "ray_fn": "ray.data.read_json",
+        "params": [
+            {"name": "paths", "type": "str", "label": "Paths"},
+        ],
+        "category": "Data Sources",
+        "category_color": "#ff9f43",
+        "compute": "cpu",
+        "description": "Read JSON files into a Ray Dataset",
+    },
+    {
+        "class_name": "ReadImages",
+        "display_name": "Read Images",
+        "module": "ray.data",
+        "import_path": "import ray.data",
+        "type": "ray_data_source",
+        "ray_fn": "ray.data.read_images",
+        "params": [
+            {"name": "paths", "type": "str", "label": "Paths"},
+            {"name": "mode", "type": "str", "default": "RGB", "label": "Mode"},
+        ],
+        "category": "Data Sources",
+        "category_color": "#ff9f43",
+        "compute": "cpu",
+        "description": "Read image files into a Ray Dataset",
+    },
+    {
+        "class_name": "ReadText",
+        "display_name": "Read Text",
+        "module": "ray.data",
+        "import_path": "import ray.data",
+        "type": "ray_data_source",
+        "ray_fn": "ray.data.read_text",
+        "params": [
+            {"name": "paths", "type": "str", "label": "Paths"},
+        ],
+        "category": "Data Sources",
+        "category_color": "#ff9f43",
+        "compute": "cpu",
+        "description": "Read text files into a Ray Dataset",
+    },
+]
+
+
+def _introspect_pydantic_fields(model_cls: type) -> list[dict[str, Any]] | None:
+    """If *model_cls* is a Pydantic BaseModel, return its scalar field descriptors."""
+    try:
+        from pydantic import BaseModel as _BM
+        from pydantic_core import PydanticUndefined as _PU
+    except ImportError:
+        return None
+    if not (isinstance(model_cls, type) and issubclass(model_cls, _BM)):
+        return None
+    fields: list[dict[str, Any]] = []
+    for fname, finfo in model_cls.model_fields.items():
+        ftype = finfo.annotation
+        try:
+            if isinstance(ftype, type) and issubclass(ftype, _BM):
+                continue
+        except TypeError:
+            pass
+        if finfo.default_factory is not None:
+            continue
+        f_data: dict[str, Any] = {"name": fname}
+        if finfo.default is not _PU:
+            default_val = finfo.default
+            if default_val is None:
+                f_data["default"] = None
+            else:
+                try:
+                    json_module.dumps(default_val)
+                    f_data["default"] = default_val
+                except (TypeError, ValueError):
+                    f_data["default"] = str(default_val)
+        else:
+            f_data["required"] = True
+        if finfo.annotation is not None:
+            f_data["type"] = str(finfo.annotation)
+        fields.append(f_data)
+    return fields
+
+
+_operators_cache: list[dict[str, Any]] | None = None
+
+
+def _scan_nemo_retriever_package() -> None:
+    """Walk all ``nemo_retriever`` submodules to trigger ``@designer_component``
+    registrations.  Errors from individual modules are silently skipped."""
+    import importlib
+    import pkgutil
+
+    try:
+        import nemo_retriever as _pkg
+    except ImportError:
+        return
+    if not hasattr(_pkg, "__path__"):
+        return
+    for _importer, modname, _ispkg in pkgutil.walk_packages(_pkg.__path__, prefix="nemo_retriever."):
+        try:
+            importlib.import_module(modname)
+        except Exception:
+            pass
+
+
+def _extract_param_annotation(resolved_type):
+    """If *resolved_type* is ``Annotated[T, Param(...), ...]``, return the
+    ``Param`` instance and the unwrapped base type.  Otherwise ``(None, None)``."""
+    import typing as _typing
+
+    origin = getattr(resolved_type, "__origin__", None)
+    if origin is not None:
+        type_name = getattr(origin, "__name__", "") or getattr(origin, "_name", "") or ""
+    else:
+        type_name = ""
+    args = getattr(resolved_type, "__metadata__", None)
+    if args is None:
+        args_full = _typing.get_args(resolved_type)
+        if args_full and len(args_full) >= 2:
+            from nemo_retriever.graph.designer import Param as _Param
+
+            for a in args_full[1:]:
+                if isinstance(a, _Param):
+                    return a, args_full[0]
+    else:
+        from nemo_retriever.graph.designer import Param as _Param
+
+        for a in args:
+            if isinstance(a, _Param):
+                base_args = _typing.get_args(resolved_type)
+                base_type = base_args[0] if base_args else resolved_type
+                return a, base_type
+    return None, None
+
+
+def _discover_operators() -> list[dict[str, Any]]:
+    """Discover all ``@designer_component``-decorated classes/functions and
+    build the operator list for the Designer palette."""
+    global _operators_cache
+    if _operators_cache is not None:
+        return _operators_cache
+
+    import inspect as _inspect
+    import typing as _typing
+
+    _scan_nemo_retriever_package()
+
+    from nemo_retriever.graph.designer import get_registry
+
+    registry: list[dict[str, Any]] = []
+
+    for _key, meta in get_registry().items():
+        target = meta["target"]
+        class_name = target.__name__
+        module_path = target.__module__
+
+        try:
+            init_fn = target.__init__ if isinstance(target, type) else target
+            sig = _inspect.signature(init_fn)
+        except (ValueError, TypeError):
+            sig = None
+
+        try:
+            resolved_hints = _typing.get_type_hints(init_fn, include_extras=True)
+        except Exception:
+            resolved_hints = {}
+
+        params: list[dict[str, Any]] = []
+        if sig is not None:
+            for pname, param in sig.parameters.items():
+                if pname == "self" or param.kind in (
+                    _inspect.Parameter.VAR_POSITIONAL,
+                    _inspect.Parameter.VAR_KEYWORD,
+                ):
+                    continue
+                p_info: dict[str, Any] = {"name": pname}
+
+                resolved_type = resolved_hints.get(pname)
+
+                param_meta, base_type = _extract_param_annotation(resolved_type) if resolved_type else (None, None)
+                if param_meta is not None:
+                    if param_meta.label:
+                        p_info["label"] = param_meta.label
+                    if param_meta.description:
+                        p_info["description"] = param_meta.description
+                    if param_meta.choices:
+                        p_info["choices"] = param_meta.choices
+                    if param_meta.min_val is not None:
+                        p_info["min_val"] = param_meta.min_val
+                    if param_meta.max_val is not None:
+                        p_info["max_val"] = param_meta.max_val
+                    if param_meta.hidden:
+                        p_info["hidden"] = True
+                    if param_meta.placeholder:
+                        p_info["placeholder"] = param_meta.placeholder
+                    effective_type = base_type
+                else:
+                    effective_type = resolved_type
+
+                if effective_type is not None:
+                    pydantic_fields = _introspect_pydantic_fields(effective_type)
+                    if pydantic_fields is not None:
+                        p_info["pydantic"] = True
+                        p_info["pydantic_class"] = effective_type.__name__
+                        p_info["pydantic_module"] = effective_type.__module__
+                        p_info["pydantic_import"] = f"from {effective_type.__module__} import {effective_type.__name__}"
+                        p_info["fields"] = pydantic_fields
+
+                if param.default is not _inspect.Parameter.empty:
+                    try:
+                        json_module.dumps(param.default)
+                        p_info["default"] = param.default
+                    except (TypeError, ValueError):
+                        p_info["default"] = str(param.default)
+                if param.annotation is not _inspect.Parameter.empty:
+                    p_info["type"] = str(param.annotation)
+                params.append(p_info)
+
+        concurrency_param: dict[str, Any] = {
+            "name": "concurrency",
+            "label": "Concurrency",
+            "description": "Number of parallel actor instances for this stage",
+            "type": "int",
+        }
+        if meta["compute"] == "gpu":
+            concurrency_param["default"] = 1
+        params.append(concurrency_param)
+
+        entry: dict[str, Any] = {
+            "class_name": class_name,
+            "module": module_path,
+            "import_path": f"from {module_path} import {class_name}",
+            "params": params,
+            "category": meta["category"],
+            "display_name": meta["name"],
+            "compute": meta["compute"],
+            "description": meta.get("description", ""),
+        }
+        if meta.get("category_color"):
+            entry["category_color"] = meta["category_color"]
+        if meta.get("component_type"):
+            entry["type"] = meta["component_type"]
+        registry.append(entry)
+
+    registry.extend(_RAY_DATA_SOURCES)
+    _operators_cache = registry
+    return registry
+
+
+@app.get("/api/operators")
+async def list_operators():
+    """Return all available pipeline operators with their constructor parameters."""
+    return _discover_operators()
+
+
+class GraphCreateRequest(BaseModel):
+    name: str
+    description: str = ""
+    graph_json: Any
+    generated_code: str = ""
+
+
+class GraphUpdateRequest(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    graph_json: Any = None
+    generated_code: str | None = None
+
+
+@app.get("/api/graphs")
+async def list_graphs_endpoint():
+    return history.list_graphs()
+
+
+@app.get("/api/graphs/{graph_id}")
+async def get_graph_endpoint(graph_id: int):
+    g = history.get_graph(graph_id)
+    if not g:
+        raise HTTPException(404, "Graph not found")
+    return g
+
+
+@app.post("/api/graphs")
+async def create_graph_endpoint(req: GraphCreateRequest):
+    return history.create_graph(req.model_dump())
+
+
+@app.put("/api/graphs/{graph_id}")
+async def update_graph_endpoint(graph_id: int, req: GraphUpdateRequest):
+    data = {k: v for k, v in req.model_dump().items() if v is not None}
+    g = history.update_graph(graph_id, data)
+    if not g:
+        raise HTTPException(404, "Graph not found")
+    return g
+
+
+@app.delete("/api/graphs/{graph_id}")
+async def delete_graph_endpoint(graph_id: int):
+    ok = history.delete_graph(graph_id)
+    if not ok:
+        raise HTTPException(404, "Graph not found")
+    return {"ok": True}
+
+
+class GraphRunRequest(BaseModel):
+    runner_id: int | None = None
+    git_ref: str | None = None
+    git_commit: str | None = None
+    ray_address: str | None = None
+
+
+class GraphRunResponse(BaseModel):
+    job_id: str
+    status: str
+
+
+@app.post("/api/graphs/{graph_id}/run", response_model=GraphRunResponse)
+async def run_graph_endpoint(graph_id: int, req: GraphRunRequest):
+    graph = history.get_graph(graph_id)
+    if not graph:
+        raise HTTPException(404, "Graph not found")
+
+    code = graph.get("generated_code") or ""
+    if not code.strip():
+        raise HTTPException(400, "Graph has no generated code. Save the graph first.")
+
+    pinned_sha, pinned_ref = _resolve_git_override(req.git_ref, req.git_commit)
+
+    graph_meta = {
+        "ray_address": req.ray_address,
+    }
+
+    graph_name = graph.get("name") or f"graph-{graph_id}"
+
+    input_path = graph_name
+    try:
+        raw_json = graph.get("graph_json") or "{}"
+        gj = json_module.loads(raw_json) if isinstance(raw_json, str) else raw_json
+        for node in gj.get("nodes") or []:
+            op = node.get("operator") or {}
+            if op.get("type") == "ray_data_source":
+                paths_val = (node.get("config") or {}).get("paths", "")
+                if paths_val:
+                    input_path = paths_val
+                break
+    except Exception:
+        pass
+
+    job = history.create_job(
+        {
+            "trigger_source": "graph",
+            "dataset": input_path,
+            "preset": graph_name,
+            "assigned_runner_id": req.runner_id,
+            "git_commit": pinned_sha,
+            "git_ref": pinned_ref,
+            "graph_code": code,
+            "graph_id": graph_id,
+            "tags": ["graph-run", graph_name],
+            "config": json_module.dumps(graph_meta),
+        }
+    )
+    return GraphRunResponse(job_id=job["id"], status="pending")

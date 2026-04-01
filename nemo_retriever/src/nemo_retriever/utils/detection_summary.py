@@ -206,6 +206,18 @@ def _fmt_time(seconds: float) -> str:
     return f"{seconds:.2f}s / {h}:{m:02d}:{s:02d}.{millis:03d}"
 
 
+def _evaluation_metric_sort_key(item: tuple[str, float]) -> tuple[str, int, str]:
+    """Sort metrics like ndcg@1, ndcg@3, ..., recall@1, recall@3, ... ."""
+    key, _value = item
+    metric_name, sep, suffix = str(key).partition("@")
+    if sep:
+        try:
+            return metric_name, int(suffix), str(key)
+        except ValueError:
+            pass
+    return metric_name, 0, str(key)
+
+
 def print_run_summary(
     processed_pages: Optional[int],
     input_path: Path,
@@ -216,14 +228,25 @@ def print_run_summary(
     ingest_only_total_time: float,
     ray_dataset_download_total_time: float,
     lancedb_write_total_time: float,
+    evaluation_total_time: float = 0.0,
+    evaluation_metrics: Optional[Dict[str, float]] = None,
     recall_total_time: float = 0.0,
     recall_metrics: Optional[Dict[str, float]] = None,
     processed_files: Optional[int] = None,
-) -> None:
+    evaluation_label: str = "Recall",
+    evaluation_count: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Print a human-readable run summary and return all metrics as a dict.
+
+    The returned dict is the authoritative structured representation of every
+    metric collected during the run.  Callers should persist it to a JSON file
+    so that the harness can read it directly instead of parsing stdout.
+    """
     if recall_metrics is None:
         recall_metrics = {}
+    if evaluation_metrics is None:
+        evaluation_metrics = {}
     pages = processed_pages if processed_pages is not None else 0
-    utc_now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
 
     ingest_only_pps = pages / ingest_only_total_time if ingest_only_total_time > 0 else 0
     ingest_write_denom = ingest_only_total_time + lancedb_write_total_time
@@ -231,7 +254,7 @@ def print_run_summary(
     recall_qps = pages / recall_total_time if recall_total_time > 0 else 0
     total_pps = pages / total_time if total_time > 0 else 0
 
-    print(f"===== Run Summary - {utc_now} UTC =====")
+    print(f"===== Run Summary - {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC =====")
 
     print("Run Configuration:")
     print(f"\tInput path: {input_path}")
@@ -248,6 +271,8 @@ def print_run_summary(
     print(f"\tLanceDB Write Time: {_fmt_time(lancedb_write_total_time)}")
     if recall_total_time > 0:
         print(f"\tRecall time: {_fmt_time(recall_total_time)}")
+    if evaluation_total_time > 0:
+        print(f"\t{evaluation_label} time: {_fmt_time(evaluation_total_time)}")
 
     print("PPS:")
     print(f"\tIngestion only PPS: {ingest_only_pps:.2f}")
@@ -258,7 +283,29 @@ def print_run_summary(
 
     if recall_metrics:
         print("Recall metrics:")
-        for k, v in recall_metrics.items():
+        for k, v in sorted(recall_metrics.items(), key=_evaluation_metric_sort_key):
             print(f"  {k}: {v:.4f}")
     else:
         print("Recall metrics: skipped (no query CSV configured)")
+
+    if evaluation_metrics:
+        print(f"{evaluation_label} metrics:")
+        for k, v in sorted(evaluation_metrics.items(), key=_evaluation_metric_sort_key):
+            print(f"  {k}: {v:.4f}")
+
+    return {
+        "pages": pages,
+        "files": processed_files,
+        "ingest_secs": round(ingest_only_total_time, 4),
+        "pages_per_sec_ingest": round(ingest_only_pps, 4),
+        "total_time_secs": round(total_time, 4),
+        "total_pps": round(total_pps, 4),
+        "ray_dataset_download_secs": round(ray_dataset_download_total_time, 4),
+        "lancedb_write_secs": round(lancedb_write_total_time, 4),
+        "recall_time_secs": round(recall_total_time, 4),
+        "evaluation_time_secs": round(evaluation_total_time, 4),
+        "evaluation_label": evaluation_label,
+        "evaluation_count": evaluation_count,
+        "recall_metrics": recall_metrics,
+        "evaluation_metrics": evaluation_metrics,
+    }

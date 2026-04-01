@@ -7,7 +7,7 @@ Local ASR using nvidia/parakeet-ctc-1.1b via Hugging Face Transformers.
 
 Uses AutoModelForCTC + AutoProcessor with batch_decode(skip_special_tokens=True)
 to avoid <pad> tokens in output; falls back to post-processing to strip any remaining.
-Requires transformers>=5. Model expects 16 kHz mono input.
+Requires transformers>=4.57. Model expects 16 kHz mono input.
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import List, Optional
 
 import numpy as np
+from nemo_retriever.utils.nvtx import gpu_inference_range
 
 from nemo_retriever.utils.hf_cache import configure_global_hf_cache_base
 from nemo_retriever.utils.hf_model_registry import get_hf_revision
@@ -111,7 +112,7 @@ class ParakeetCTC1B1ASR:
     Local ASR using nvidia/parakeet-ctc-1.1b via Hugging Face Transformers.
 
     Uses AutoModelForCTC + AutoProcessor with batch_decode(skip_special_tokens=True)
-    and post-processes to remove any remaining <pad> tokens. Requires transformers>=5.
+    and post-processes to remove any remaining <pad> tokens. Requires transformers>=4.57.
     """
 
     def __init__(
@@ -193,7 +194,8 @@ class ParakeetCTC1B1ASR:
             )
             inputs = inputs.to(self._model.device, dtype=self._model.dtype)
             with torch.no_grad():
-                outputs = self._model.generate(**inputs)
+                with gpu_inference_range("ParakeetCTC1B", batch_size=len(audios)):
+                    outputs = self._model.generate(**inputs)
             decoded = self._processor.batch_decode(outputs, skip_special_tokens=True)
             return [t.strip() for t in decoded]
         except Exception as e:

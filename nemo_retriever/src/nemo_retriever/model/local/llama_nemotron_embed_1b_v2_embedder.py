@@ -12,6 +12,7 @@ import torch
 
 from nemo_retriever.utils.hf_cache import configure_global_hf_cache_base
 from nemo_retriever.utils.hf_model_registry import get_hf_revision
+from nemo_retriever.utils.nvtx import gpu_inference_range
 
 
 def _l2_normalize(x: torch.Tensor, eps: float = 1e-12) -> torch.Tensor:
@@ -97,7 +98,8 @@ class LlamaNemotronEmbed1BV2Embedder:
                         max_length=max(1, int(self.max_length)),
                         return_tensors="pt",
                     ).to(dev)
-                    out = self._model(**batch, output_hidden_states=True)
+                    with gpu_inference_range("LlamaNemotronEmbed1B", batch_size=len(chunk)):
+                        out = self._model(**batch, output_hidden_states=True)
                     # The bidirectional model returns BaseModelOutputWithPast
                     # (last_hidden_state), but some transformers versions or
                     # model revisions return CausalLMOutputWithPast (hidden_states).

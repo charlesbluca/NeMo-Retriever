@@ -21,20 +21,14 @@ PAGES_PER_SEC_RE = re.compile(r"Pages/sec \([^)]+\):\s*(?P<val>[0-9.]+)")
 # batch_pipeline print_run_summary() patterns
 TOTAL_PAGES_RE = re.compile(r"Total pages processed:\s*(?P<pages>\d+)")
 PAGES_PROCESSED_RE = re.compile(r"Pages processed:\s*(?P<pages>\d+)")
-INGEST_ONLY_TIME_RE = re.compile(r"Ingestion only time:\s*(?P<secs>[0-9.]+)s")
-INGEST_ONLY_PPS_RE = re.compile(r"Ingestion only PPS:\s*(?P<val>[0-9.]+)")
+INGEST_ONLY_TIME_RE = re.compile(r"Ingestion only time:\s*(?P<secs>[0-9.]+)s\b")
+INGEST_ONLY_PPS_RE = re.compile(r"Ingestion only PPS:\s*(?P<val>[0-9.]+)\b")
 TOTAL_PPS_RE = re.compile(
     r"Total - Processed:\s*(?P<pages>\d+)\s+pages\s+in\s+(?P<secs>[0-9.]+)s.*@\s*(?P<pps>[0-9.]+)\s+PPS"
 )
 
 TOTAL_FILES_RE = re.compile(r"Total files processed:\s*(?P<files>\d+)")
-RECALL_RE = re.compile(r"(?P<metric>recall@\d+):\s*(?P<val>[0-9.]+)\s*$")
-
-# Recall block headers (old and new)
-_RECALL_HEADERS = (
-    "Recall metrics (matching nemo_retriever.recall.core):",
-    "Recall metrics:",
-)
+METRIC_RE = re.compile(r"(?P<metric>[A-Za-z_]+@\d+):\s*(?P<val>[0-9.]+)\s*$")
 
 
 _TAIL_BUFFER_LINES = 50
@@ -42,6 +36,14 @@ _TAIL_BUFFER_LINES = 50
 
 @dataclass
 class StreamMetrics:
+    """Metrics extracted from subprocess stdout via regex.
+
+    The primary metric source is the structured JSON written by batch_pipeline
+    to --metrics-output-file.  StreamMetrics is a fallback for legacy pipelines
+    that don't write that file, and always provides the tail buffer for error
+    reporting regardless.
+    """
+
     files: int | None = None
     pages: int | None = None
     ingest_secs: float | None = None
@@ -49,8 +51,9 @@ class StreamMetrics:
     rows_processed: int | None = None
     rows_per_sec_ingest: float | None = None
     recall_metrics: dict[str, float] = field(default_factory=dict)
-    _in_recall_block: bool = False
+    evaluation_metrics: dict[str, float] = field(default_factory=dict)
     _tail: deque[str] = field(default_factory=lambda: deque(maxlen=_TAIL_BUFFER_LINES))
+    _metric_block: str | None = None
 
     @property
     def tail_lines(self) -> list[str]:
@@ -76,57 +79,59 @@ class StreamMetrics:
             self.ingest_secs = float(ingest_rows_match.group("secs"))
             self.rows_per_sec_ingest = float(ingest_rows_match.group("pps"))
 
-        # Legacy: Pages/sec (ingest only; excludes Ray startup and recall): N
+        ingest_only_time_match = INGEST_ONLY_TIME_RE.search(line)
+        if ingest_only_time_match:
+            self.ingest_secs = float(ingest_only_time_match.group("secs"))
+
+        ingest_only_pps_match = INGEST_ONLY_PPS_RE.search(line)
+        if ingest_only_pps_match:
+            self.pages_per_sec_ingest = float(ingest_only_pps_match.group("val"))
+
         pps_match = PAGES_PER_SEC_RE.search(line)
         if pps_match:
             self.pages_per_sec_ingest = float(pps_match.group("val"))
 
-        # print_run_summary: Total files processed: N
         total_files_match = TOTAL_FILES_RE.search(line)
         if total_files_match and self.files is None:
             self.files = int(total_files_match.group("files"))
 
-        # print_run_summary: Total pages processed: N
         total_pages_match = TOTAL_PAGES_RE.search(line)
         if total_pages_match and self.pages is None:
             self.pages = int(total_pages_match.group("pages"))
 
-        # common.py print_pages_per_second: Pages processed: N
         pages_processed_match = PAGES_PROCESSED_RE.search(line)
         if pages_processed_match and self.pages is None:
             self.pages = int(pages_processed_match.group("pages"))
 
-        # print_run_summary: Ingestion only time: N.NNs / ...
-        ingest_time_match = INGEST_ONLY_TIME_RE.search(line)
-        if ingest_time_match and self.ingest_secs is None:
-            self.ingest_secs = float(ingest_time_match.group("secs"))
-
-        # print_run_summary: Ingestion only PPS: N.NN
-        ingest_pps_match = INGEST_ONLY_PPS_RE.search(line)
-        if ingest_pps_match and self.pages_per_sec_ingest is None:
-            self.pages_per_sec_ingest = float(ingest_pps_match.group("val"))
-
-        # print_run_summary: Total - Processed: N pages in Ns ... @ N PPS
         total_match = TOTAL_PPS_RE.search(line)
         if total_match:
             if self.pages is None:
                 self.pages = int(total_match.group("pages"))
 
-        # Recall block detection (both old and new header formats)
-        for header in _RECALL_HEADERS:
-            if header in line:
-                self._in_recall_block = True
+        # Metric block detection: "Recall metrics:" or "BEIR metrics:" headers
+        # start a block where subsequent indented metric lines are captured.
+        normalized_line = line.strip().lower()
+        if "recall metrics" in normalized_line:
+            self._metric_block = "recall"
+            return
+
+        if "beir metrics" in normalized_line:
+            self._metric_block = "beir"
+            return
+
+        if self._metric_block is not None:
+            metric_match = METRIC_RE.search(line)
+            if metric_match:
+                metric = metric_match.group("metric").lower()
+                value = float(metric_match.group("val"))
+                if self._metric_block == "recall":
+                    self.recall_metrics[metric] = value
+                else:
+                    self.evaluation_metrics[metric] = value
                 return
 
-        if self._in_recall_block:
-            recall_match = RECALL_RE.search(line)
-            if recall_match:
-                metric = recall_match.group("metric")
-                self.recall_metrics[metric] = float(recall_match.group("val"))
-                return
-
-            if line.strip() and not line.startswith(" ") and not line.startswith("\t"):
-                self._in_recall_block = False
+            if line.strip() and not line.startswith(" "):
+                self._metric_block = None
 
 
 def parse_stream_text(stdout_text: str) -> StreamMetrics:

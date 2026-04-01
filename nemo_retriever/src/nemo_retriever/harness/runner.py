@@ -9,9 +9,11 @@ import collections
 import json as json_module
 import logging
 import os
+import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import traceback
@@ -59,6 +61,9 @@ def _get_json(url: str, timeout: int = 10) -> Any:
 _ARTIFACT_UPLOAD_EXCLUDES = {"lancedb"}
 
 
+_ARTIFACT_MAX_UPLOAD_MB = 500
+
+
 def _upload_artifacts(base_url: str, run_id: int, artifact_dir: str, timeout: int = 120) -> None:
     """Zip the artifact directory (excluding large data like lancedb) and upload to the portal."""
     import io as _io
@@ -69,13 +74,28 @@ def _upload_artifacts(base_url: str, run_id: int, artifact_dir: str, timeout: in
         logger.warning("Artifact directory %s does not exist — skipping upload", artifact_dir)
         return
 
+    has_nsys = any(art_path.rglob("*.nsys-rep"))
+
     buf = _io.BytesIO()
     with _zipfile.ZipFile(buf, "w", _zipfile.ZIP_DEFLATED) as zf:
         for fp in sorted(art_path.rglob("*")):
             if fp.is_file() and not any(excl in fp.parts for excl in _ARTIFACT_UPLOAD_EXCLUDES):
-                zf.write(fp, fp.relative_to(art_path))
+                file_mb = fp.stat().st_size / (1024 * 1024)
+                if file_mb > _ARTIFACT_MAX_UPLOAD_MB:
+                    logger.warning(
+                        "Skipping large file %s (%.1f MB > %d MB limit)",
+                        fp.name,
+                        file_mb,
+                        _ARTIFACT_MAX_UPLOAD_MB,
+                    )
+                    continue
+                compress = _zipfile.ZIP_STORED if fp.suffix == ".nsys-rep" else _zipfile.ZIP_DEFLATED
+                zf.write(fp, fp.relative_to(art_path), compress_type=compress)
     raw = buf.getvalue()
-    logger.info("Uploading %d bytes of artifacts for run %d", len(raw), run_id)
+    zip_mb = len(raw) / (1024 * 1024)
+    logger.info("Uploading %.1f MB of artifacts for run %d", zip_mb, run_id)
+
+    effective_timeout = max(timeout, 300) if has_nsys else timeout
 
     boundary = f"----RunnerUpload{run_id}"
     body = (
@@ -95,9 +115,9 @@ def _upload_artifacts(base_url: str, run_id: int, artifact_dir: str, timeout: in
         headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        result = json_module.loads(resp.read().decode("utf-8"))
-    logger.info("Artifact upload complete for run %d: %s", run_id, result)
+    with urllib.request.urlopen(req, timeout=effective_timeout) as resp:
+        resp_data = json_module.loads(resp.read().decode("utf-8"))
+    logger.info("Artifact upload complete for run %d: %s", run_id, resp_data)
 
 
 # ---------------------------------------------------------------------------
@@ -360,6 +380,426 @@ def _git_restore(prev_ref: str | None) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Per-job virtual environment
+# ---------------------------------------------------------------------------
+
+_VENV_BASE_DIR = Path("/tmp/.nemo_runner_venvs")
+
+_JOB_WRAPPER_SCRIPT = """\
+import json, sys, traceback, inspect
+
+with open(sys.argv[1]) as f:
+    args = json.load(f)
+
+try:
+    from nemo_retriever.harness.run import _run_entry
+    kwargs = dict(
+        run_name=args.get("run_name"),
+        config_file=args.get("config_file"),
+        session_dir=args.get("session_dir"),
+        dataset=args.get("dataset"),
+        preset=args.get("preset"),
+        sweep_overrides=args.get("sweep_overrides"),
+        tags=args.get("tags"),
+        skip_local_history=args.get("skip_local_history", True),
+        graph_code=args.get("graph_code"),
+    )
+    sig = inspect.signature(_run_entry)
+    kwargs = {k: v for k, v in kwargs.items() if k in sig.parameters}
+    result = _run_entry(**kwargs)
+except Exception:
+    traceback.print_exc()
+    result = {
+        "success": False,
+        "failure_reason": traceback.format_exc().splitlines()[-1],
+        "return_code": 1,
+    }
+
+with open(sys.argv[2], "w") as f:
+    json.dump(result, f)
+"""
+
+_GRAPH_WRAPPER_SCRIPT = """\
+import json, sys, os, traceback, time
+
+graph_code_file = sys.argv[1]
+result_file = sys.argv[2]
+ray_address = sys.argv[3] if len(sys.argv) > 3 and sys.argv[3] != "__none__" else None
+
+def _root_cause(exc):
+    \"\"\"Walk the exception chain to find the original cause.\"\"\"
+    seen = set()
+    while exc.__cause__ is not None and id(exc.__cause__) not in seen:
+        seen.add(id(exc))
+        exc = exc.__cause__
+    return exc
+
+try:
+    print(f"[diag] Python executable: {sys.executable}")
+    print(f"[diag] CUDA_VISIBLE_DEVICES = {os.environ.get('CUDA_VISIBLE_DEVICES', '<not set>')}")
+
+    import subprocess as _sp
+    def _detect_gpu_count():
+        try:
+            out = _sp.check_output(
+                ["nvidia-smi", "--query-gpu=index", "--format=csv,noheader"],
+                text=True, timeout=10,
+            )
+            return len([l for l in out.strip().splitlines() if l.strip()])
+        except Exception:
+            return 0
+
+    import ray
+
+    effective_ray = ray_address or os.environ.get("RAY_ADDRESS")
+    is_local = effective_ray in ("auto", "local", None, "")
+
+    ray.shutdown()
+
+    runtime_env = {"env_vars": {"VIRTUAL_ENV": os.path.dirname(os.path.dirname(sys.executable))}}
+
+    if is_local:
+        os.environ.pop("RAY_ADDRESS", None)
+        detected_gpus = _detect_gpu_count()
+        print(f"[diag] Starting fresh local Ray cluster (nvidia-smi detected {detected_gpus} GPU(s))")
+
+        try:
+            ray.init(
+                num_gpus=detected_gpus if detected_gpus > 0 else None,
+                runtime_env=runtime_env,
+            )
+        except ValueError as _ve:
+            if "existing cluster" in str(_ve):
+                print("[diag] Detected running Ray cluster — stopping it to start a fresh one")
+                try:
+                    _sp.run(["ray", "stop", "--force"], capture_output=True, timeout=30)
+                except Exception:
+                    pass
+                ray.shutdown()
+                try:
+                    ray.init(
+                        num_gpus=detected_gpus if detected_gpus > 0 else None,
+                        runtime_env=runtime_env,
+                    )
+                except ValueError:
+                    print("[diag] Still cannot start fresh cluster — connecting to existing one instead")
+                    ray.init(runtime_env=runtime_env)
+            else:
+                raise
+    else:
+        print(f"[diag] Connecting to existing Ray cluster: {effective_ray}")
+        ray.init(address=effective_ray, runtime_env=runtime_env)
+
+    cluster_res = ray.cluster_resources()
+    print(f"[diag] Ray cluster resources: {cluster_res}")
+    print(f"[diag] Ray GPU count: {cluster_res.get('GPU', 0)}")
+
+    import torch
+    print(f"[diag] torch.version.cuda = {getattr(torch.version, 'cuda', 'N/A')}")
+    print(f"[diag] torch.cuda.is_available() = {torch.cuda.is_available()}")
+    print(f"[diag] torch.cuda.device_count() = {torch.cuda.device_count()}")
+    if torch.cuda.is_available():
+        for i in range(torch.cuda.device_count()):
+            print(f"[diag]   GPU {i}: {torch.cuda.get_device_name(i)}")
+
+    with open(graph_code_file) as f:
+        code = f.read()
+
+    ns = {"__name__": "__graph_runner__", "__file__": graph_code_file}
+
+    wall_start = time.perf_counter()
+    exec(compile(code, graph_code_file, "exec"), ns)
+
+    result_ds = ns.get("result")
+    graph = ns.get("graph")
+    _requested_plan = ns.get("requested_plan")
+
+    ray_stats_str = None
+
+    if result_ds is not None:
+        elapsed = round(time.perf_counter() - wall_start, 2)
+        try:
+            import ray.data as _rd
+            if isinstance(result_ds, _rd.Dataset):
+                row_count = result_ds.count()
+                print(f"Pipeline complete: {row_count} rows in {elapsed}s")
+                try:
+                    ray_stats_str = result_ds.stats()
+                    print(f"\\n=== Ray Data Execution Stats ===\\n{ray_stats_str}")
+                except Exception:
+                    pass
+                result = {"success": True, "return_code": 0, "rows": row_count, "elapsed_secs": elapsed}
+            else:
+                print(f"Pipeline complete in {elapsed}s (result type: {type(result_ds).__name__})")
+                result = {"success": True, "return_code": 0, "elapsed_secs": elapsed}
+        except Exception:
+            print(f"Pipeline complete in {elapsed}s")
+            result = {"success": True, "return_code": 0, "elapsed_secs": elapsed}
+    elif graph is not None:
+        outputs = graph.execute(None)
+        elapsed = round(time.perf_counter() - wall_start, 2)
+        print(f"Graph.execute complete: {len(outputs)} output(s) in {elapsed}s")
+        result = {"success": True, "return_code": 0, "outputs": len(outputs), "elapsed_secs": elapsed}
+    else:
+        raise RuntimeError("Generated code did not produce a 'result' (Ray Data) or 'graph' variable")
+
+    if _requested_plan is not None:
+        result["requested_plan"] = _requested_plan
+    if ray_stats_str is not None:
+        result["ray_stats"] = ray_stats_str
+
+except Exception as exc:
+    full_tb = traceback.format_exc()
+    print(full_tb, file=sys.stderr)
+    print(full_tb)
+
+    root = _root_cause(exc)
+    root_msg = f"{type(root).__name__}: {root}"
+    root_tb_lines = traceback.format_exception(type(root), root, root.__traceback__)
+    root_tb = "".join(root_tb_lines)
+
+    if root is not exc:
+        print(f"\\n=== Root cause ===\\n{root_tb}")
+
+    failure_lines = [root_msg]
+    if len(full_tb) <= 4000:
+        failure_lines.append(full_tb)
+    else:
+        failure_lines.append(full_tb[-4000:])
+
+    result = {
+        "success": False,
+        "failure_reason": root_msg,
+        "error_detail": "\\n".join(failure_lines),
+        "return_code": 1,
+    }
+
+with open(result_file, "w") as f:
+    json.dump(result, f)
+"""
+
+
+def _nsys_available() -> bool:
+    """Return True if ``nsys`` is on PATH and report its version."""
+    try:
+        result = subprocess.run(["nsys", "--version"], capture_output=True, text=True, timeout=5)
+        version = (result.stdout or result.stderr or "").strip()
+        logger.info("nsys found: %s", version)
+        return True
+    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+        logger.warning("nsys not available: %s", exc)
+        return False
+
+
+def _nsys_prefix(output_path: str) -> list[str]:
+    """Return the command prefix to wrap a subprocess with nsys profile.
+
+    Traces only CUDA kernels and NVTX annotations (no OS-runtime tracing,
+    which was the main source of multi-GB reports).  The ``gpu_inference_range``
+    NVTX markers placed around model invocations will appear as named regions
+    in the Nsight Systems timeline for easy identification.
+
+    Note: ``--capture-range=nvtx`` is intentionally NOT used because Ray Data
+    runs model inference in separate worker processes that nsys cannot follow
+    via fork-tracing.  Full-process capture with ``-t cuda,nvtx`` keeps report
+    sizes manageable (typically tens of MB) while capturing all GPU activity.
+    """
+    return [
+        "nsys",
+        "profile",
+        "-o",
+        output_path,
+        "--force-overwrite=true",
+        "-t",
+        "cuda,nvtx",
+    ]
+
+
+def _collect_nsys_report_info(nsys_output_dir: Path | None) -> dict[str, Any]:
+    """Check for nsys report files and return diagnostic info.
+
+    Returns a dict with ``found`` (bool), ``files`` (list of dicts with
+    name/size_mb), and ``error`` (str or None) keys.
+    """
+    info: dict[str, Any] = {"found": False, "files": [], "error": None}
+    if nsys_output_dir is None or not nsys_output_dir.exists():
+        info["error"] = "nsys output directory does not exist"
+        return info
+
+    nsys_files = list(nsys_output_dir.glob("*.nsys-rep"))
+    if not nsys_files:
+        all_files = list(nsys_output_dir.iterdir())
+        if all_files:
+            info["error"] = (
+                f"No .nsys-rep files found in {nsys_output_dir}. " f"Files present: {[f.name for f in all_files[:10]]}"
+            )
+        else:
+            info["error"] = (
+                "nsys produced no output files. The profiled process may have "
+                "exited before nsys could finalize the report, or nsys encountered "
+                "an internal error. Check the job logs for nsys warnings."
+            )
+        return info
+
+    info["found"] = True
+    for fp in nsys_files:
+        size_mb = round(fp.stat().st_size / (1024 * 1024), 2)
+        info["files"].append({"name": fp.name, "size_mb": size_mb})
+        logger.info("nsys report: %s (%.2f MB)", fp.name, size_mb)
+    return info
+
+
+def _copy_nsys_profiles(src_dir: Path, dest_dir: Path) -> list[str]:
+    """Copy any .nsys-rep files from *src_dir* into *dest_dir*.
+
+    Returns list of copied file names.
+    """
+    copied: list[str] = []
+    if not dest_dir.is_dir():
+        logger.warning("nsys copy destination %s is not a directory", dest_dir)
+        return copied
+    for fp in src_dir.glob("*.nsys-rep"):
+        try:
+            shutil.copy2(fp, dest_dir / fp.name)
+            logger.info("Copied nsys profile %s -> %s", fp, dest_dir / fp.name)
+            copied.append(fp.name)
+        except Exception as exc:
+            logger.warning("Failed to copy nsys profile %s: %s", fp, exc)
+    return copied
+
+
+def _create_job_venv(job_id: str, repo_root: Path) -> Path | None:
+    """Create a uv venv for *job_id* and install nemo_retriever into it.
+
+    Uses ``uv sync`` so that ``[tool.uv.sources]`` (e.g. the CUDA torch
+    index) are respected.  Falls back to ``uv pip install`` if the project
+    has no lock-file or ``uv sync`` is unavailable.
+
+    Returns the venv directory on success, or ``None`` on failure.
+    """
+    venv_dir = _VENV_BASE_DIR / job_id
+    _VENV_BASE_DIR.mkdir(parents=True, exist_ok=True)
+
+    if venv_dir.exists():
+        try:
+            shutil.rmtree(venv_dir)
+            logger.info("Removed stale venv dir for job %s", job_id)
+        except Exception as exc:
+            logger.warning("Could not remove stale venv dir %s: %s", venv_dir, exc)
+
+    try:
+        print(f"[venv] Creating isolated uv venv for job {job_id} at {venv_dir} …")
+        result = subprocess.run(
+            ["uv", "venv", str(venv_dir), "--python", sys.executable],
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=120,
+        )
+        print(f"[venv] Created venv for job {job_id}")
+        logger.info("Created venv for job %s at %s", job_id, venv_dir)
+    except FileNotFoundError:
+        logger.error("uv is not installed — cannot create job venv")
+        return None
+    except subprocess.CalledProcessError as exc:
+        logger.error("Failed to create venv for job %s: %s\nstderr: %s", job_id, exc, exc.stderr or "")
+        return None
+    except Exception as exc:
+        logger.error("Failed to create venv for job %s: %s", job_id, exc)
+        return None
+
+    nemo_dir = repo_root / "nemo_retriever"
+    use_sync = (nemo_dir / "pyproject.toml").exists()
+
+    if use_sync:
+        env = {**os.environ, "UV_PROJECT_ENVIRONMENT": str(venv_dir)}
+        try:
+            print(f"[venv] Running uv sync (respects [tool.uv.sources] for CUDA torch) …")
+            result = subprocess.run(
+                ["uv", "sync", "--no-dev"],
+                cwd=str(nemo_dir),
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=900,
+                env=env,
+            )
+            if result.stdout:
+                for line in result.stdout.strip().splitlines()[-5:]:
+                    logger.info("  sync: %s", line)
+            print(f"[venv] uv sync complete for job {job_id}")
+            logger.info("uv sync complete for job venv %s", job_id)
+            return venv_dir
+        except Exception as exc:
+            stderr_text = getattr(exc, "stderr", "") or ""
+            logger.warning(
+                "uv sync failed for job %s, falling back to uv pip install: %s\n%s",
+                job_id,
+                exc,
+                stderr_text[:1000],
+            )
+            print(f"[venv] uv sync failed, falling back to uv pip install …")
+
+    venv_python = str(venv_dir / "bin" / "python")
+    try:
+        print(f"[venv] Running uv pip install -e ./nemo_retriever …")
+        result = subprocess.run(
+            ["uv", "pip", "install", "-e", "./nemo_retriever", "--python", venv_python],
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=600,
+        )
+        if result.stdout:
+            for line in result.stdout.strip().splitlines()[-5:]:
+                logger.info("  pip: %s", line)
+        print(f"[venv] Installed nemo_retriever into job venv {job_id}")
+        logger.info("Installed nemo_retriever into job venv %s", job_id)
+    except Exception as exc:
+        logger.error("Failed to install into job venv %s: %s", job_id, exc)
+        if hasattr(exc, "stderr") and exc.stderr:
+            logger.error("stderr: %s", exc.stderr[:1000])
+        shutil.rmtree(venv_dir, ignore_errors=True)
+        return None
+
+    return venv_dir
+
+
+def _capture_pip_list(job_id: str) -> str:
+    """Run ``uv pip list`` in the job's venv and return the output as a string."""
+    venv_dir = _VENV_BASE_DIR / job_id
+    venv_python = str(venv_dir / "bin" / "python")
+    if not venv_dir.exists():
+        return ""
+    try:
+        result = subprocess.run(
+            ["uv", "pip", "list", "--python", venv_python],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        return result.stdout.strip() if result.stdout else ""
+    except Exception as exc:
+        logger.warning("Failed to capture pip list for job %s: %s", job_id, exc)
+        return ""
+
+
+def _destroy_job_venv(job_id: str) -> None:
+    """Remove the venv for a specific job (safe to call even if it doesn't exist)."""
+    venv_dir = _VENV_BASE_DIR / job_id
+    if venv_dir.exists():
+        try:
+            print(f"[venv] Deactivating and removing venv for job {job_id} at {venv_dir} …")
+            shutil.rmtree(venv_dir)
+            print(f"[venv] Removed venv for job {job_id}")
+            logger.info("Removed venv for job %s", job_id)
+        except Exception as exc:
+            logger.warning("Failed to remove venv for job %s: %s", job_id, exc)
+
+
+# ---------------------------------------------------------------------------
 # Job tracker — shared state between heartbeat loop and job thread
 # ---------------------------------------------------------------------------
 
@@ -547,6 +987,58 @@ def _validate_dataset_path(job: dict[str, Any]) -> str | None:
     return None
 
 
+def _enrich_standalone_graph_result(result: dict[str, Any], job: dict[str, Any]) -> None:
+    """Add harness-format fields to a standalone graph result so it appears
+    properly in the Runs view with basic metrics."""
+    if result.get("timestamp"):
+        return
+    from datetime import datetime, timezone
+
+    rows = result.get("rows", 0)
+    elapsed = result.get("elapsed_secs", 0)
+    pps = round(rows / elapsed, 2) if rows and elapsed and elapsed > 0 else None
+
+    result["timestamp"] = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_UTC")
+    result.setdefault(
+        "test_config",
+        {
+            "dataset_label": job.get("dataset", "graph-run"),
+            "preset": job.get("preset"),
+            "input_type": "graph",
+            "graph_pipeline": True,
+        },
+    )
+    result.setdefault(
+        "metrics",
+        {
+            "pages": rows,
+            "files": rows,
+            "ingest_secs": elapsed,
+            "pages_per_sec_ingest": pps,
+            "rows_processed": rows,
+        },
+    )
+    result.setdefault(
+        "summary_metrics",
+        {
+            "pages": rows,
+            "files": rows,
+            "ingest_secs": elapsed,
+            "pages_per_sec_ingest": pps,
+        },
+    )
+    try:
+        import socket as _sock
+
+        host = _sock.gethostname().strip() or "unknown"
+    except Exception:
+        host = "unknown"
+    result.setdefault("run_metadata", {"host": host})
+    result.setdefault("artifacts", {})
+    if job.get("tags"):
+        result.setdefault("tags", job["tags"])
+
+
 def _execute_job_on_runner(base_url: str, job: dict[str, Any], runner_id: int = 0) -> None:
     """Claim a job, execute it locally, and report results back."""
     job_id = job["id"]
@@ -605,35 +1097,6 @@ def _execute_job_on_runner(base_url: str, job: dict[str, Any], runner_id: int = 
                 logger.warning("Job %s — nemo_retriever reinstall failed: %s", job_id, exc)
 
     extra_packages = job.get("extra_packages") or []
-    if extra_packages:
-        logger.info("Job %s — installing extra packages: %s", job_id, extra_packages)
-        try:
-            import shlex
-            import shutil
-
-            # Each entry may be a plain package spec or a full pip arg string
-            # (e.g. "-i https://test.pypi.org/simple/ pkg==1.0"), so shlex-split
-            # each line and flatten into a single install invocation.
-            pip_args = [token for entry in extra_packages for token in shlex.split(entry)]
-            uv_bin = shutil.which("uv")
-            if uv_bin:
-                cmd = [uv_bin, "pip", "install", "--python", sys.executable, *pip_args]
-            else:
-                cmd = [sys.executable, "-m", "pip", "install", *pip_args]
-            subprocess.run(cmd, check=True, timeout=300)
-        except subprocess.CalledProcessError as exc:
-            logger.error("Job %s — extra_packages install failed: %s", job_id, exc)
-            try:
-                _post_json(
-                    f"{base_url}/api/jobs/{job_id}/complete",
-                    {"success": False, "error": f"extra_packages install failed: {exc}"},
-                )
-            except Exception:
-                pass
-            _job_tracker.finish_job()
-            if prev_head:
-                _git_restore(prev_head)
-            return
 
     execution_commit = _get_current_git_commit()
 
@@ -667,22 +1130,275 @@ def _execute_job_on_runner(base_url: str, job: dict[str, Any], runner_id: int = 
         overrides.get("ray_address", "local"),
     )
 
+    # --- Create an isolated venv for this job ---
+    repo_root = _find_repo_root()
+    venv_dir: Path | None = None
+    if repo_root is not None:
+        logger.info("Job %s — creating isolated venv …", job_id)
+        venv_dir = _create_job_venv(job_id, repo_root)
+        if venv_dir is not None:
+            logger.info("Job %s — venv ready at %s", job_id, venv_dir)
+        else:
+            logger.warning("Job %s — venv creation failed, falling back to current environment", job_id)
+
+    if extra_packages:
+        import shlex
+        import shutil
+
+        # Determine which Python to install into: the job venv if available,
+        # otherwise fall back to the runner's own interpreter.
+        if venv_dir is not None:
+            target_python = str(venv_dir / "bin" / "python")
+        else:
+            target_python = sys.executable
+
+        logger.info("Job %s — installing extra packages into %s: %s", job_id, target_python, extra_packages)
+        try:
+            # Each entry may be a plain package spec or a full pip arg string
+            # (e.g. "-i https://test.pypi.org/simple/ pkg==1.0"), so shlex-split
+            # each line and flatten into a single install invocation.
+            pip_args = [token for entry in extra_packages for token in shlex.split(entry)]
+            uv_bin = shutil.which("uv")
+            if uv_bin:
+                cmd = [uv_bin, "pip", "install", "--python", target_python, *pip_args]
+            else:
+                cmd = [target_python, "-m", "pip", "install", *pip_args]
+            subprocess.run(cmd, check=True, timeout=300)
+        except subprocess.CalledProcessError as exc:
+            logger.error("Job %s — extra_packages install failed: %s", job_id, exc)
+            try:
+                _post_json(
+                    f"{base_url}/api/jobs/{job_id}/complete",
+                    {"success": False, "error": f"extra_packages install failed: {exc}"},
+                )
+            except Exception:
+                pass
+            _job_tracker.finish_job()
+            if prev_head:
+                _git_restore(prev_head)
+            _destroy_job_venv(job_id)
+            return
+
+    is_graph_job = job.get("trigger_source") == "graph"
+    graph_code = job.get("graph_code") or ""
+    graph_meta: dict[str, Any] = {}
+    if is_graph_job and job.get("config"):
+        try:
+            graph_meta = json_module.loads(job["config"])
+        except (json_module.JSONDecodeError, TypeError):
+            pass
+
+    if is_graph_job and graph_meta.get("ray_address") and "ray_address" not in overrides:
+        overrides["ray_address"] = graph_meta["ray_address"]
+
+    if is_graph_job and not graph_code.strip():
+        logger.error("Job %s is a graph job but has no graph_code — completing as failed", job_id)
+        _post_json(
+            f"{base_url}/api/jobs/{job_id}/complete",
+            {"success": False, "error": "Graph job has no graph_code. Save the graph and retry."},
+        )
+        _job_tracker.finish_job()
+        if prev_head:
+            _git_restore(prev_head)
+        _destroy_job_venv(job_id)
+        return
+
+    nsys_profile = bool(job.get("nsys_profile"))
+    use_nsys = nsys_profile and _nsys_available()
+    nsys_diag: dict[str, Any] = {"requested": nsys_profile, "enabled": use_nsys}
+    if nsys_profile and not use_nsys:
+        nsys_diag["error"] = "nsys is not installed or not on PATH"
+        logger.warning("Job %s requested nsys profiling but nsys is not on PATH — proceeding without", job_id)
+    nsys_output_dir = Path(tempfile.mkdtemp(prefix=f"nsys_{job_id}_")) if use_nsys else None
+    if nsys_output_dir:
+        nsys_diag["output_dir"] = str(nsys_output_dir)
+
+    result: dict[str, Any] | None = None
+
     original_stdout = sys.stdout
     sys.stdout = _TeeWriter(original_stdout)
     try:
-        from nemo_retriever.harness.run import _run_entry
+        is_harness_graph = is_graph_job and job.get("graph_id")
 
-        result = _run_entry(
-            run_name=None,
-            config_file=job.get("config"),
-            session_dir=None,
-            dataset=dataset_value,
-            preset=job.get("preset"),
-            sweep_overrides=overrides if overrides else None,
-            tags=job.get("tags"),
-            skip_local_history=True,
-        )
+        if is_harness_graph:
+            # ---- Graph-as-preset: route through _run_entry for full metrics ----
+            if venv_dir is not None:
+                args_file = venv_dir / "job_args.json"
+                result_file = venv_dir / "job_result.json"
+                wrapper_file = venv_dir / "job_wrapper.py"
 
+                job_args = {
+                    "run_name": None,
+                    "config_file": None,
+                    "session_dir": None,
+                    "dataset": dataset_value,
+                    "preset": job.get("preset"),
+                    "sweep_overrides": overrides if overrides else None,
+                    "tags": job.get("tags"),
+                    "skip_local_history": True,
+                    "graph_code": graph_code,
+                }
+                args_file.write_text(json_module.dumps(job_args))
+                wrapper_file.write_text(_JOB_WRAPPER_SCRIPT)
+
+                venv_python = str(venv_dir / "bin" / "python")
+                cmd = [venv_python, str(wrapper_file), str(args_file), str(result_file)]
+                if use_nsys:
+                    cmd = _nsys_prefix(str(nsys_output_dir / "profile")) + cmd
+                proc = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    cwd=str(repo_root),
+                )
+
+                for line in proc.stdout:
+                    sys.stdout.write(line)
+
+                proc.wait()
+
+                if result_file.exists():
+                    result = json_module.loads(result_file.read_text())
+                else:
+                    result = {
+                        "success": False,
+                        "failure_reason": f"Graph harness process terminated (exit code {proc.returncode})",
+                        "return_code": proc.returncode,
+                    }
+            else:
+                from nemo_retriever.harness.run import _run_entry
+
+                result = _run_entry(
+                    run_name=None,
+                    config_file=None,
+                    session_dir=None,
+                    dataset=dataset_value,
+                    preset=job.get("preset"),
+                    sweep_overrides=overrides if overrides else None,
+                    tags=job.get("tags"),
+                    skip_local_history=True,
+                    graph_code=graph_code,
+                )
+
+        elif is_graph_job:
+            # ---- Standalone graph run (from Designer) — direct wrapper ----
+            run_dir = venv_dir or Path(tempfile.mkdtemp(prefix=f"graph_{job_id}_"))
+            code_file = run_dir / "graph_pipeline.py"
+            result_file = run_dir / "job_result.json"
+            wrapper_file = run_dir / "graph_wrapper.py"
+
+            code_file.write_text(graph_code)
+            wrapper_file.write_text(_GRAPH_WRAPPER_SCRIPT)
+
+            ray_addr = graph_meta.get("ray_address") or overrides.get("ray_address") or "__none__"
+
+            python_bin = str(venv_dir / "bin" / "python") if venv_dir else sys.executable
+            cmd = [python_bin, str(wrapper_file), str(code_file), str(result_file), ray_addr]
+            if use_nsys:
+                cmd = _nsys_prefix(str(nsys_output_dir / "profile")) + cmd
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                cwd=str(repo_root) if repo_root else None,
+            )
+
+            for line in proc.stdout:
+                sys.stdout.write(line)
+
+            proc.wait()
+
+            if result_file.exists():
+                result = json_module.loads(result_file.read_text())
+            else:
+                result = {
+                    "success": False,
+                    "failure_reason": f"Graph process terminated (exit code {proc.returncode})",
+                    "return_code": proc.returncode,
+                }
+
+            _enrich_standalone_graph_result(result, job)
+
+            if not venv_dir and run_dir.exists():
+                shutil.rmtree(run_dir, ignore_errors=True)
+
+        elif venv_dir is not None:
+            # ---- Run in isolated subprocess using the job venv ----
+            args_file = venv_dir / "job_args.json"
+            result_file = venv_dir / "job_result.json"
+            wrapper_file = venv_dir / "job_wrapper.py"
+
+            job_args = {
+                "run_name": None,
+                "config_file": job.get("config"),
+                "session_dir": None,
+                "dataset": dataset_value,
+                "preset": job.get("preset"),
+                "sweep_overrides": overrides if overrides else None,
+                "tags": job.get("tags"),
+                "skip_local_history": True,
+            }
+            args_file.write_text(json_module.dumps(job_args))
+            wrapper_file.write_text(_JOB_WRAPPER_SCRIPT)
+
+            venv_python = str(venv_dir / "bin" / "python")
+            cmd = [venv_python, str(wrapper_file), str(args_file), str(result_file)]
+            if use_nsys:
+                cmd = _nsys_prefix(str(nsys_output_dir / "profile")) + cmd
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                cwd=str(repo_root),
+            )
+
+            for line in proc.stdout:
+                sys.stdout.write(line)
+
+            proc.wait()
+
+            if result_file.exists():
+                result = json_module.loads(result_file.read_text())
+            else:
+                result = {
+                    "success": False,
+                    "failure_reason": f"Job process terminated (exit code {proc.returncode})",
+                    "return_code": proc.returncode,
+                }
+        else:
+            # ---- Fallback: run in the current process ----
+            from nemo_retriever.harness.run import _run_entry
+
+            result = _run_entry(
+                run_name=None,
+                config_file=job.get("config"),
+                session_dir=None,
+                dataset=dataset_value,
+                preset=job.get("preset"),
+                sweep_overrides=overrides if overrides else None,
+                tags=job.get("tags"),
+                skip_local_history=True,
+            )
+
+        # --- Collect nsys profiling diagnostics ---
+        if use_nsys:
+            report_info = _collect_nsys_report_info(nsys_output_dir)
+            nsys_diag.update(report_info)
+            if report_info["found"]:
+                total_mb = sum(f["size_mb"] for f in report_info["files"])
+                print(f"[nsys] Profile captured: {len(report_info['files'])} file(s), {total_mb:.1f} MB total")
+            else:
+                print(f"[nsys] WARNING: No profile captured. {report_info.get('error', 'Unknown reason')}")
+
+        if isinstance(result, dict):
+            result["nsys_status"] = nsys_diag
+
+        pip_list_output = _capture_pip_list(job_id)
+
+        final_log_tail = _job_tracker.get_log_tail(_LOG_TAIL_MAX)
         if _job_tracker.is_cancel_requested():
             complete_resp = _post_json(
                 f"{base_url}/api/jobs/{job_id}/complete",
@@ -692,6 +1408,8 @@ def _execute_job_on_runner(base_url: str, job: dict[str, Any], runner_id: int = 
                     "result": result,
                     "execution_commit": execution_commit,
                     "num_gpus": _runner_num_gpus,
+                    "log_tail": final_log_tail,
+                    "pip_list": pip_list_output,
                 },
             )
             logger.info("Job %s cancelled by user", job_id)
@@ -704,6 +1422,8 @@ def _execute_job_on_runner(base_url: str, job: dict[str, Any], runner_id: int = 
                     "result": result,
                     "execution_commit": execution_commit,
                     "num_gpus": _runner_num_gpus,
+                    "log_tail": final_log_tail,
+                    "pip_list": pip_list_output,
                 },
             )
             logger.info("Job %s completed (success=%s)", job_id, success)
@@ -717,25 +1437,54 @@ def _execute_job_on_runner(base_url: str, job: dict[str, Any], runner_id: int = 
             else:
                 cmd_file = artifacts.get("command_file", "")
                 art_dir = str(Path(cmd_file).parent) if cmd_file else None
-            if art_dir:
+
+            if use_nsys and nsys_output_dir:
+                if art_dir and Path(art_dir).is_dir():
+                    copied = _copy_nsys_profiles(nsys_output_dir, Path(art_dir))
+                    if copied:
+                        logger.info("Copied %d nsys file(s) to artifact dir", len(copied))
+                    else:
+                        logger.warning("No nsys profiles to copy to artifact dir")
+
+            if art_dir and Path(art_dir).is_dir():
                 try:
                     _upload_artifacts(base_url, resp_run_id, art_dir)
                 except Exception as upload_exc:
                     logger.warning("Failed to upload artifacts for run %d: %s", resp_run_id, upload_exc)
+            elif use_nsys and nsys_output_dir:
+                nsys_files = list(nsys_output_dir.glob("*.nsys-rep"))
+                if nsys_files:
+                    logger.info(
+                        "No artifact dir — uploading nsys files directly (%d file(s), %.1f MB)",
+                        len(nsys_files),
+                        sum(f.stat().st_size for f in nsys_files) / (1024 * 1024),
+                    )
+                    try:
+                        _upload_artifacts(base_url, resp_run_id, str(nsys_output_dir))
+                    except Exception as upload_exc:
+                        logger.warning("Failed to upload nsys artifacts for run %d: %s", resp_run_id, upload_exc)
+                else:
+                    logger.warning("nsys profiling was enabled but no .nsys-rep files found to upload")
     except Exception as exc:
         tb = traceback.format_exc()
         logger.error("Job %s failed: %s\n%s", job_id, exc, tb)
+        if isinstance(result, dict):
+            result.setdefault("nsys_status", nsys_diag)
         try:
             error_msg = f"{exc}\n\n{tb}"
             if _job_tracker.is_cancel_requested():
                 error_msg = "Cancelled by user"
+            err_pip_list = _capture_pip_list(job_id)
             _post_json(
                 f"{base_url}/api/jobs/{job_id}/complete",
                 {
                     "success": False,
                     "error": error_msg,
+                    "result": result if isinstance(result, dict) else None,
                     "execution_commit": execution_commit,
                     "num_gpus": _runner_num_gpus,
+                    "log_tail": _job_tracker.get_log_tail(_LOG_TAIL_MAX),
+                    "pip_list": err_pip_list,
                 },
             )
         except Exception:
@@ -745,6 +1494,9 @@ def _execute_job_on_runner(base_url: str, job: dict[str, Any], runner_id: int = 
         _job_tracker.finish_job()
         if prev_head:
             _git_restore(prev_head)
+        _destroy_job_venv(job_id)
+        if nsys_output_dir and nsys_output_dir.exists():
+            shutil.rmtree(nsys_output_dir, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------
@@ -912,7 +1664,7 @@ def runner_start_command(
             current_jid = _job_tracker.get_current_job_id()
             if current_jid:
                 hb_payload["current_job_id"] = current_jid
-                hb_payload["log_tail"] = _job_tracker.get_log_tail(200)
+                hb_payload["log_tail"] = _job_tracker.get_log_tail(_LOG_TAIL_MAX)
 
             try:
                 hb_resp = _post_json(f"{base_url}/api/runners/{runner_id}/heartbeat", hb_payload)

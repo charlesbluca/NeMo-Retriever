@@ -200,6 +200,18 @@ CREATE TABLE IF NOT EXISTS preset_matrices (
 );
 """
 
+CREATE_GRAPHS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS graphs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    description TEXT,
+    graph_json TEXT NOT NULL,
+    generated_code TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT
+);
+"""
+
 _MIGRATIONS = [
     "ALTER TABLE runs ADD COLUMN hostname TEXT",
     "ALTER TABLE runs ADD COLUMN gpu_type TEXT",
@@ -228,6 +240,29 @@ _MIGRATIONS = [
     "ALTER TABLE preset_matrices ADD COLUMN preferred_runner_id INTEGER",
     "ALTER TABLE preset_matrices ADD COLUMN gpu_type_filter TEXT",
     "ALTER TABLE schedules ADD COLUMN preferred_runner_ids TEXT",
+    "ALTER TABLE datasets ADD COLUMN evaluation_mode TEXT DEFAULT 'recall'",
+    "ALTER TABLE datasets ADD COLUMN beir_loader TEXT",
+    "ALTER TABLE datasets ADD COLUMN beir_dataset_name TEXT",
+    "ALTER TABLE datasets ADD COLUMN beir_split TEXT DEFAULT 'test'",
+    "ALTER TABLE datasets ADD COLUMN beir_query_language TEXT",
+    "ALTER TABLE datasets ADD COLUMN beir_doc_id_field TEXT DEFAULT 'pdf_basename'",
+    "ALTER TABLE datasets ADD COLUMN beir_ks TEXT",
+    "ALTER TABLE datasets ADD COLUMN embed_model_name TEXT",
+    "ALTER TABLE datasets ADD COLUMN embed_modality TEXT DEFAULT 'text'",
+    "ALTER TABLE datasets ADD COLUMN embed_granularity TEXT DEFAULT 'element'",
+    "ALTER TABLE datasets ADD COLUMN extract_page_as_image INTEGER DEFAULT 0",
+    "ALTER TABLE datasets ADD COLUMN extract_infographics INTEGER DEFAULT 0",
+    "ALTER TABLE preset_matrices ADD COLUMN git_ref TEXT",
+    "ALTER TABLE preset_matrices ADD COLUMN git_commit TEXT",
+    "ALTER TABLE jobs ADD COLUMN matrix_run_id TEXT",
+    "ALTER TABLE jobs ADD COLUMN matrix_name TEXT",
+    "ALTER TABLE runs ADD COLUMN job_id TEXT",
+    "ALTER TABLE jobs ADD COLUMN graph_code TEXT",
+    "ALTER TABLE jobs ADD COLUMN nsys_profile INTEGER DEFAULT 0",
+    "ALTER TABLE preset_matrices ADD COLUMN nsys_profile INTEGER DEFAULT 0",
+    "ALTER TABLE runs ADD COLUMN nsys_profile INTEGER DEFAULT 0",
+    "ALTER TABLE jobs ADD COLUMN graph_id INTEGER",
+    "ALTER TABLE jobs ADD COLUMN pip_list TEXT",
     "ALTER TABLE jobs ADD COLUMN extra_packages TEXT",
 ]
 
@@ -266,6 +301,7 @@ def _connect(db_path: str | None = None) -> sqlite3.Connection:
     conn.execute(CREATE_ALERT_EVENTS_TABLE_SQL)
     conn.execute(CREATE_PORTAL_SETTINGS_TABLE_SQL)
     conn.execute(CREATE_PRESET_MATRICES_TABLE_SQL)
+    conn.execute(CREATE_GRAPHS_TABLE_SQL)
     conn.execute(CREATE_INDEX_SQL)
     for stmt in _MIGRATIONS:
         try:
@@ -302,6 +338,8 @@ def record_run(
     schedule_id: int | None = None,
     execution_commit: str | None = None,
     num_gpus: int | None = None,
+    job_id: str | None = None,
+    nsys_profile: int = 0,
 ) -> int:
     """Insert a single run result into the history database. Returns the row id."""
     conn = _connect(db_path)
@@ -336,6 +374,8 @@ def record_run(
             "ray_dashboard_url": run_meta.get("ray_dashboard_url"),
             "execution_commit": execution_commit,
             "num_gpus": num_gpus,
+            "job_id": job_id,
+            "nsys_profile": nsys_profile,
         }
 
         columns = ", ".join(row.keys())
@@ -365,7 +405,8 @@ def get_runs(
             " failure_reason, pages, ingest_secs, pages_per_sec, recall_1, recall_5,"
             " recall_10, files, tags,"
             " artifact_dir, hostname, gpu_type, trigger_source, schedule_id,"
-            " ray_cluster_mode, ray_dashboard_url, execution_commit, num_gpus"
+            " ray_cluster_mode, ray_dashboard_url, execution_commit, num_gpus,"
+            " nsys_profile"
             " FROM runs WHERE 1=1"
         )
         params: list[Any] = []
@@ -593,7 +634,11 @@ def get_preset_by_name(name: str, db_path: str | None = None) -> dict[str, Any] 
 def import_yaml_presets(yaml_presets: dict[str, dict[str, Any]], db_path: str | None = None) -> int:
     """Import presets from the YAML config into the managed presets table.
 
-    Only presets whose name does not already exist are inserted.
+    New presets are inserted.  Existing presets have their ``config``
+    column refreshed from YAML so that tuning-field changes are picked up,
+    but their ``overrides`` (user-configured key/value pairs added via the
+    Portal UI) are always preserved.
+
     Returns the number of newly imported presets.
     """
     imported = 0
@@ -602,6 +647,9 @@ def import_yaml_presets(yaml_presets: dict[str, dict[str, Any]], db_path: str | 
             continue
         existing = get_preset_by_name(name, db_path)
         if existing:
+            existing_config = existing.get("config") or {}
+            if isinstance(existing_config, dict) and existing_config != cfg:
+                update_preset(existing["id"], {"config": cfg}, db_path)
             continue
         data = {
             "name": name,
@@ -648,8 +696,8 @@ def create_preset_matrix(data: dict[str, Any], db_path: str | None = None) -> di
         now = _now_iso()
         conn.execute(
             "INSERT INTO preset_matrices (name, description, dataset_names, preset_names, tags,"
-            " preferred_runner_id, gpu_type_filter, created_at, updated_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " preferred_runner_id, gpu_type_filter, git_ref, git_commit, nsys_profile, created_at, updated_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 data["name"],
                 data.get("description"),
@@ -658,6 +706,9 @@ def create_preset_matrix(data: dict[str, Any], db_path: str | None = None) -> di
                 json.dumps(data.get("tags") or []),
                 data.get("preferred_runner_id"),
                 data.get("gpu_type_filter"),
+                data.get("git_ref"),
+                data.get("git_commit"),
+                data.get("nsys_profile", 0),
                 now,
                 now,
             ),
@@ -725,6 +776,15 @@ def update_preset_matrix(matrix_id: int, data: dict[str, Any], db_path: str | No
         if "gpu_type_filter" in data:
             sets.append("gpu_type_filter = ?")
             vals.append(data["gpu_type_filter"])
+        if "git_ref" in data:
+            sets.append("git_ref = ?")
+            vals.append(data["git_ref"])
+        if "git_commit" in data:
+            sets.append("git_commit = ?")
+            vals.append(data["git_commit"])
+        if "nsys_profile" in data:
+            sets.append("nsys_profile = ?")
+            vals.append(data["nsys_profile"])
         if not sets:
             return get_preset_matrix_by_id(matrix_id, db_path)
         sets.append("updated_at = ?")
@@ -759,6 +819,18 @@ _DATASET_FIELDS = (
     "recall_required",
     "recall_match_mode",
     "recall_adapter",
+    "evaluation_mode",
+    "beir_loader",
+    "beir_dataset_name",
+    "beir_split",
+    "beir_query_language",
+    "beir_doc_id_field",
+    "beir_ks",
+    "embed_model_name",
+    "embed_modality",
+    "embed_granularity",
+    "extract_page_as_image",
+    "extract_infographics",
     "description",
 )
 
@@ -766,6 +838,15 @@ _DATASET_FIELDS = (
 def _deserialize_dataset_row(row: sqlite3.Row) -> dict[str, Any]:
     d = dict(row)
     d["recall_required"] = bool(d.get("recall_required"))
+    d["extract_page_as_image"] = bool(d.get("extract_page_as_image"))
+    d["extract_infographics"] = bool(d.get("extract_infographics"))
+    if d.get("beir_ks"):
+        try:
+            d["beir_ks"] = json.loads(d["beir_ks"])
+        except (json.JSONDecodeError, TypeError):
+            d["beir_ks"] = [1, 3, 5, 10]
+    else:
+        d["beir_ks"] = [1, 3, 5, 10]
     if d.get("tags"):
         try:
             d["tags"] = json.loads(d["tags"])
@@ -781,10 +862,16 @@ def create_dataset(data: dict[str, Any], db_path: str | None = None) -> dict[str
     try:
         now = _now_iso()
         tags = json.dumps(data.get("tags") or [])
+        beir_ks = data.get("beir_ks")
+        beir_ks_json = json.dumps(beir_ks) if beir_ks is not None else None
         conn.execute(
             "INSERT INTO datasets (name, path, query_csv, input_type, recall_required,"
-            " recall_match_mode, recall_adapter, description, tags, created_at, updated_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " recall_match_mode, recall_adapter, evaluation_mode, beir_loader,"
+            " beir_dataset_name, beir_split, beir_query_language, beir_doc_id_field,"
+            " beir_ks, embed_model_name, embed_modality, embed_granularity,"
+            " extract_page_as_image, extract_infographics,"
+            " description, tags, created_at, updated_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 data["name"],
                 data["path"],
@@ -793,6 +880,18 @@ def create_dataset(data: dict[str, Any], db_path: str | None = None) -> dict[str
                 1 if data.get("recall_required") else 0,
                 data.get("recall_match_mode", "pdf_page"),
                 data.get("recall_adapter", "none"),
+                data.get("evaluation_mode", "recall"),
+                data.get("beir_loader") or None,
+                data.get("beir_dataset_name") or None,
+                data.get("beir_split", "test"),
+                data.get("beir_query_language") or None,
+                data.get("beir_doc_id_field", "pdf_basename"),
+                beir_ks_json,
+                data.get("embed_model_name") or None,
+                data.get("embed_modality", "text"),
+                data.get("embed_granularity", "element"),
+                1 if data.get("extract_page_as_image") else 0,
+                1 if data.get("extract_infographics") else 0,
                 data.get("description") or None,
                 tags,
                 now,
@@ -836,6 +935,7 @@ def get_dataset_by_id(dataset_id: int, db_path: str | None = None) -> dict[str, 
 
 
 def update_dataset(dataset_id: int, data: dict[str, Any], db_path: str | None = None) -> dict[str, Any] | None:
+    _BOOL_DATASET_FIELDS = {"recall_required", "extract_page_as_image", "extract_infographics"}
     conn = _connect(db_path)
     try:
         sets: list[str] = []
@@ -843,8 +943,10 @@ def update_dataset(dataset_id: int, data: dict[str, Any], db_path: str | None = 
         for field in _DATASET_FIELDS:
             if field in data:
                 val = data[field]
-                if field == "recall_required":
+                if field in _BOOL_DATASET_FIELDS:
                     val = 1 if val else 0
+                elif field == "beir_ks":
+                    val = json.dumps(val) if val is not None else None
                 sets.append(f"{field} = ?")
                 vals.append(val)
         if "tags" in data:
@@ -1556,6 +1658,11 @@ def create_job(data: dict[str, Any], db_path: str | None = None) -> dict[str, An
             "result": None,
             "error": None,
             "tags": json.dumps(data["tags"]) if data.get("tags") else None,
+            "matrix_run_id": data.get("matrix_run_id"),
+            "matrix_name": data.get("matrix_name"),
+            "graph_code": data.get("graph_code"),
+            "graph_id": data.get("graph_id"),
+            "nsys_profile": data.get("nsys_profile", 0),
         }
         columns = ", ".join(row.keys())
         placeholders = ", ".join("?" * len(row))
@@ -1719,6 +1826,30 @@ def cancel_job(job_id: str, reason: str = "Cancelled due to backlog limit", db_p
         conn.close()
 
 
+def cancel_jobs_by_matrix_run_id(matrix_run_id: str, db_path: str | None = None) -> int:
+    """Cancel all pending and running jobs that share a matrix_run_id.
+
+    Pending jobs are cancelled immediately.  Running jobs are transitioned to
+    ``cancelling``.  Returns the total number of affected jobs.
+    """
+    conn = _connect(db_path)
+    try:
+        now = _now_iso()
+        c1 = conn.execute(
+            "UPDATE jobs SET status = 'cancelled', completed_at = ?, error = ? "
+            "WHERE matrix_run_id = ? AND status = 'pending'",
+            (now, "Cancelled by user (matrix cancel)", matrix_run_id),
+        )
+        c2 = conn.execute(
+            "UPDATE jobs SET status = 'cancelling' " "WHERE matrix_run_id = ? AND status = 'running'",
+            (matrix_run_id,),
+        )
+        conn.commit()
+        return c1.rowcount + c2.rowcount
+    finally:
+        conn.close()
+
+
 def request_job_cancel(job_id: str, db_path: str | None = None) -> bool:
     """Request cancellation of a pending or running job.
 
@@ -1785,6 +1916,29 @@ def get_job_log(job_id: str, db_path: str | None = None) -> list[str]:
             except (json.JSONDecodeError, TypeError):
                 pass
         return []
+    finally:
+        conn.close()
+
+
+def update_job_pip_list(job_id: str, pip_list: str, db_path: str | None = None) -> None:
+    """Store the captured ``uv pip list`` output for a completed job."""
+    conn = _connect(db_path)
+    try:
+        conn.execute(
+            "UPDATE jobs SET pip_list = ? WHERE id = ?",
+            (pip_list, job_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_job_pip_list(job_id: str, db_path: str | None = None) -> str:
+    """Return the stored pip list for a job."""
+    conn = _connect(db_path)
+    try:
+        row = conn.execute("SELECT pip_list FROM jobs WHERE id = ?", (job_id,)).fetchone()
+        return row[0] if row and row[0] else ""
     finally:
         conn.close()
 
@@ -2182,3 +2336,85 @@ def backfill_from_artifacts(artifacts_root: Path | None = None, db_path: str | N
         imported += 1
 
     return imported
+
+
+# ---------------------------------------------------------------------------
+# Graph CRUD
+# ---------------------------------------------------------------------------
+
+
+def list_graphs(db_path: str | None = None) -> list[dict[str, Any]]:
+    conn = _connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute("SELECT * FROM graphs ORDER BY updated_at DESC, id DESC").fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def get_graph(graph_id: int, db_path: str | None = None) -> dict[str, Any] | None:
+    conn = _connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        row = conn.execute("SELECT * FROM graphs WHERE id = ?", (graph_id,)).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def create_graph(data: dict[str, Any], db_path: str | None = None) -> dict[str, Any]:
+    now = _now_iso()
+    conn = _connect(db_path)
+    try:
+        cur = conn.execute(
+            "INSERT INTO graphs (name, description, graph_json, generated_code, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                data["name"],
+                data.get("description") or "",
+                data["graph_json"] if isinstance(data["graph_json"], str) else json.dumps(data["graph_json"]),
+                data.get("generated_code") or "",
+                now,
+                now,
+            ),
+        )
+        conn.commit()
+        return get_graph(cur.lastrowid, db_path) or {"id": cur.lastrowid}
+    finally:
+        conn.close()
+
+
+def update_graph(graph_id: int, data: dict[str, Any], db_path: str | None = None) -> dict[str, Any] | None:
+    now = _now_iso()
+    conn = _connect(db_path)
+    try:
+        sets: list[str] = []
+        vals: list[Any] = []
+        for col in ("name", "description", "graph_json", "generated_code"):
+            if col in data:
+                sets.append(f"{col} = ?")
+                v = data[col]
+                if col == "graph_json" and not isinstance(v, str):
+                    v = json.dumps(v)
+                vals.append(v)
+        if not sets:
+            return get_graph(graph_id, db_path)
+        sets.append("updated_at = ?")
+        vals.append(now)
+        vals.append(graph_id)
+        conn.execute(f"UPDATE graphs SET {', '.join(sets)} WHERE id = ?", vals)
+        conn.commit()
+        return get_graph(graph_id, db_path)
+    finally:
+        conn.close()
+
+
+def delete_graph(graph_id: int, db_path: str | None = None) -> bool:
+    conn = _connect(db_path)
+    try:
+        cur = conn.execute("DELETE FROM graphs WHERE id = ?", (graph_id,))
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()

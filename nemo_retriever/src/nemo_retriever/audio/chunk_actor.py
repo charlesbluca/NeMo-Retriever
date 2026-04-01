@@ -20,6 +20,8 @@ import pandas as pd
 
 from nemo_retriever.audio.media_interface import MediaInterface
 from nemo_retriever.audio.media_interface import is_media_available
+from nemo_retriever.graph.abstract_operator import AbstractOperator
+from nemo_retriever.graph.designer import designer_component
 from nemo_retriever.params import AudioChunkParams
 
 logger = logging.getLogger(__name__)
@@ -28,7 +30,14 @@ logger = logging.getLogger(__name__)
 CHUNK_COLUMNS = ["path", "source_path", "duration", "chunk_index", "metadata", "page_number", "bytes"]
 
 
-class MediaChunkActor:
+@designer_component(
+    name="Media Chunker",
+    category="Audio",
+    compute="cpu",
+    description="Splits audio/media files into chunks for processing",
+    category_color="#ff6b6b",
+)
+class MediaChunkActor(AbstractOperator):
     """
     Ray Data map_batches callable: DataFrame with path, bytes -> DataFrame of chunk rows.
 
@@ -37,6 +46,7 @@ class MediaChunkActor:
     """
 
     def __init__(self, params: AudioChunkParams | None = None) -> None:
+        super().__init__(params=params)
         if not is_media_available():
             raise RuntimeError(
                 "MediaChunkActor requires ffmpeg. Install with: pip install ffmpeg-python and system ffmpeg."
@@ -44,7 +54,10 @@ class MediaChunkActor:
         self._params = params or AudioChunkParams()
         self._interface = MediaInterface()
 
-    def __call__(self, batch_df: pd.DataFrame) -> pd.DataFrame:
+    def preprocess(self, data: Any, **kwargs: Any) -> Any:
+        return data
+
+    def process(self, batch_df: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
         if not isinstance(batch_df, pd.DataFrame) or batch_df.empty:
             return pd.DataFrame(columns=CHUNK_COLUMNS)
 
@@ -66,6 +79,9 @@ class MediaChunkActor:
         if not out_rows:
             return pd.DataFrame(columns=CHUNK_COLUMNS)
         return pd.DataFrame(out_rows)
+
+    def postprocess(self, data: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
+        return data
 
 
 def _chunk_one(source_path: str, params: AudioChunkParams, interface: MediaInterface) -> List[Dict[str, Any]]:

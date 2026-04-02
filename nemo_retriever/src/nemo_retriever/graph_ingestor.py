@@ -30,7 +30,7 @@ import json
 from typing import Any, Callable, Dict, List, Optional, Union
 
 from nemo_retriever.graph import InprocessExecutor, RayDataExecutor
-from nemo_retriever.graph.ingestor_runtime import build_graph
+from nemo_retriever.graph.ingestor_runtime import batch_tuning_to_node_overrides, build_graph
 from nemo_retriever.ingestor import ingestor
 from nemo_retriever.params import (
     ASRParams,
@@ -248,13 +248,22 @@ class GraphIngestor(ingestor):
                 dedup_params=self._dedup_params,
                 stage_order=post_extract_order,
             )
+            # Derive per-node Ray scheduling config from BatchTuningParams, then
+            # let any explicit node_overrides passed to __init__ take precedence.
+            derived_overrides = batch_tuning_to_node_overrides(self._extract_params, self._embed_params)
+            merged_overrides: Dict[str, Dict[str, Any]] = {}
+            for node_name in set(derived_overrides) | set(self._node_overrides):
+                merged_overrides[node_name] = {
+                    **derived_overrides.get(node_name, {}),
+                    **self._node_overrides.get(node_name, {}),
+                }
             executor = RayDataExecutor(
                 graph,
                 ray_address=self._ray_address,
                 batch_size=self._batch_size,
                 num_cpus=self._num_cpus,
                 num_gpus=self._num_gpus,
-                node_overrides=self._node_overrides,
+                node_overrides=merged_overrides,
             )
             result = executor.ingest(self._documents)
             self._rd_dataset = result

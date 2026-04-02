@@ -41,6 +41,58 @@ def _positive(value: Any) -> Any:
     return value if value not in (None, 0, 0.0, "", False) else None
 
 
+def batch_tuning_to_node_overrides(
+    extract_params: Any | None,
+    embed_params: Any | None,
+) -> dict[str, dict[str, Any]]:
+    """Translate BatchTuningParams from extract/embed params into RayDataExecutor node_overrides.
+
+    Only positive (non-zero, non-None) values are emitted so that absent CLI
+    flags don't silently override executor defaults.
+    """
+    overrides: dict[str, dict[str, Any]] = {}
+
+    def _set(node_name: str, key: str, value: Any) -> None:
+        v = _positive(value)
+        if v is not None:
+            overrides.setdefault(node_name, {})[key] = v
+
+    embed_tuning = _batch_tuning(embed_params)
+    if embed_tuning is not None:
+        _set(_BatchEmbedActor.__name__, "batch_size", getattr(embed_tuning, "embed_batch_size", None))
+        _set(_BatchEmbedActor.__name__, "concurrency", getattr(embed_tuning, "embed_workers", None))
+        _set(_BatchEmbedActor.__name__, "num_cpus", getattr(embed_tuning, "embed_cpus_per_actor", None))
+        _set(_BatchEmbedActor.__name__, "num_gpus", getattr(embed_tuning, "gpu_embed", None))
+
+    extract_tuning = _batch_tuning(extract_params)
+    if extract_tuning is not None:
+        _set(OCRActor.__name__, "batch_size", getattr(extract_tuning, "ocr_inference_batch_size", None))
+        _set(OCRActor.__name__, "concurrency", getattr(extract_tuning, "ocr_workers", None))
+        _set(OCRActor.__name__, "num_cpus", getattr(extract_tuning, "ocr_cpus_per_actor", None))
+        _set(OCRActor.__name__, "num_gpus", getattr(extract_tuning, "gpu_ocr", None))
+
+        _set(
+            PageElementDetectionActor.__name__, "batch_size", getattr(extract_tuning, "page_elements_batch_size", None)
+        )
+        _set(PageElementDetectionActor.__name__, "concurrency", getattr(extract_tuning, "page_elements_workers", None))
+        _set(
+            PageElementDetectionActor.__name__,
+            "num_cpus",
+            getattr(extract_tuning, "page_elements_cpus_per_actor", None),
+        )
+        _set(PageElementDetectionActor.__name__, "num_gpus", getattr(extract_tuning, "gpu_page_elements", None))
+
+        _set(NemotronParseActor.__name__, "batch_size", getattr(extract_tuning, "nemotron_parse_batch_size", None))
+        _set(NemotronParseActor.__name__, "concurrency", getattr(extract_tuning, "nemotron_parse_workers", None))
+        _set(NemotronParseActor.__name__, "num_gpus", getattr(extract_tuning, "gpu_nemotron_parse", None))
+
+        _set(PDFExtractionActor.__name__, "batch_size", getattr(extract_tuning, "pdf_extract_batch_size", None))
+        _set(PDFExtractionActor.__name__, "concurrency", getattr(extract_tuning, "pdf_extract_workers", None))
+        _set(PDFExtractionActor.__name__, "num_cpus", getattr(extract_tuning, "pdf_extract_num_cpus", None))
+
+    return overrides
+
+
 def _resolve_execution_inputs(
     *,
     execution_plan: IngestExecutionPlan | None,

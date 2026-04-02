@@ -1505,6 +1505,10 @@ class GraphBatchIngestor(_LegacyBatchIngestor):
             self._positive_int(getattr(tuning, "pdf_extract_workers", None))
             or self._requested_plan.get_pdf_extract_tasks()
         )
+        pdf_extract_tasks = min(
+            pdf_extract_tasks,
+            max(1, int(self._total_cpu_count // pdf_extract_cpus)),
+        )
 
         page_elements_batch_size = (
             self._positive_int(getattr(tuning, "page_elements_batch_size", None))

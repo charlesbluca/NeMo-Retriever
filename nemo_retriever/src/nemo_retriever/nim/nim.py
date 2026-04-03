@@ -119,6 +119,7 @@ def invoke_image_inference_batches(
     *,
     invoke_url: str,
     image_b64_list: Sequence[str],
+    merge_levels: Optional[Sequence[str]] = None,
     api_key: Optional[str] = None,
     timeout_s: float = 120.0,
     max_batch_size: int = 8,
@@ -131,6 +132,11 @@ def invoke_image_inference_batches(
 
     `invoke_url` may be a single URL or a comma-separated URL list.
     When multiple URLs are provided, batches are distributed round-robin.
+
+    When `merge_levels` is provided it must be the same length as
+    `image_b64_list` and is forwarded to the NIM as a per-image
+    ``merge_levels`` payload field (values: ``"word"``, ``"sentence"``,
+    ``"paragraph"``).
 
     Returns one response item per input image, in the same order.
     """
@@ -156,7 +162,9 @@ def invoke_image_inference_batches(
             }
             for b64 in image_b64_list[start:end]
         ]
-        payload = {"input": inputs}
+        payload: Dict[str, Any] = {"input": inputs}
+        if merge_levels is not None:
+            payload["merge_levels"] = list(merge_levels[start:end])
         response_json = _post_with_retries(
             invoke_url=endpoint_url,
             payload=payload,

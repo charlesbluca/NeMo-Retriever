@@ -715,36 +715,23 @@ def ocr_page_elements(
                 if entry["crop_arrays"]:
                     entry["inference_error"] = batched_error
     else:
-        # Local model: group by merge_level so each model.invoke() call uses
-        # a single setting, then fill flat_preds in order.
+        # Local model: invoke_batch handles chunking (≤ inference_batch_size
+        # images per GPU call) and per-item fallback internally.
         if inference_batch_size is None or inference_batch_size < 1:
             raise ValueError(f"inference_batch_size must be set and greater than 0. Value: {inference_batch_size}")
-        local_batch_size = max(1, int(inference_batch_size))
 
-        word_idxs = [i for i, ml in enumerate(flat_merge_levels) if ml == "word"]
-        para_idxs = [i for i, ml in enumerate(flat_merge_levels) if ml == "paragraph"]
-
-        for ml, idxs in (("word", word_idxs), ("paragraph", para_idxs)):
-            if not idxs:
-                continue
-            for start in range(0, len(idxs), local_batch_size):
-                chunk_idxs = idxs[start : start + local_batch_size]
-                batch_arrays = [flat_arrays[fi] for fi in chunk_idxs]
-                try:
-                    batch_preds = model.invoke(batch_arrays, merge_level=ml)
-                except Exception:
-                    batch_preds = None
-
-                if isinstance(batch_preds, list) and len(batch_preds) == len(chunk_idxs):
-                    for fi, pred in zip(chunk_idxs, batch_preds):
-                        flat_preds[fi] = pred
-                else:
-                    # Fallback: per-item invoke to preserve correctness.
-                    for fi in chunk_idxs:
-                        try:
-                            flat_preds[fi] = model.invoke(flat_arrays[fi], merge_level=ml)
-                        except Exception:
-                            flat_preds[fi] = None
+        if flat_arrays:
+            try:
+                batch_preds = model.invoke_batch(flat_arrays, flat_merge_levels, batch_size=inference_batch_size)
+                if not isinstance(batch_preds, list) or len(batch_preds) != len(flat_arrays):
+                    raise RuntimeError("invoke_batch returned unexpected shape")
+                flat_preds = batch_preds
+            except Exception:
+                for fi, (arr, ml) in enumerate(zip(flat_arrays, flat_merge_levels)):
+                    try:
+                        flat_preds[fi] = model.invoke(arr, merge_level=ml)
+                    except Exception:
+                        flat_preds[fi] = None
 
     # ------------------------------------------------------------------
     # Phase 3 – reassemble per-page results (shared between remote and local).

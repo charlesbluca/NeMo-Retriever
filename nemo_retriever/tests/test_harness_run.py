@@ -78,14 +78,6 @@ def test_build_command_uses_hidden_detection_file_by_default(tmp_path: Path) -> 
     assert "element" in cmd
     assert "--extract-page-as-image" in cmd
     assert "--no-extract-page-as-image" not in cmd
-    assert "--pdf-extract-tasks" not in cmd
-    assert "--pdf-extract-cpus-per-task" not in cmd
-    assert "--page-elements-actors" not in cmd
-    assert "--ocr-actors" not in cmd
-    assert "--embed-actors" not in cmd
-    assert "--page-elements-gpus-per-actor" not in cmd
-    assert "--ocr-gpus-per-actor" not in cmd
-    assert "--embed-gpus-per-actor" not in cmd
     assert detection_file.parent == runtime_dir
     assert detection_file.name == ".detection_summary.json"
     assert effective_query_csv == query_csv
@@ -601,6 +593,7 @@ def test_run_single_writes_results_with_run_metadata(monkeypatch, tmp_path: Path
             "extract_page_as_image": cfg.extract_page_as_image,
             "extract_infographics": cfg.extract_infographics,
             "write_detection_file": True,
+            "use_heuristics": cfg.use_heuristics,
             "lancedb_uri": str((artifact_dir / "lancedb").resolve()),
             "tuning": {field: getattr(cfg, field) for field in sorted(harness_run.TUNING_FIELDS)},
         },

@@ -56,22 +56,42 @@ def create_local_embedder(
     model_id = resolve_embed_model(model_name)
 
     if is_vl_embed_model(model_name):
-        from nemo_retriever.model.local.llama_nemotron_embed_vl_1b_v2_embedder import (
-            LlamaNemotronEmbedVL1BV2Embedder,
-        )
-
         if use_vllm:
-            return LlamaNemotronEmbedVL1BV2Embedder(
+            from nemo_retriever.model.local.llama_nemotron_embed_vl_1b_v2_embedder import (
+                LlamaNemotronEmbedVL1BV2VLLMEmbedder,
+            )
+
+            return LlamaNemotronEmbedVL1BV2VLLMEmbedder(
                 model_id=model_id,
-                use_vllm=True,
+                device=device,
+                hf_cache_dir=hf_cache_dir,
                 gpu_memory_utilization=gpu_memory_utilization,
                 enforce_eager=enforce_eager,
                 compile_cache_dir=compile_cache_dir,
             )
+
+        from nemo_retriever.model.local.llama_nemotron_embed_vl_1b_v2_embedder import (
+            LlamaNemotronEmbedVL1BV2Embedder,
+        )
+
         return LlamaNemotronEmbedVL1BV2Embedder(
             device=device,
             hf_cache_dir=hf_cache_dir,
             model_id=model_id,
+        )
+
+    if use_vllm:
+        from nemo_retriever.model.local.llama_nemotron_embed_1b_v2_embedder import (
+            LlamaNemotronEmbed1BV2VLLMEmbedder,
+        )
+
+        return LlamaNemotronEmbed1BV2VLLMEmbedder(
+            model_id=model_id,
+            device=device,
+            hf_cache_dir=hf_cache_dir,
+            gpu_memory_utilization=gpu_memory_utilization,
+            enforce_eager=enforce_eager,
+            compile_cache_dir=compile_cache_dir,
         )
 
     from nemo_retriever.model.local.llama_nemotron_embed_1b_v2_embedder import (

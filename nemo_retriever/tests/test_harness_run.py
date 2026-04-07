@@ -322,10 +322,7 @@ def test_run_entry_session_artifact_dir_uses_run_name(monkeypatch, tmp_path: Pat
     )
     monkeypatch.setattr(harness_run, "load_harness_config", lambda **_: cfg)
 
-    captured_artifact_dir: list[Path] = []
-
     def _fake_run_single(_cfg: HarnessConfig, _artifact_dir: Path, run_id: str, tags: list[str] | None = None) -> dict:
-        captured_artifact_dir.append(_artifact_dir)
         assert tags == []
         return {
             "success": True,
@@ -336,7 +333,7 @@ def test_run_entry_session_artifact_dir_uses_run_name(monkeypatch, tmp_path: Pat
 
     monkeypatch.setattr(harness_run, "_run_single", _fake_run_single)
 
-    harness_run._run_entry(
+    result = harness_run._run_entry(
         run_name="jp20_single",
         config_file=None,
         session_dir=tmp_path,
@@ -344,7 +341,7 @@ def test_run_entry_session_artifact_dir_uses_run_name(monkeypatch, tmp_path: Pat
         preset="single_gpu",
     )
 
-    assert captured_artifact_dir[0].name == "jp20_single"
+    assert Path(result["artifact_dir"]).name == "jp20_single"
 
 
 def test_run_entry_returns_tags(monkeypatch, tmp_path: Path) -> None:

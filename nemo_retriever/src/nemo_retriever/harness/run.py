@@ -541,6 +541,8 @@ def _run_entry(
     resolved_run_name = run_name or cfg.dataset_label
     normalized_tags = _normalize_tags(tags)
     result = _run_single(cfg, artifact_dir, run_id=resolved_run_name, tags=normalized_tags)
+    result["run_name"] = resolved_run_name
+    result["artifact_dir"] = str(artifact_dir.resolve())
     return result
 
 

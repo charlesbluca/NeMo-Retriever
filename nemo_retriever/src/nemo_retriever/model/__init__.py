@@ -40,36 +40,18 @@ def create_local_embedder(
     *,
     device: str | None = None,
     hf_cache_dir: str | None = None,
-    normalize: bool = True,
-    max_length: int = 8192,
-    use_vllm: bool = False,
     gpu_memory_utilization: float = 0.45,
     enforce_eager: bool = False,
     compile_cache_dir: str | None = None,
 ):
     """Create the appropriate local embedding model (VL or non-VL).
 
-    Centralises the resolve -> branch -> construct pattern that was previously
-    duplicated across batch, inprocess, fused, gpu_pool, recall, retriever,
-    and text_embed code paths.
+    VL models always use HuggingFace (supports image + text+image modalities).
+    Non-VL models always use vLLM for maximum throughput.
     """
     model_id = resolve_embed_model(model_name)
 
     if is_vl_embed_model(model_name):
-        if use_vllm:
-            from nemo_retriever.model.local.llama_nemotron_embed_vl_1b_v2_embedder import (
-                LlamaNemotronEmbedVL1BV2VLLMEmbedder,
-            )
-
-            return LlamaNemotronEmbedVL1BV2VLLMEmbedder(
-                model_id=model_id,
-                device=device,
-                hf_cache_dir=hf_cache_dir,
-                gpu_memory_utilization=gpu_memory_utilization,
-                enforce_eager=enforce_eager,
-                compile_cache_dir=compile_cache_dir,
-            )
-
         from nemo_retriever.model.local.llama_nemotron_embed_vl_1b_v2_embedder import (
             LlamaNemotronEmbedVL1BV2Embedder,
         )
@@ -80,28 +62,15 @@ def create_local_embedder(
             model_id=model_id,
         )
 
-    if use_vllm:
-        from nemo_retriever.model.local.llama_nemotron_embed_1b_v2_embedder import (
-            LlamaNemotronEmbed1BV2VLLMEmbedder,
-        )
-
-        return LlamaNemotronEmbed1BV2VLLMEmbedder(
-            model_id=model_id,
-            device=device,
-            hf_cache_dir=hf_cache_dir,
-            gpu_memory_utilization=gpu_memory_utilization,
-            enforce_eager=enforce_eager,
-            compile_cache_dir=compile_cache_dir,
-        )
-
     from nemo_retriever.model.local.llama_nemotron_embed_1b_v2_embedder import (
-        LlamaNemotronEmbed1BV2Embedder,
+        LlamaNemotronEmbed1BV2VLLMEmbedder,
     )
 
-    return LlamaNemotronEmbed1BV2Embedder(
+    return LlamaNemotronEmbed1BV2VLLMEmbedder(
+        model_id=model_id,
         device=device,
         hf_cache_dir=hf_cache_dir,
-        normalize=normalize,
-        max_length=max_length,
-        model_id=model_id,
+        gpu_memory_utilization=gpu_memory_utilization,
+        enforce_eager=enforce_eager,
+        compile_cache_dir=compile_cache_dir,
     )

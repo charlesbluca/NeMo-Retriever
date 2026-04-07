@@ -52,8 +52,6 @@ class Retriever:
     local_hf_device: Optional[str] = None
     local_hf_cache_dir: Optional[Path] = None
     local_hf_batch_size: int = 64
-    embed_use_vllm: bool = False
-    """Use vLLM Python API for query embeddings (same space as vLLM-ingested docs)."""
     # Reranking -----------------------------------------------------------
     reranker: Optional[bool] = False
     """True to enable reranking with the default model, will use the reranker_model_name as hf model"""
@@ -125,29 +123,10 @@ class Retriever:
             )
         return self._embedder_cache[model_name]
 
-    def _embed_queries_local_hf(self, query_texts: list[str], *, model_name: str) -> list[list[float]]:
-        from nemo_retriever.model import is_vl_embed_model
-
+    def _embed_queries_local(self, query_texts: list[str], *, model_name: str) -> list[list[float]]:
         embedder = self._get_local_embedder(model_name)
-
-        if is_vl_embed_model(model_name):
-            vectors = embedder.embed_queries(query_texts, batch_size=int(self.local_hf_batch_size))
-        else:
-            vectors = embedder.embed(["query: " + q for q in query_texts], batch_size=int(self.local_hf_batch_size))
+        vectors = embedder.embed_queries(query_texts, batch_size=int(self.local_hf_batch_size))
         return vectors.detach().to("cpu").tolist()
-
-    def _embed_queries_vllm(self, query_texts: list[str], *, model_name: str) -> list[list[float]]:
-        """Embed queries via vLLM API (same space as vLLM-ingested docs)."""
-        from nemo_retriever.model import resolve_embed_model
-        from nemo_retriever.text_embed.vllm import embed_via_vllm
-
-        resolved = str(resolve_embed_model(model_name))
-        return embed_via_vllm(
-            query_texts,
-            model=resolved,
-            batch_size=int(self.local_hf_batch_size),
-            prefix="query: ",
-        )
 
     def _search_lancedb(
         self,
@@ -316,13 +295,8 @@ class Retriever:
                 endpoint=endpoint,
                 model=resolved_embedder,
             )
-        elif self.embed_use_vllm:
-            vectors = self._embed_queries_vllm(
-                query_texts,
-                model_name=resolved_embedder,
-            )
         else:
-            vectors = self._embed_queries_local_hf(
+            vectors = self._embed_queries_local(
                 query_texts,
                 model_name=resolved_embedder,
             )

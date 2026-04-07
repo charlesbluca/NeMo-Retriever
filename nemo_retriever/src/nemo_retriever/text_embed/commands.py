@@ -139,11 +139,6 @@ def run(
         min=1,
         help="Batch size for local HF embedding inference.",
     ),
-    use_vllm: bool = typer.Option(
-        False,
-        "--use-vllm/--no-use-vllm",
-        help="Use vLLM Python API (no server) for embeddings.",
-    ),
     overwrite: bool = typer.Option(False, "--overwrite", help="Overwrite existing outputs."),
     limit: Optional[int] = typer.Option(None, "--limit", min=1, help="Optionally limit number of input files."),
     write_embedding_input: bool = typer.Option(
@@ -167,12 +162,7 @@ def run(
     task_cfg: Dict[str, Any] = {}
     if api_key is not None:
         task_cfg["api_key"] = api_key
-    if use_vllm:
-        task_cfg["use_vllm"] = True
-        if model_name is not None:
-            task_cfg["model_name"] = model_name
-        task_cfg["endpoint_url"] = None
-    elif endpoint_url is not None:
+    if endpoint_url is not None:
         value = endpoint_url.strip()
         task_cfg["endpoint_url"] = None if value.lower() in ("", "none", "null") else value
     elif not cfg_dict.get("embedding_nim_endpoint"):

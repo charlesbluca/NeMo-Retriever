@@ -181,13 +181,25 @@ class LlamaNemotronEmbed1BV2VLLMEmbedder:
         return False
 
     def embed(self, texts: Sequence[str], *, batch_size: int = 64) -> torch.Tensor:
-        """Returns a CPU tensor of shape ``[N, D]``."""
+        """Embed document texts. Returns CPU tensor ``[N, D]``."""
         from nemo_retriever.text_embed.vllm import embed_with_vllm_llm
 
         texts_list = [str(t) for t in texts if str(t).strip()]
         if not texts_list:
             return torch.empty((0, 0), dtype=torch.float32)
         vectors = embed_with_vllm_llm(texts_list, self._llm, batch_size=max(1, int(batch_size)), prefix="passage: ")
+        if not vectors:
+            return torch.empty((0, 0), dtype=torch.float32)
+        return torch.tensor(vectors, dtype=torch.float32)
+
+    def embed_queries(self, texts: Sequence[str], *, batch_size: int = 64) -> torch.Tensor:
+        """Embed query strings. Returns CPU tensor ``[N, D]``."""
+        from nemo_retriever.text_embed.vllm import embed_with_vllm_llm
+
+        texts_list = [str(t) for t in texts]
+        if not texts_list:
+            return torch.empty((0, 0), dtype=torch.float32)
+        vectors = embed_with_vllm_llm(texts_list, self._llm, batch_size=max(1, int(batch_size)), prefix="query: ")
         if not vectors:
             return torch.empty((0, 0), dtype=torch.float32)
         return torch.tensor(vectors, dtype=torch.float32)

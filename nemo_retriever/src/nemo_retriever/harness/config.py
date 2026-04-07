@@ -159,7 +159,7 @@ class HarnessConfig:
         if self.embed_granularity not in VALID_EMBED_GRANULARITIES:
             errors.append(f"embed_granularity must be one of {sorted(VALID_EMBED_GRANULARITIES)}")
 
-        _ZERO_ALLOWED_WORKERS = {"page_elements_workers"} if self.use_heuristics else set()
+        _ZERO_ALLOWED_WORKERS = {f for f in TUNING_FIELDS if f.endswith("_workers")} if self.use_heuristics else set()
         for name in TUNING_FIELDS:
             val = getattr(self, name)
             if name.startswith("gpu_") and float(val) < 0.0:

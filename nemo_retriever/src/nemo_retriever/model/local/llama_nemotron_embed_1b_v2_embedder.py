@@ -190,7 +190,7 @@ class LlamaNemotronEmbed1BV2VLLMEmbedder:
         vectors = embed_with_vllm_llm(texts_list, self._llm, batch_size=max(1, int(batch_size)), prefix="passage: ")
         if not vectors:
             return torch.empty((0, 0), dtype=torch.float32)
-        return torch.tensor(vectors, dtype=torch.float32)
+        return _l2_normalize(torch.tensor(vectors, dtype=torch.float32))
 
     def embed_queries(self, texts: Sequence[str], *, batch_size: int = 64) -> torch.Tensor:
         """Embed query strings. Returns CPU tensor ``[N, D]``."""
@@ -202,4 +202,4 @@ class LlamaNemotronEmbed1BV2VLLMEmbedder:
         vectors = embed_with_vllm_llm(texts_list, self._llm, batch_size=max(1, int(batch_size)), prefix="query: ")
         if not vectors:
             return torch.empty((0, 0), dtype=torch.float32)
-        return torch.tensor(vectors, dtype=torch.float32)
+        return _l2_normalize(torch.tensor(vectors, dtype=torch.float32))

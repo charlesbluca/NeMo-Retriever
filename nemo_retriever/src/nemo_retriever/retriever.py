@@ -113,19 +113,36 @@ class Retriever:
     def _get_local_embedder(self, model_name: str) -> Any:
         """Lazily load and cache the local HF embedder for *model_name*."""
         if model_name not in self._embedder_cache:
-            from nemo_retriever.model import create_local_embedder
-
-            cache_dir = str(self.local_hf_cache_dir) if self.local_hf_cache_dir else None
-            self._embedder_cache[model_name] = create_local_embedder(
-                model_name,
-                device=self.local_hf_device,
-                hf_cache_dir=cache_dir,
+            from nemo_retriever.model import is_vl_embed_model, resolve_embed_model
+            from nemo_retriever.model.local.llama_nemotron_embed_1b_v2_embedder import LlamaNemotronEmbed1BV2Embedder
+            from nemo_retriever.model.local.llama_nemotron_embed_vl_1b_v2_embedder import (
+                LlamaNemotronEmbedVL1BV2Embedder,
             )
+
+            resolved = resolve_embed_model(model_name)
+            cache_dir = str(self.local_hf_cache_dir) if self.local_hf_cache_dir else None
+            if is_vl_embed_model(model_name):
+                self._embedder_cache[model_name] = LlamaNemotronEmbedVL1BV2Embedder(
+                    model_id=resolved,
+                    device=self.local_hf_device,
+                    hf_cache_dir=cache_dir,
+                )
+            else:
+                self._embedder_cache[model_name] = LlamaNemotronEmbed1BV2Embedder(
+                    model_id=resolved,
+                    device=self.local_hf_device,
+                    hf_cache_dir=cache_dir,
+                )
         return self._embedder_cache[model_name]
 
     def _embed_queries_local(self, query_texts: list[str], *, model_name: str) -> list[list[float]]:
+        from nemo_retriever.model import is_vl_embed_model
+
         embedder = self._get_local_embedder(model_name)
-        vectors = embedder.embed_queries(query_texts, batch_size=int(self.local_hf_batch_size))
+        if is_vl_embed_model(model_name):
+            vectors = embedder.embed_queries(query_texts, batch_size=int(self.local_hf_batch_size))
+        else:
+            vectors = embedder.embed(["query: " + q for q in query_texts], batch_size=int(self.local_hf_batch_size))
         return vectors.detach().to("cpu").tolist()
 
     def _search_lancedb(

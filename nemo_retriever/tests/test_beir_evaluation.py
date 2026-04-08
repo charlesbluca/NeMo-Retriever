@@ -104,16 +104,4 @@ def test_evaluate_lancedb_beir_uses_loader_and_retriever(monkeypatch) -> None:
     assert loaded_dataset == dataset
     assert metrics["ndcg@10"] == 1.0
     assert metrics["recall@5"] == 1.0
-    assert retriever_instances[0].kwargs["embed_use_vllm"] is False
-
-    retriever_instances.clear()
-    cfg_vllm = BeirConfig(
-        lancedb_uri="/tmp/lancedb",
-        lancedb_table="nv-ingest",
-        embedding_model="embedder",
-        loader="vidore_hf",
-        dataset_name="vidore_v3_computer_science",
-        use_vllm=True,
-    )
-    evaluate_lancedb_beir(cfg_vllm)
-    assert retriever_instances[0].kwargs["embed_use_vllm"] is True
+    assert "embed_use_vllm" not in retriever_instances[0].kwargs

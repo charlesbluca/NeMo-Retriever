@@ -90,7 +90,7 @@ class TestQueriesNoReranking:
     def _run_queries(self, retriever, query_texts, fake_vectors, fake_hits):
         """Patch embed + search helpers and call queries()."""
         with (
-            patch.object(retriever, "_embed_queries_local_hf", return_value=fake_vectors),
+            patch.object(retriever, "_embed_queries_local", return_value=fake_vectors),
             patch.object(retriever, "_search_lancedb", return_value=fake_hits),
         ):
             return retriever.queries(query_texts)
@@ -121,7 +121,7 @@ class TestQueriesNoReranking:
     def test_embed_local_hf_called_with_query_texts(self):
         r = _make_retriever()
         with (
-            patch.object(r, "_embed_queries_local_hf", return_value=[_DUMMY_VECTOR]) as mock_embed,
+            patch.object(r, "_embed_queries_local", return_value=[_DUMMY_VECTOR]) as mock_embed,
             patch.object(r, "_search_lancedb", return_value=[_make_hits(5)]),
         ):
             r.queries(["hello world"])
@@ -144,7 +144,7 @@ class TestQueriesNoReranking:
         r = _make_retriever()
         vecs = [[0.1, 0.2, 0.3, 0.4]]
         with (
-            patch.object(r, "_embed_queries_local_hf", return_value=vecs),
+            patch.object(r, "_embed_queries_local", return_value=vecs),
             patch.object(r, "_search_lancedb", return_value=[_make_hits(5)]) as mock_search,
         ):
             r.queries(["my query"])
@@ -156,7 +156,7 @@ class TestQueriesNoReranking:
     def test_embedder_override_forwarded(self):
         r = _make_retriever()
         with (
-            patch.object(r, "_embed_queries_local_hf", return_value=[_DUMMY_VECTOR]) as mock_embed,
+            patch.object(r, "_embed_queries_local", return_value=[_DUMMY_VECTOR]) as mock_embed,
             patch.object(r, "_search_lancedb", return_value=[_make_hits(5)]),
         ):
             r.queries(["q"], embedder="custom/embedder")
@@ -166,7 +166,7 @@ class TestQueriesNoReranking:
     def test_lancedb_uri_and_table_overrides_forwarded(self):
         r = _make_retriever()
         with (
-            patch.object(r, "_embed_queries_local_hf", return_value=[_DUMMY_VECTOR]),
+            patch.object(r, "_embed_queries_local", return_value=[_DUMMY_VECTOR]),
             patch.object(r, "_search_lancedb", return_value=[_make_hits(5)]) as mock_search,
         ):
             r.queries(["q"], lancedb_uri="/tmp/db", lancedb_table="my-table")
@@ -228,7 +228,7 @@ class TestQueriesWithEndpointReranking:
         fake_results = self._fake_search_results(r)
 
         with (
-            patch.object(r, "_embed_queries_local_hf", return_value=[_DUMMY_VECTOR]),
+            patch.object(r, "_embed_queries_local", return_value=[_DUMMY_VECTOR]),
             patch.object(r, "_search_lancedb", return_value=fake_results),
             patch.object(r, "_rerank_results", return_value=[_make_hits(3)]) as mock_rerank,
         ):
@@ -241,7 +241,7 @@ class TestQueriesWithEndpointReranking:
         fake_results = [_make_hits(5)]
 
         with (
-            patch.object(r, "_embed_queries_local_hf", return_value=[_DUMMY_VECTOR]),
+            patch.object(r, "_embed_queries_local", return_value=[_DUMMY_VECTOR]),
             patch.object(r, "_search_lancedb", return_value=fake_results),
             patch.object(r, "_rerank_results") as mock_rerank,
         ):
@@ -255,7 +255,7 @@ class TestQueriesWithEndpointReranking:
         reranked = [_make_hits(3)]
 
         with (
-            patch.object(r, "_embed_queries_local_hf", return_value=[_DUMMY_VECTOR]),
+            patch.object(r, "_embed_queries_local", return_value=[_DUMMY_VECTOR]),
             patch.object(r, "_search_lancedb", return_value=fake_results),
             patch.object(r, "_rerank_results", return_value=reranked),
         ):

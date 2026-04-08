@@ -24,11 +24,11 @@ def _patch_embedders(monkeypatch):
     modules directly into ``sys.modules``, which Python checks first when
     handling ``from … import`` statements.
     """
-    fake_text = MagicMock(name="LlamaNemotronEmbed1BV2Embedder")
+    fake_text = MagicMock(name="LlamaNemotronEmbed1BV2VLLMEmbedder")
     fake_vl = MagicMock(name="LlamaNemotronEmbedVL1BV2Embedder")
 
     text_mod = ModuleType("nemo_retriever.model.local.llama_nemotron_embed_1b_v2_embedder")
-    text_mod.LlamaNemotronEmbed1BV2Embedder = fake_text
+    text_mod.LlamaNemotronEmbed1BV2VLLMEmbedder = fake_text
 
     vl_mod = ModuleType("nemo_retriever.model.local.llama_nemotron_embed_vl_1b_v2_embedder")
     vl_mod.LlamaNemotronEmbedVL1BV2Embedder = fake_vl
@@ -80,14 +80,12 @@ def test_kwargs_forwarded_to_text_embedder(_patch_embedders):
     create_local_embedder(
         device="cuda:1",
         hf_cache_dir="/tmp/cache",
-        normalize=False,
-        max_length=4096,
+        gpu_memory_utilization=0.6,
     )
     kw = fake_text.call_args.kwargs
     assert kw["device"] == "cuda:1"
     assert kw["hf_cache_dir"] == "/tmp/cache"
-    assert kw["normalize"] is False
-    assert kw["max_length"] == 4096
+    assert kw["gpu_memory_utilization"] == 0.6
 
 
 def test_kwargs_forwarded_to_vl_embedder(_patch_embedders):

@@ -60,12 +60,12 @@ jobs:
       - name: Run graph pipeline on PDFs
         shell: bash
         env:
-          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
           PYTHONPATH: nemo_retriever/src
         run: |
           python -m nemo_retriever.examples.graph_pipeline ./data \
             --run-mode inprocess \
             --input-type pdf \
+            --api-key "${{ secrets.NGC_NV_DEVELOPER_NVCF }}" \
             --page-elements-invoke-url "$PAGE_ELEMENTS_INVOKE_URL" \
             --ocr-invoke-url "$OCR_INVOKE_URL" \
             --use-graphic-elements \

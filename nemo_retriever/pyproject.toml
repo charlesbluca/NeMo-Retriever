@@ -49,7 +49,6 @@ dependencies = [
   "numpy>=1.26.0",
   "debugpy>=1.8.0",
   # Core ingest packages
-  "nv-ingest",
   "nv-ingest-api",
   "nv-ingest-client",
 ]
@@ -140,7 +139,6 @@ retriever-harness = "nemo_retriever.harness:main"
 version = {attr = "nemo_retriever.version.get_build_version"}
 
 [tool.uv.sources]
-nv-ingest = { path = "../src/", editable = true }
 nv-ingest-api = { path = "../api/", editable = true }
 nv-ingest-client = { path = "../client/", editable = true }
 nemotron-page-elements-v3 = { index = "test-pypi" }

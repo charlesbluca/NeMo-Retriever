@@ -139,6 +139,12 @@ class LlamaNemotronEmbed1BV2VLLMEmbedder:
     Always uses vLLM's Python API (bfloat16 + FLASH_ATTN, pooling runner).
     Exposes the same ``embed()`` interface as ``LlamaNemotronEmbed1BV2Embedder``
     so the two are drop-in substitutes from the caller's perspective.
+
+    .. warning::
+        When ``device`` is set, ``CUDA_VISIBLE_DEVICES`` is overwritten for the entire
+        process. Constructing multiple instances with different devices in the same process
+        (e.g. in a Ray actor pool) will produce incorrect behaviour. Pass device constraints
+        via ``tensor_parallel_size`` or ensure each actor is launched in an isolated process.
     """
 
     model_id: Optional[str] = None

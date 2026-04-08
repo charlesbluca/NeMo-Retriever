@@ -84,10 +84,6 @@ ingestor = (
 
 ### Optional extras
 
-- **`embed-vllm`** — vLLM embedding (bfloat16 + FLASH_ATTN). Non-VL models automatically use vLLM when this extra is installed. Install with:
-  ```bash
-  uv pip install -e './nemo_retriever[embed-vllm]'
-  ```
 - **`asr`** — Local ASR (Parakeet). Has a different `transformers` requirement than the core package; install only if you need local ASR:
   ```bash
   uv pip install -e './nemo_retriever[asr]'

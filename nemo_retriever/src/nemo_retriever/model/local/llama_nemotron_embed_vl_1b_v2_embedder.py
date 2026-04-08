@@ -174,7 +174,7 @@ class LlamaNemotronEmbedVL1BV2VLLMEmbedder:
             from nemo_retriever.text_embed.vllm import create_vllm_llm
         except ImportError as e:
             raise RuntimeError(
-                "vLLM embedding requires the embed-vllm extra. " "Install with: uv pip install -e '.[embed-vllm]'"
+                "vLLM is not installed. Install with: uv pip install -e '.' or pip install -e '.'"
             ) from e
 
         from packaging.version import Version

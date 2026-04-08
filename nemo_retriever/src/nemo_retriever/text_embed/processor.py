@@ -114,7 +114,7 @@ def maybe_inject_local_hf_embedder(task_config: Dict[str, Any], transform_config
 
     def _embed(texts):
         prefixed = [prefix + t for t in texts] if prefix else texts
-        vecs = embedder_instance.embed(prefixed, batch_size=local_batch_size)
+        vecs = embedder_instance.embed(prefixed, batch_size=local_batch_size, prefix="")
         return vecs.tolist()
 
     task_config["endpoint_url"] = None

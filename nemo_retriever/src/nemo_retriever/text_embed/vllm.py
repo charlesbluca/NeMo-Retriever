@@ -76,14 +76,17 @@ def create_vllm_llm(
     Caller can reuse it across many embed batches to avoid repeated model load and CUDA graph capture.
 
     Uses bfloat16 and FLASH_ATTN backend (fixed for this module).
+
+    .. warning::
+        When ``compile_cache_dir`` is set (or auto-detected), ``TORCHINDUCTOR_CACHE_DIR`` and
+        ``TRITON_CACHE_DIR`` are overwritten as process-global side effects. A second call with a
+        different cache dir will silently overwrite the earlier values, potentially affecting
+        concurrently compiling code in the same process.
     """
     try:
         from vllm import LLM
     except ImportError as e:
-        raise RuntimeError(
-            "vLLM embedding requires the embed-vllm extra. "
-            "Install with: uv pip install -e '.[embed-vllm]' or pip install -e '.[embed-vllm]'"
-        ) from e
+        raise RuntimeError("vLLM is not installed. Install with: uv pip install -e '.' or pip install -e '.'") from e
 
     if not enforce_eager:
         cache_dir = compile_cache_dir if compile_cache_dir is not None else _default_compile_cache_dir()

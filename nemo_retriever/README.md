@@ -84,7 +84,7 @@ ingestor = (
 
 ### Optional extras
 
-- **`embed-vllm`** — vLLM embedding (bfloat16 + FLASH_ATTN). Use `--use-vllm` or `embed_use_vllm=True` in batch/inprocess. Install with:
+- **`embed-vllm`** — vLLM embedding (bfloat16 + FLASH_ATTN). Non-VL models automatically use vLLM when this extra is installed. Install with:
   ```bash
   uv pip install -e './nemo_retriever[embed-vllm]'
   ```

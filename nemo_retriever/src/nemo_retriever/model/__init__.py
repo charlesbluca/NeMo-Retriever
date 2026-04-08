@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 _VL_EMBED_MODEL_IDS = frozenset(
     {
         "nvidia/llama-nemotron-embed-vl-1b-v2",
@@ -43,7 +45,7 @@ def create_local_embedder(
     gpu_memory_utilization: float = 0.45,
     enforce_eager: bool = False,
     compile_cache_dir: str | None = None,
-):
+) -> Any:
     """Create the appropriate local embedding model (VL or non-VL).
 
     VL models always use HuggingFace (supports image + text+image modalities).

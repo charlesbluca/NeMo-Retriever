@@ -15,10 +15,7 @@ from nv_ingest_client.util.vdb.lancedb import LanceDB
 from nemo_retriever.vector_store.lancedb_utils import lancedb_schema
 import pandas as pd
 
-try:
-    import lancedb
-except ImportError:
-    lancedb = None  # type: ignore[assignment]
+import lancedb
 
 logger = logging.getLogger(__name__)
 
@@ -229,14 +226,6 @@ def _write_rows_to_lancedb(rows: Sequence[Dict[str, Any]], *, cfg: LanceDBConfig
     if dim <= 0:
         raise ValueError("Failed to infer embedding dimension from rows.")
 
-    try:
-        import lancedb  # type: ignore
-    except Exception as e:
-        raise RuntimeError(
-            "LanceDB write requested but dependencies are missing. "
-            "Install `lancedb` and `pyarrow` in this environment."
-        ) from e
-
     db = lancedb.connect(uri=cfg.uri)
 
     schema = lancedb_schema(vector_dim=dim)
@@ -325,11 +314,6 @@ def handle_lancedb(
         Reads `*.text_embeddings.json` files from `input_dir`, extracts embeddings, and uploads to LanceDB.
     )
     """
-    if lancedb is None:
-        raise RuntimeError(
-            "LanceDB write requested but dependencies are missing. "
-            "Install `lancedb` and `pyarrow` in this environment."
-        )
     lancedb_config = LanceDBConfig(
         uri=uri, table_name=table_name, hybrid=hybrid
     )  # Use the same LanceDB config for writing and recall.

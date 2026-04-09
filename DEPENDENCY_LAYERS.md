@@ -1,49 +1,42 @@
 # Dependency Layering Plan
 
-This document describes the restructured optional-extras model for `nemo_retriever/pyproject.toml`.
+This document describes the optional-extras model for `nemo_retriever/pyproject.toml`.
 
-## Problem
+## Structure
 
-The previous `pyproject.toml` listed ~50 packages as required dependencies, meaning every install
-pulled in torch, vLLM, CUDA wheels, nemotron models, GPU monitoring tooling, etc. — regardless of
-whether the user intended to run local models or simply call remote NIM endpoints. This made the
-package impossible to install on Intel Macs and unnecessarily heavy everywhere.
+The base install is the core install: everything needed to run the full pipeline via remote NIM
+endpoints, including document parsing tools, the default LanceDB VDB backend, and NIM client libs.
+The `[local]` extra adds GPU model inference on top of that.
 
-## Solution: Layered Optional Extras
-
-Dependencies are now split into a slim base plus composable optional extras. Each tier builds on
-the previous via self-referencing extras.
-
-### Tier hierarchy
+### Extra hierarchy
 
 ```
-nemo_retriever          ← slim base: ray, fastapi, pydantic, HTTP clients, nv-ingest*
- └── [remote]           ← adds: pypdfium2, pillow, nltk, markitdown, langchain-nvidia-ai-endpoints
-      └── [local-cpu]   ← adds: torch CPU, transformers, nemotron models (ARM Mac compatible)
-           └── [local-gpu]  ← adds: nvidia-ml-py, vLLM  (Linux/CUDA only)
-                └── [multimedia]  ← adds: soundfile + scipy (ASR), cairosvg (SVG)
-                                    (can also be combined with any tier independently)
+nemo_retriever          ← core install: ray, fastapi, pydantic, HTTP clients, nv-ingest*,
+                          pypdfium2, pillow, nltk, markitdown, langchain-nvidia-ai-endpoints,
+                          lancedb
+ └── [local]            ← adds: torch (CUDA on Linux), transformers, nemotron models,
+                          nvidia-ml-py, vLLM  (Linux/CUDA recommended)
 
-[stores]       ← lancedb, duckdb, duckdb-engine, neo4j  (independent, add to any tier)
+[multimedia]   ← soundfile + scipy (ASR), cairosvg (SVG)  (independent, add to any tier)
+[stores]       ← duckdb, duckdb-engine, neo4j  (independent; lancedb is in core)
 [benchmarks]   ← datasets, open-clip-torch  (BEIR evaluation only)
 [dev]          ← build, pytest
-[all]          ← local-gpu + multimedia + stores + benchmarks
+[all]          ← local + multimedia + stores + benchmarks
 ```
 
 ### Install commands by use case
 
 | Use case | Platform | Command |
 |---|---|---|
-| All remote (NIM) inference | Intel Mac, any | `uv pip install "nemo_retriever[remote,stores]"` |
-| Local PDF ingestion, CPU | ARM Mac | `uv pip install "nemo_retriever[local-cpu,stores]"` |
-| Local PDF ingestion, GPU | Linux + CUDA | `uv pip install "nemo_retriever[local-gpu,stores]"` |
-| Full multimedia (GPU + audio + SVG) | Linux + CUDA | `uv pip install "nemo_retriever[local-gpu,multimedia,stores]"` |
+| All remote (NIM) inference | Any | `uv pip install "nemo_retriever"` |
+| Local PDF ingestion, GPU | Linux + CUDA | `uv pip install "nemo_retriever[local]"` |
+| Full multimedia (GPU + audio + SVG) | Linux + CUDA | `uv pip install "nemo_retriever[local,multimedia]"` |
 | Everything | Linux + CUDA | `uv pip install "nemo_retriever[all]"` |
 
 ## What Each Extra Contains
 
 ### Base (always installed)
-Pure framework infrastructure — no ML, no storage.
+Framework infrastructure, document parsing, NIM clients, and the default VDB backend.
 
 - `ray[data,serve]` — pipeline orchestration
 - `pandas`, `numpy`, `tqdm` — data handling
@@ -51,31 +44,24 @@ Pure framework infrastructure — no ML, no storage.
 - `httpx`, `requests`, `urllib3` — HTTP clients
 - `pydantic`, `typer`, `pyyaml`, `rich` — config, CLI, output
 - `universal-pathlib`, `debugpy` — utilities
-- `nv-ingest`, `nv-ingest-api`, `nv-ingest-client` — core ingest packages
-
-### `[remote]`
-Everything needed to run the full pipeline via remote NIM endpoints. No GPU, no local models.
-Installs cleanly on Intel Macs.
-
+- `nv-ingest-api`, `nv-ingest-client` — core ingest packages
 - `pypdfium2` — PDF page splitting and rendering
 - `pillow` — image I/O
 - `nltk` — text splitting utilities
 - `markitdown` — HTML/document-to-markdown conversion
 - `langchain-nvidia-ai-endpoints` — LLM/SQL via NVIDIA NIM
+- `lancedb` — default vector database for embedding storage and hybrid search
 
-### `[local-cpu]`
-Adds local HuggingFace model inference. On Linux, torch resolves to a CUDA wheel from the
-PyTorch index; on Mac it falls through to the PyPI CPU wheel.
+### `[local]`
+Adds local HuggingFace model inference, GPU monitoring, and fast LLM inference. On Linux,
+torch resolves to a CUDA wheel from the PyTorch index; on Mac it falls through to the PyPI
+CPU wheel.
 
 - `transformers`, `tokenizers`, `accelerate==1.12.0` — HuggingFace model loading
-- `torch~=2.9.1`, `torchvision` — PyTorch (CPU on Mac, CUDA on Linux)
+- `torch~=2.9.1`, `torchvision` — PyTorch (CUDA on Linux, CPU on Mac)
 - `einops`, `easydict`, `addict`, `timm`, `albumentations`, `scikit-learn` — model utilities
 - `nemotron-page-elements-v3`, `nemotron-graphic-elements-v1`, `nemotron-table-structure-v1` — layout/table/chart detection
 - `nemotron-ocr` — end-to-end OCR (Linux only)
-
-### `[local-gpu]`
-Adds GPU monitoring and fast LLM inference on top of `[local-cpu]`.
-
 - `nvidia-ml-py` — GPU memory and utilization monitoring
 - `vllm==0.16.0` — fast GPU-accelerated LLM inference (Linux only)
 
@@ -86,9 +72,8 @@ Specialized media format support. Can be combined with any inference tier.
 - `cairosvg` — SVG-to-image rendering (requires `libcairo` system library)
 
 ### `[stores]`
-Vector, SQL, and graph storage backends. Independent of inference tier.
+Additional SQL and graph storage backends. LanceDB is already in the base install.
 
-- `lancedb` — vector database for embedding storage and hybrid search
 - `duckdb`, `duckdb-engine` — SQL execution on structured/tabular data
 - `neo4j` — graph database for knowledge graph ingestion
 
@@ -104,18 +89,9 @@ BEIR evaluation tools. Not needed for production use.
 
 ```toml
 torch = [
-  { index = "pytorch-cu130", marker = "sys_platform == 'linux'" },
+  { index = "pytorch-cu130", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
   # Mac: falls through to PyPI CPU wheel
 ]
 ```
 
 No manual intervention needed — `uv` picks the right wheel per platform.
-
-## Cleanups Applied
-
-The following bugs in the original flat deps list were fixed:
-
-- `accelerate` was listed twice (`>=1.1.0` and `==1.12.0`) — kept `==1.12.0` only
-- `tqdm` was listed twice — deduplicated
-- `typer` was listed twice — deduplicated
-- `[svg]` extra merged into `[multimedia]` (cairosvg is a media format conversion tool)

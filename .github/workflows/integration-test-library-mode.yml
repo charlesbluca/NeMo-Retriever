@@ -56,7 +56,7 @@ jobs:
       - name: Install nemo-retriever and dependencies
         shell: bash
         run: |
-          uv pip install --system -e api/ -e client/ -e "nemo_retriever[remote]"
+          uv pip install --system -e "nemo_retriever"
 
       - name: Run graph pipeline on PDFs
         shell: bash

@@ -51,25 +51,21 @@ dependencies = [
   # Core ingest packages
   "nv-ingest-api",
   "nv-ingest-client",
-]
-
-[project.optional-dependencies]
-
-# ── Tier 1: all remote (NIM) inference, no torch, Intel Mac compatible ───────
-# Adds document parsing tools and NIM client libs; no GPU or local models needed.
-remote = [
+  # Document parsing and NIM client libs
   "pypdfium2==4.30.0",
   "pillow==12.1.1",
   "nltk==3.9.3",
   "markitdown",
   "langchain-nvidia-ai-endpoints>=0.3.0",
+  # Default VDB solution
+  "lancedb",
 ]
 
-# ── Tier 2: local model inference, CPU only (ARM Mac compatible) ─────────────
-# Adds HuggingFace transformers, torch CPU, and nemotron model packages.
-# On Linux, torch resolves to a CUDA wheel; on Mac it resolves to PyPI CPU wheel.
-local-cpu = [
-  "nemo_retriever[remote]",
+[project.optional-dependencies]
+
+# ── Local model inference (GPU assumed; torch resolves to CUDA on Linux) ─────
+# Adds HuggingFace transformers, torch, nemotron models, GPU monitoring, and vLLM.
+local = [
   "transformers>=4.57.6,<5",
   "tokenizers>=0.20.3",
   "accelerate==1.12.0",
@@ -85,20 +81,13 @@ local-cpu = [
   "nemotron-graphic-elements-v1>=0.dev0",
   "nemotron-table-structure-v1>=0.dev0",
   "nemotron-ocr>=0.dev0; sys_platform == 'linux'",
-]
-
-# ── Tier 3: local GPU inference (Linux/CUDA, includes local-cpu) ─────────────
-# Adds GPU monitoring (nvidia-ml-py) and fast LLM inference (vLLM).
-local-gpu = [
-  "nemo_retriever[local-cpu]",
   "nvidia-ml-py",
   "vllm==0.16.0; sys_platform == 'linux'",
 ]
 
-# ── Tier 4: multimedia — audio/ASR and SVG rendering ────────────────────────
+# ── Multimedia — audio/ASR and SVG rendering ────────────────────────────────
 # soundfile + scipy enable local Parakeet ASR on audio/video content.
 # cairosvg enables SVG-to-image rendering (requires libcairo system library).
-# Can be combined with any inference tier.
 multimedia = [
   "soundfile>=0.12.0",
   "scipy>=1.11.0",
@@ -107,9 +96,8 @@ multimedia = [
 
 # ── Independent extras ───────────────────────────────────────────────────────
 
-# Vector, SQL, and graph storage backends for retrieval pipelines.
+# SQL and graph storage backends (lancedb is in core deps).
 stores = [
-  "lancedb",
   "duckdb>=1.2.0",
   "duckdb-engine>=0.13.0",
   "neo4j>=5.0",
@@ -128,7 +116,7 @@ dev = [
 
 # ── Convenience: full install ─────────────────────────────────────────────────
 all = [
-  "nemo_retriever[local-gpu,multimedia,stores,benchmarks]",
+  "nemo_retriever[local,multimedia,stores,benchmarks]",
 ]
 
 [project.scripts]

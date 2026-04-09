@@ -27,6 +27,8 @@ jobs:
             os-label: windows-x64
           - runner: macos-latest
             os-label: macos-arm64
+          - runner: macos-latest-large
+            os-label: macos-x64
 
     env:
       # NIM endpoint URLs — edit these directly to point at different deployments
@@ -54,8 +56,7 @@ jobs:
       - name: Install nemo-retriever and dependencies
         shell: bash
         run: |
-          uv pip install --system -e src/ -e api/ -e client/
-          uv pip install --system -e "nemo_retriever[cpu]"
+          uv pip install --system -e api/ -e client/ -e "nemo_retriever[remote]"
 
       - name: Run graph pipeline on PDFs
         shell: bash

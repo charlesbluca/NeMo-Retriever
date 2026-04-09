@@ -214,6 +214,10 @@ def txt_file_to_chunks_df(
     """
     path = str(Path(path).resolve())
     raw = Path(path).read_text(encoding=encoding, errors="replace")
+    if not raw or not raw.strip():
+        return pd.DataFrame(
+            columns=["text", "path", "page_number", "metadata"],
+        ).astype({"page_number": "int64"})
     model_id = tokenizer_model_id or DEFAULT_TOKENIZER_MODEL_ID
     tokenizer = _get_tokenizer(model_id, cache_dir=tokenizer_cache_dir)
     chunk_texts = split_text_by_tokens(

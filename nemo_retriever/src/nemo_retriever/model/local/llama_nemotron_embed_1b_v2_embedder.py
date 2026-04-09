@@ -139,12 +139,6 @@ class LlamaNemotronEmbed1BV2VLLMEmbedder:
     Always uses vLLM's Python API (bfloat16 + FLASH_ATTN, pooling runner).
     Exposes the same ``embed()`` interface as ``LlamaNemotronEmbed1BV2Embedder``
     so the two are drop-in substitutes from the caller's perspective.
-
-    .. warning::
-        When ``device`` is set, ``CUDA_VISIBLE_DEVICES`` is overwritten for the entire
-        process. Constructing multiple instances with different devices in the same process
-        (e.g. in a Ray actor pool) will produce incorrect behaviour. Pass device constraints
-        via ``tensor_parallel_size`` or ensure each actor is launched in an isolated process.
     """
 
     model_id: Optional[str] = None
@@ -158,11 +152,6 @@ class LlamaNemotronEmbed1BV2VLLMEmbedder:
     def __post_init__(self) -> None:
         from nemo_retriever.text_embed.vllm import create_vllm_llm
 
-        if self.device is not None:
-            import os
-
-            dev_id = self.device.split(":")[-1] if ":" in self.device else self.device
-            os.environ["CUDA_VISIBLE_DEVICES"] = dev_id
         configure_global_hf_cache_base(self.hf_cache_dir)
 
         from nemo_retriever.model import _DEFAULT_EMBED_MODEL

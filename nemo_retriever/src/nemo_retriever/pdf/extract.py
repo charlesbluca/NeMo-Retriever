@@ -10,7 +10,10 @@ from typing import Any, Dict, List, Literal, Optional, Tuple
 import base64
 import traceback
 
-import cv2
+try:
+    import cv2
+except ImportError:
+    cv2 = None
 
 from nv_ingest_api.util.pdf.pdfium import (
     convert_bitmap_to_corrected_numpy,

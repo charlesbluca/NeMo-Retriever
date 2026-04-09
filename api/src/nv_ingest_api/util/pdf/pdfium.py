@@ -7,8 +7,12 @@ from typing import List, Any
 from typing import Optional
 from typing import Tuple
 
-import cv2
 import numpy as np
+
+try:
+    import cv2
+except ImportError:
+    cv2 = None
 import pypdfium2 as pdfium
 import pypdfium2.raw as pdfium_c
 from numpy import dtype

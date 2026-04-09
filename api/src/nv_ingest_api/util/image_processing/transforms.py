@@ -8,15 +8,19 @@ from math import floor
 from typing import Optional
 from typing import Tuple
 
-import cv2
 import numpy as np
 from io import BytesIO
 from PIL import Image
 
 from nv_ingest_api.util.converters import bytetools
 
-# Configure OpenCV to use a single thread for image processing
-cv2.setNumThreads(1)
+try:
+    import cv2
+
+    # Configure OpenCV to use a single thread for image processing
+    cv2.setNumThreads(1)
+except ImportError:
+    cv2 = None
 DEFAULT_MAX_WIDTH = 1024
 DEFAULT_MAX_HEIGHT = 1280
 
@@ -27,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 
 def _resize_image_opencv(
-    array: np.ndarray, target_size: Tuple[int, int], interpolation=cv2.INTER_LANCZOS4
+    array: np.ndarray, target_size: Tuple[int, int], interpolation=None
 ) -> np.ndarray:
     """
     Resizes a NumPy array representing an image using OpenCV.
@@ -46,6 +50,8 @@ def _resize_image_opencv(
     np.ndarray
         The resized image as a NumPy array.
     """
+    if interpolation is None:
+        interpolation = cv2.INTER_LANCZOS4
     return cv2.resize(array, target_size, interpolation=interpolation)
 
 

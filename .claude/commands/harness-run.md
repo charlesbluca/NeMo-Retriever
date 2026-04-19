@@ -64,6 +64,7 @@ Harness runs (especially sweeps) are long-running and fail silently. When a run 
 | `No files found for input_type='pdf'` | Dataset path exists but has no PDFs at top level (check for `corpus/` subdir) | Kill, fix path |
 | `Distribution not found at: file:///tmp/ray/` | Same as editable dep issue above | Kill |
 | `VIRTUAL_ENV=... does not match the project environment path` | Ray raylet ignoring active venv, creating a new broken one | Kill |
+| `Module MetricsHead failed to start` + `PermissionError.*AF_UNIX` | Sandbox blocks Unix sockets; Ray dashboard crashes and cascades to node timeout | Kill, set `RAY_INCLUDE_DASHBOARD=0` and restart |
 
 **Killing a hanging Ray cluster cleanly:**
 ```bash
@@ -97,6 +98,11 @@ Tee all output to `harness.log` in the repo root (CWD is always writable; result
 The `retriever` binary lives in the project venv. Always invoke via its full path or activate first:
 ```bash
 RETRIEVER=nemo_retriever/.venv/bin/retriever
+```
+
+**Claude Code sandbox**: Unix sockets are blocked, which kills Ray's dashboard and cascades to a node startup timeout. Set `RAY_INCLUDE_DASHBOARD=0` to disable only the dashboard (not the cluster):
+```bash
+export RAY_INCLUDE_DASHBOARD=0
 ```
 
 ```bash

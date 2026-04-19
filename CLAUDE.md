@@ -100,6 +100,8 @@ Things that have caused repeated pain and should eventually be addressed:
 
 - **Ray workers can't resolve editable path dependencies outside working_dir** — `ray.init()` is called without `runtime_env`, so Ray auto-packages `nemo_retriever/` as the working dir and ships it to workers. Workers then try to `uv sync`, which includes `nv-ingest @ editable+../src`, `nv-ingest-api @ editable+../api`, `nv-ingest-client @ editable+../client`. Those paths don't exist in Ray's temp dir → workers crash-loop silently. Symptom: `(raylet) error: Failed to generate package metadata for nv-ingest @ editable+../src`. Fix candidates: pass `runtime_env` to `ray.init()` to disable working-dir packaging, or remove the legacy editable deps from `nemo_retriever/pyproject.toml` since `src/`/`api/`/`client/` are deprecated.
 
+- **Ray dashboard crashes in Claude Code sandbox** — sandbox blocks `socket.AF_UNIX`, which kills the Ray MetricsHead and cascades to a node startup timeout. Workaround: `export RAY_INCLUDE_DASHBOARD=0` before running the harness. This env var is respected by `graph_ingestor.py` and `graph/executor.py` (default is `1` so normal runs are unaffected).
+
 ## Code Style
 
 - Line length: 120 characters (black + flake8)

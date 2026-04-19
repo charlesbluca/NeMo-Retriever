@@ -60,6 +60,27 @@ retriever-harness --help
 
 **Benchmarking** (`harness/`, `recall/`): `retriever harness run --dataset jp20 --preset single_gpu`; configs in `nemo_retriever/harness/test_configs.yaml`
 
+## claude/config branch (temporary — remove before merging to main)
+
+`claude/config` is a persistent meta-branch that carries this file and `.claude/` on top of any dev branch. All Claude config work happens here.
+
+**Keep it rebased on main as main advances:**
+```bash
+git rebase main claude/config && git push --force-with-lease origin claude/config
+```
+
+**Start new feature work with config included:**
+```bash
+git checkout -b feature/my-work claude/config
+```
+
+**Apply config onto an existing feature branch (always conflict-free):**
+```bash
+git merge claude/config
+```
+
+When the config is ready to land, open a standalone PR from `claude/config` into `main`, strip this section, and delete the branch.
+
 ## Skill Opportunities
 
 When working in this repo, proactively watch for patterns that should become slash commands:

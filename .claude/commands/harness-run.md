@@ -12,14 +12,14 @@ Read `nemo_retriever/harness/test_configs.yaml`. For each entry in `datasets:`, 
   2. Relative to `nemo_retriever/harness/` (the config's own directory)
   3. Relative to repo root
 
-Run these checks with:
+Run these checks with (works regardless of current working directory):
 ```bash
 python3 - <<'EOF'
-import yaml, os
+import yaml, subprocess
 from pathlib import Path
 
-repo = Path("nemo_retriever")
-cfg_path = repo / "harness" / "test_configs.yaml"
+repo_root = Path(subprocess.check_output(["git", "rev-parse", "--show-toplevel"], text=True).strip())
+cfg_path = repo_root / "nemo_retriever" / "harness" / "test_configs.yaml"
 cfg = yaml.safe_load(cfg_path.read_text())
 
 for name, ds in cfg.get("datasets", {}).items():
@@ -29,7 +29,7 @@ for name, ds in cfg.get("datasets", {}).items():
     q_ok = True
     if q:
         qp = Path(q).expanduser()
-        q_ok = qp.exists() or (cfg_path.parent / q).exists() or (Path(".") / q).exists()
+        q_ok = qp.exists() or (cfg_path.parent / q).exists() or (repo_root / q).exists()
     status = "OK" if exists else "MISSING"
     q_status = "" if not q else (" query:OK" if q_ok else " query:MISSING")
     print(f"  {name}: {status}{q_status}  ({p})")
@@ -45,7 +45,7 @@ ls ~/datasets/
 
 If any `path` entries are MISSING, propose edits to `nemo_retriever/harness/test_configs.yaml`.
 
-**Dataset path mapping**: `~/datasets/<name>` is the correct `path` for datasets named after their directory. The harness scans recursively (`<path>/**/*.pdf`), so point to the parent dir, not `corpus/`.
+**Dataset path mapping**: `~/datasets/<name>` is the correct `path` for datasets named after their directory. The harness scans recursively (`<path>/**/*.pdf`) in both `graph_pipeline._resolve_file_patterns` and `resolve_input_files`, so point to the dataset root, not an internal subdir like `corpus/`.
 
 **Query CSV mapping**: If a dataset has a `query.csv` at `~/datasets/<name>/query.csv`, that should be the `query_csv` value. The repo's `data/` directory contains only `bo767_annotations.csv` and `digital_corpora_10k_annotations.csv`; all other query CSVs must come from `~/datasets/`.
 
@@ -53,30 +53,83 @@ For the vidore_v3 datasets, the path should be `~/datasets/vidore_v3/<subdataset
 
 Present the proposed changes as a diff and ask for confirmation before editing the file.
 
+## Monitoring runs for known red flags
+
+Harness runs (especially sweeps) are long-running and fail silently. When a run is in progress, periodically scan the output for these patterns — if any appear, the run is doomed and should be killed before wasting more time:
+
+| Red flag | Meaning | Action |
+|----------|---------|--------|
+| `error: Failed to generate package metadata for nv-ingest @ editable+../src` | Ray workers can't resolve editable deps outside working_dir; workers will crash-loop | Kill, see Known Friction in CLAUDE.md |
+| `Some workers of the worker process have not registered within the timeout` | Ray workers are crash-looping (often caused by above) | Kill |
+| `No files found for input_type='pdf'` | Dataset path exists but has no PDFs at top level (check for `corpus/` subdir) | Kill, fix path |
+| `Distribution not found at: file:///tmp/ray/` | Same as editable dep issue above | Kill |
+| `VIRTUAL_ENV=... does not match the project environment path` | Ray raylet ignoring active venv, creating a new broken one | Kill |
+
+**Killing a hanging Ray cluster cleanly:**
+```bash
+# Kill the graph_pipeline subprocess and Ray
+pkill -f graph_pipeline
+ray stop --force 2>/dev/null || true
+# Verify nothing left
+ray status 2>/dev/null || echo "Ray stopped"
+```
+
+If `ray stop` hangs, find and kill the GCS server directly:
+```bash
+pkill -f "gcs_server" && pkill -f "raylet"
+```
+
 ## Per-machine path friction
 
 Dataset paths in `test_configs.yaml` are absolute paths set by whoever last edited the file (e.g. `/raid/cjarrett/...`). They will fail on a different machine. **Always run Step 1 before any harness run or sweep** — including dry-runs and new sweep configs — so missing paths surface before starting a long ingestion job.
 
 When adding new dataset entries or sweep configs (e.g. `vllm_bo767_sweep.yaml`), invoke this skill rather than calling `retriever harness sweep --dry-run` directly; the dry-run only validates config structure, not dataset path existence.
 
-## Step 3 — run the harness
+## Step 3 — run the harness (with live red-flag monitoring)
 
-Default (active dataset from config, single_gpu preset):
+Harness runs are long-running and fail silently. Always start the run in background, then immediately
+use the Monitor tool to watch for red flags in real time so a doomed run can be killed early.
+
+### 3a — start the run in background
+
+Tee all output to a log file so Monitor can watch it:
+
 ```bash
-retriever harness run
+# Single dataset run
+retriever harness run --dataset <name> --preset <single_gpu|dgx_8gpu> 2>&1 | tee /tmp/harness.log
+
+# Sweep
+retriever harness sweep --runs-config nemo_retriever/harness/vllm_bo767_sweep.yaml 2>&1 | tee /tmp/harness.log
 ```
 
-With explicit dataset and preset:
+Pass `run_in_background=true` so the conversation stays unblocked. With key=value overrides:
 ```bash
-retriever harness run --dataset <name> --preset <single_gpu|dgx_8gpu>
+retriever harness run --dataset <name> -- embed_workers=4 embed_batch_size=128 2>&1 | tee /tmp/harness.log
 ```
 
-With key=value overrides (bypasses YAML, no file edit needed):
+If the user provides `$ARGUMENTS`, append them before the `2>&1 | tee` redirect.
+
+### 3b — immediately launch Monitor to watch for red flags
+
+After starting the background run, launch Monitor on:
 ```bash
-retriever harness run --dataset <name> -- embed_workers=4 embed_batch_size=128
+tail -F /tmp/harness.log | grep --line-buffered -E \
+  "Failed to generate package metadata|workers.*not registered within|No files found for input_type|Distribution not found at.*ray|VIRTUAL_ENV.*does not match"
 ```
 
-If the user provides `$ARGUMENTS`, append them. Results land in `results.json` and `session_summary.json` in the working directory.
+**If Monitor fires** (red flag line appears): kill the run immediately — don't wait for it to finish:
+```bash
+pkill -f graph_pipeline; ray stop --force 2>/dev/null || true
+```
+Then diagnose using the red-flag table above and tell the user what went wrong.
+
+**If the background run completes normally** (Bash notifies you it's done): read the tail of the log
+and report the key metrics:
+```bash
+tail -50 /tmp/harness.log
+```
+
+Results also land in `results.json` and `session_summary.json` in the working directory.
 
 ## Available datasets (from test_configs.yaml)
 

@@ -92,6 +92,14 @@ When you spot one, say so and offer to run `/new-skill` to capture it. Don't wai
 
 When bootstrapping feels complete, run `/compact-config` to prune thin or redundant commands and tighten this file.
 
+## Known Friction Points
+
+Things that have caused repeated pain and should eventually be addressed:
+
+- **Harness dataset paths are machine-specific** — `test_configs.yaml` embeds absolute paths (e.g. `/raid/cjarrett/...`) that differ per machine. Every new machine requires editing the committed file, which creates noise in git history and risks accidentally committing a local path. The desired fix is a local-override mechanism (e.g. a gitignored `test_configs.local.yaml` or env-var path substitution) so per-machine paths never touch the committed config.
+
+- **Ray workers can't resolve editable path dependencies outside working_dir** — `ray.init()` is called without `runtime_env`, so Ray auto-packages `nemo_retriever/` as the working dir and ships it to workers. Workers then try to `uv sync`, which includes `nv-ingest @ editable+../src`, `nv-ingest-api @ editable+../api`, `nv-ingest-client @ editable+../client`. Those paths don't exist in Ray's temp dir → workers crash-loop silently. Symptom: `(raylet) error: Failed to generate package metadata for nv-ingest @ editable+../src`. Fix candidates: pass `runtime_env` to `ray.init()` to disable working-dir packaging, or remove the legacy editable deps from `nemo_retriever/pyproject.toml` since `src/`/`api/`/`client/` are deprecated.
+
 ## Code Style
 
 - Line length: 120 characters (black + flake8)

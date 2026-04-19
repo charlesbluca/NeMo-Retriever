@@ -1,5 +1,8 @@
 Reproduce a CI check locally. Maps directly to the checks in `.github/workflows/`.
 
+TRIGGER when: user asks to run tests, run pytest, check CI, run pre-commit, or verify a change before committing or opening a PR.
+SKIP: harness benchmarks (use harness-run skill instead).
+
 ## Step 1 — identify context
 
 Check whether the user is on a PR branch:
@@ -17,11 +20,15 @@ Present the three CI categories and ask which one to reproduce:
 **A. Retriever Unit Tests** (`retriever-unit-tests.yml`)
 - Runs on every branch push, independently of PR/main CI
 - Fast Python-only; no Docker needed
-- Local equivalent:
+- Local equivalent (must run from `nemo_retriever/` subdir using `uv`):
   ```bash
-  PYTHONPATH=nemo_retriever/src python -m pytest nemo_retriever/tests -q
+  cd nemo_retriever && PYTHONPATH=src uv run python -m pytest tests -q
   ```
-- If the user passes a path or test node ID (`$ARGUMENTS`), append it to narrow the run.
+- **Test layout**: harness tests are flat files directly in `nemo_retriever/tests/` (e.g. `test_harness_config.py`, `test_harness_run.py`), not in a `tests/harness/` subdirectory. When a user refers to "harness tests" or passes `nemo_retriever/tests/harness/`, translate to the correct pattern:
+  ```bash
+  cd nemo_retriever && PYTHONPATH=src uv run python -m pytest tests/test_harness_*.py -q
+  ```
+- For any other path like `nemo_retriever/tests/foo/bar.py`, strip the `nemo_retriever/` prefix and run from the subdir: `cd nemo_retriever && PYTHONPATH=src uv run python -m pytest tests/foo/bar.py -q`
 
 **B. Pre-commit Checks** (part of `ci-pull-request.yml` and `ci-main.yml`)
 - Runs: black, flake8, trailing-whitespace, end-of-file-fixer, check-ast, debug-statements, validate-deployment-configs

@@ -20,11 +20,11 @@ Requires Python 3.12+ and CUDA 13.x on Linux. The `pyproject.toml` already pins 
 ## Common Commands
 
 ```bash
-# Run unit tests
-PYTHONPATH=nemo_retriever/src python -m pytest nemo_retriever/tests -q
+# Run unit tests (from nemo_retriever/ subdir; uv provides the project's Python env)
+cd nemo_retriever && PYTHONPATH=src uv run python -m pytest tests -q
 
 # Run a single test file
-PYTHONPATH=nemo_retriever/src python -m pytest nemo_retriever/tests/path/to/test_foo.py -q
+cd nemo_retriever && PYTHONPATH=src uv run python -m pytest tests/path/to/test_foo.py -q
 
 # Lint & format checks (pre-commit must be installed first)
 pre-commit install

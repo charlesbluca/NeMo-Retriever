@@ -64,7 +64,7 @@ Harness runs (especially sweeps) are long-running and fail silently. When a run 
 | `No files found for input_type='pdf'` | Dataset path exists but has no PDFs at top level (check for `corpus/` subdir) | Kill, fix path |
 | `Distribution not found at: file:///tmp/ray/` | Same as editable dep issue above | Kill |
 | `VIRTUAL_ENV=... does not match the project environment path` | Ray raylet ignoring active venv, creating a new broken one | Kill |
-| `Module MetricsHead failed to start` + `PermissionError.*AF_UNIX` | Sandbox blocks Unix sockets; Ray dashboard crashes and cascades to node timeout | Kill, set `RAY_INCLUDE_DASHBOARD=0` and restart |
+| `Module MetricsHead failed to start` + `PermissionError.*AF_UNIX` | Sandbox blocks Unix sockets; Ray dashboard + Plasma store both crash | Kill, use `dangerouslyDisableSandbox: true` for the Bash run command |
 
 **Killing a hanging Ray cluster cleanly:**
 ```bash
@@ -100,7 +100,11 @@ The `retriever` binary lives in the project venv. Always invoke via its full pat
 RETRIEVER=nemo_retriever/.venv/bin/retriever
 ```
 
-**Claude Code sandbox**: Unix sockets are blocked, which kills Ray's dashboard and cascades to a node startup timeout. Set `RAY_INCLUDE_DASHBOARD=0` to disable only the dashboard (not the cluster):
+**Claude Code sandbox**: the sandbox sets `TMPDIR=/tmp/claude-XXXXX`. Ray's compiled Plasma Object Store binary (`plasma_store_server`) SIGABRTs trying to create its Unix socket there — even though Python-level socket tests pass. Running unsandboxed restores `TMPDIR=/tmp` where Plasma works.
+
+**Always run harness Bash commands with `dangerouslyDisableSandbox: true`.**
+
+Also set `RAY_INCLUDE_DASHBOARD=0` to suppress the dashboard crash noise that otherwise fires first:
 ```bash
 export RAY_INCLUDE_DASHBOARD=0
 ```

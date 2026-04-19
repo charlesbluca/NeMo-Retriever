@@ -92,19 +92,24 @@ use the Monitor tool to watch for red flags in real time so a doomed run can be 
 
 ### 3a — start the run in background
 
-Tee all output to a log file so Monitor can watch it:
+Tee all output to `harness.log` in the repo root (CWD is always writable; results land there too):
+
+The `retriever` binary lives in the project venv. Always invoke via its full path or activate first:
+```bash
+RETRIEVER=nemo_retriever/.venv/bin/retriever
+```
 
 ```bash
 # Single dataset run
-retriever harness run --dataset <name> --preset <single_gpu|dgx_8gpu> 2>&1 | tee /tmp/harness.log
+$RETRIEVER harness run --dataset <name> --preset <single_gpu|dgx_8gpu> 2>&1 | tee harness.log
 
 # Sweep
-retriever harness sweep --runs-config nemo_retriever/harness/vllm_bo767_sweep.yaml 2>&1 | tee /tmp/harness.log
+$RETRIEVER harness sweep --runs-config nemo_retriever/harness/vllm_bo767_sweep.yaml 2>&1 | tee harness.log
 ```
 
 Pass `run_in_background=true` so the conversation stays unblocked. With key=value overrides:
 ```bash
-retriever harness run --dataset <name> -- embed_workers=4 embed_batch_size=128 2>&1 | tee /tmp/harness.log
+$RETRIEVER harness run --dataset <name> -- embed_workers=4 embed_batch_size=128 2>&1 | tee harness.log
 ```
 
 If the user provides `$ARGUMENTS`, append them before the `2>&1 | tee` redirect.
@@ -113,7 +118,7 @@ If the user provides `$ARGUMENTS`, append them before the `2>&1 | tee` redirect.
 
 After starting the background run, launch Monitor on:
 ```bash
-tail -F /tmp/harness.log | grep --line-buffered -E \
+tail -F harness.log | grep --line-buffered -E \
   "Failed to generate package metadata|workers.*not registered within|No files found for input_type|Distribution not found at.*ray|VIRTUAL_ENV.*does not match"
 ```
 
@@ -126,7 +131,7 @@ Then diagnose using the red-flag table above and tell the user what went wrong.
 **If the background run completes normally** (Bash notifies you it's done): read the tail of the log
 and report the key metrics:
 ```bash
-tail -50 /tmp/harness.log
+tail -50 harness.log
 ```
 
 Results also land in `results.json` and `session_summary.json` in the working directory.

@@ -104,11 +104,6 @@ RETRIEVER=nemo_retriever/.venv/bin/retriever
 
 **Always run harness Bash commands with `dangerouslyDisableSandbox: true`.**
 
-Also set `RAY_INCLUDE_DASHBOARD=0` to suppress the dashboard crash noise that otherwise fires first:
-```bash
-export RAY_INCLUDE_DASHBOARD=0
-```
-
 ```bash
 # Single dataset run
 $RETRIEVER harness run --dataset <name> --preset <single_gpu|dgx_8gpu> 2>&1 | tee harness.log

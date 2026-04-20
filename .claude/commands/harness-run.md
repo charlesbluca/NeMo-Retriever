@@ -65,7 +65,7 @@ Harness runs (especially sweeps) are long-running and fail silently. When a run 
 | `Distribution not found at: file:///tmp/ray/` | Same as editable dep issue above | Kill |
 | `VIRTUAL_ENV=... does not match the project environment path` | Ray raylet ignoring active venv, creating a new broken one | Kill |
 | `Module MetricsHead failed to start` + `PermissionError.*AF_UNIX` | Sandbox blocks Unix sockets; Ray dashboard + Plasma store both crash | Kill, use `dangerouslyDisableSandbox: true` for the Bash run command |
-| `CUDA out of memory` | Embedder OOM — three possible causes: (1) prior vLLM run left GPU memory pinned; (2) `embed_workers × gpu_memory_utilization` exceeds one GPU — total Ray GPU fraction > 1.0 spills actors to a second GPU; (3) HF ingest path with large `embed_batch_size` (256 materialises full batch×seq activations — use ≤ 32 for HF) | Kill, run `nvidia-smi`, check cause from table below, then retry |
+| `CUDA out of memory` | Embedder OOM — four possible causes: (1) prior vLLM run left GPU memory pinned; (2) `embed_workers × gpu_memory_utilization` exceeds one GPU — total Ray GPU fraction > 1.0 spills actors to a second GPU; (3) HF ingest path with large `embed_batch_size` (256 materialises full batch×seq activations — use ≤ 32 for HF); (4) VL image modality with `embed_workers > 1` — each image batch needs ~15 GiB activation; 3 concurrent actors exhaust an 80 GiB GPU — VL text_image dataset configs should set `embed_workers: 1` | Kill, run `nvidia-smi`, check cause from table below, then retry |
 | `EngineCore failed to start` / `InductorError: CalledProcessError` | vLLM engine init failed (torch inductor / GCC compilation) **at actor initialization, before any rows are processed**; `bo767_baseline` requires the vLLM PR branch (`retriever-vllm-for-embeddings-1`) | Kill; skip `bo767_baseline` or switch to vLLM branch |
 
 **vLLM GPU memory poisoning:** When a vLLM actor crashes at initialization, CUDA does not immediately reclaim its GPU allocation (model weights + KV cache reservation). Ray marks the actor dead but the CUDA context persists until the process is fully reaped. Subsequent runs on the same node inherit a partially occupied GPU and hit OOM during embedding. Always schedule vLLM experiments **last** in a sweep and verify `nvidia-smi` shows 0 MiB used before starting the next run if a vLLM run failed.
@@ -120,9 +120,9 @@ $RETRIEVER harness run --dataset <name> --preset <single_gpu|dgx_8gpu> 2>&1 | te
 $RETRIEVER harness sweep --runs-config nemo_retriever/harness/vllm_bo767_sweep.yaml 2>&1 | tee harness.log
 ```
 
-Pass `run_in_background=true` so the conversation stays unblocked. With key=value overrides:
+Pass `run_in_background=true` so the conversation stays unblocked. With key=value overrides (use `--override`, not `-- key=value` which is sweep syntax and does not work for `harness run`):
 ```bash
-$RETRIEVER harness run --dataset <name> -- embed_workers=4 embed_batch_size=128 2>&1 | tee harness.log
+$RETRIEVER harness run --dataset <name> --override embed_workers=1 --override embed_batch_size=16 2>&1 | tee harness.log
 ```
 
 If the user provides `$ARGUMENTS`, append them before the `2>&1 | tee` redirect.
@@ -139,7 +139,7 @@ Key things to check:
 
 | Param | Flag | Healthy value | Red flag |
 |-------|------|---------------|----------|
-| Embed workers | `--embed-actors N` | 1–3 | >1 when embed backend is vLLM — may spill across GPUs and OOM |
+| Embed workers | `--embed-actors N` | 1–3 | >1 when embed backend is vLLM — may spill across GPUs and OOM; must be 1 for VL text_image — each 8-image batch needs ~15 GiB activation |
 | Embed batch size | `--embed-batch-size N` | ≤32 for HF, 256 for vLLM | >32 with `--embed-local-ingest-backend hf` → huge activation OOM |
 | Ingest backend | `--embed-local-ingest-backend` | hf or vllm | absent = vllm default |
 | GPU per embed actor | `--embed-gpus-per-actor F` | 0.25 typical | if `N actors × F > 1.0` and also page_elements + OCR also have GPU fractions, total > 1 GPU → multi-GPU spill |
@@ -159,14 +159,17 @@ tail -F harness.log | grep --line-buffered -E \
   "Failed to generate package metadata|workers.*not registered within|No files found for input_type|Distribution not found at.*ray|VIRTUAL_ENV.*does not match|CUDA out of memory|EngineCore failed to start|InductorError"
 ```
 
+**1 shell : 1 monitor.** Stop the monitor as soon as the run ends — either by calling `TaskStop` with the monitor's task ID, or by noting the monitor has a finite timeout. Never leave stale monitors accumulating across retries; start a fresh one for each new run attempt.
+
+**Before context compaction:** stop all active monitors with `TaskStop` before the conversation compacts. Monitor IDs are not preserved across compaction and orphaned monitors cannot be recovered by name — the user must kill them manually from the UI. When wrapping up a session or handing off work, explicitly stop every monitor you started.
+
 **If Monitor fires** (red flag line appears): kill the run immediately — don't wait for it to finish:
 ```bash
 pkill -f graph_pipeline; ray stop --force 2>/dev/null || true
 ```
-Then diagnose using the red-flag table above and tell the user what went wrong.
+Stop the monitor with TaskStop, then diagnose using the red-flag table above and tell the user what went wrong.
 
-**If the background run completes normally** (Bash notifies you it's done): read the tail of the log
-and report the key metrics:
+**If the background run completes normally** (Bash notifies you it's done): stop the monitor with TaskStop, read the tail of the log and report the key metrics:
 ```bash
 tail -50 harness.log
 ```
@@ -198,13 +201,14 @@ Harness fields that control embedding and reranking (set in dataset YAML, sweep 
 |-------|------|---------|-------------|
 | `embed_local_ingest_backend` | str | vllm | Ingest-time text embedder for non-VL models: `vllm` or `hf`. HF requires `embed_batch_size` ≤ 32 (default 256 OOMs at seq_len=8192). |
 | `embed_local_query_backend` | str | auto | Query-time embed backend: `auto` (vLLM for text, HF for VL), `hf`, or `vllm` |
+| `embed_workers` | int | 3 (preset) | Number of concurrent embed actors. VL text_image configs must set `embed_workers: 1` — each image batch needs ~15 GiB activation; 3 actors OOM an 80 GiB GPU. Dataset config wins over preset (low→high: active < preset < dataset < sweep < CLI). |
 | `reranker` | bool | false | Enable post-retrieval reranking |
 | `reranker_model_name` | str | nvidia/llama-nemotron-rerank-vl-1b-v2 | HF model ID |
 | `rerank_modality` | str or null | null | text, text_image, or null (inherits embed_modality) |
 
 ```bash
 # Enable reranking via CLI override
-retriever harness run --dataset bo767_vl_text_image -- reranker=true
+retriever harness run --dataset bo767_vl_text_image --override reranker=true
 ```
 
 ## vLLM/VL bo767 experiment sweep

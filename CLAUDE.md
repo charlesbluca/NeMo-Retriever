@@ -64,20 +64,23 @@ retriever-harness --help
 
 `claude/config` is a persistent meta-branch that carries this file and `.claude/` on top of any dev branch. All Claude config work happens here.
 
-**Keep it rebased on main as main advances:**
+**Sync with upstream and rebase config on top:**
 ```bash
-git rebase main claude/config && git push --force-with-lease origin claude/config
+gh repo sync -b main && git rebase main claude/config && git push --force-with-lease origin claude/config
+```
+`gh repo sync -b main` updates the local `main` to match upstream (does not push to `origin/main`).
+
+**Start new feature work — use `/feature-branch <description>` or manually:**
+```bash
+git worktree add -b feature/my-work .claude/worktrees/feature/my-work claude/config
 ```
 
-**Start new feature work with config included:**
+**Prepare a branch for PR (strip config commits before pushing):**
 ```bash
-git checkout -b feature/my-work claude/config
+git rebase --onto main claude/config   # replays only feature commits on top of main
+git push -u origin feature/my-work
 ```
-
-**Apply config onto an existing feature branch (always conflict-free):**
-```bash
-git merge claude/config
-```
+Plain `git rebase main` does NOT strip config commits — always use `--onto main claude/config`.
 
 When the config is ready to land, open a standalone PR from `claude/config` into `main`, strip this section, and delete the branch.
 

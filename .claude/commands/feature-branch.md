@@ -34,10 +34,11 @@ git checkout -b <branch-name> claude/config
    git log main..claude/config --format="%H"
    # then check each against: git merge-base --is-ancestor <hash> HEAD
    ```
-2. If any config commits found, rebase onto main:
+2. If any config commits found, rebase only the feature commits onto main (stripping config commits):
    ```bash
-   git rebase main
+   git rebase --onto main claude/config
    ```
+   This replays commits that come *after* `claude/config` directly on top of `main`, leaving the config commits behind.
 3. Verify no config commits remain:
    ```bash
    git log main..HEAD --oneline

@@ -3,8 +3,10 @@
 # Run with:
 #   retriever harness sweep --runs-config nemo_retriever/harness/jp20_vl_sweep.yaml
 #
-# Same 18-run design as vllm_bo767_sweep.yaml; see that file for the full experiment table.
-# vLLM VL ingest runs (9-12, 15-18) require vLLM ≥ 0.17 with VL model support.
+# 24-run design: 6 text-model + 6 VL-text-element + 6 VL-text-image-page + 6 VL-text-image-element.
+# VL-text uses element granularity (dominates page for text-only recall).
+# VL-text-image tests both granularities (page wins recall@10, element wins recall@1).
+# vLLM VL ingest runs require vLLM ≥ 0.17 with VL model support.
 
 preset: single_gpu
 
@@ -35,26 +37,30 @@ runs:
   - name: jp20_text_vllm_reranked
     dataset: jp20_text_vllm_reranked
 
-  # --- VL model, text modality ---
-  - name: jp20_vl_text_hf
-    dataset: jp20_vl_text_hf
+  # --- VL model, text modality, element granularity (apples-to-apples vs text model) ---
+  - name: jp20_vl_text_hf_element
+    dataset: jp20_vl_text_hf_element
+    overrides:
+      embed_batch_size: 32
 
-  - name: jp20_vl_text_hf_reranked
-    dataset: jp20_vl_text_hf_reranked
+  - name: jp20_vl_text_hf_reranked_element
+    dataset: jp20_vl_text_hf_reranked_element
+    overrides:
+      embed_batch_size: 32
 
-  - name: jp20_vl_text_vllm_hf
-    dataset: jp20_vl_text_vllm_hf
+  - name: jp20_vl_text_vllm_hf_element
+    dataset: jp20_vl_text_vllm_hf_element
 
-  - name: jp20_vl_text_vllm_hf_reranked
-    dataset: jp20_vl_text_vllm_hf_reranked
+  - name: jp20_vl_text_vllm_hf_reranked_element
+    dataset: jp20_vl_text_vllm_hf_reranked_element
 
-  - name: jp20_vl_text_vllm
-    dataset: jp20_vl_text_vllm
+  - name: jp20_vl_text_vllm_element
+    dataset: jp20_vl_text_vllm_element
 
-  - name: jp20_vl_text_vllm_reranked
-    dataset: jp20_vl_text_vllm_reranked
+  - name: jp20_vl_text_vllm_reranked_element
+    dataset: jp20_vl_text_vllm_reranked_element
 
-  # --- VL model, text+image modality ---
+  # --- VL model, text+image modality, page granularity ---
   - name: jp20_vl_text_image_hf
     dataset: jp20_vl_text_image_hf
 
@@ -72,6 +78,29 @@ runs:
 
   - name: jp20_vl_text_image_vllm_reranked
     dataset: jp20_vl_text_image_vllm_reranked
+
+  # --- VL model, text+image modality, element granularity ---
+  - name: jp20_vl_text_image_hf_element
+    dataset: jp20_vl_text_image_hf_element
+    overrides:
+      embed_batch_size: 32
+
+  - name: jp20_vl_text_image_hf_reranked_element
+    dataset: jp20_vl_text_image_hf_reranked_element
+    overrides:
+      embed_batch_size: 32
+
+  - name: jp20_vl_text_image_vllm_hf_element
+    dataset: jp20_vl_text_image_vllm_hf_element
+
+  - name: jp20_vl_text_image_vllm_hf_reranked_element
+    dataset: jp20_vl_text_image_vllm_hf_reranked_element
+
+  - name: jp20_vl_text_image_vllm_element
+    dataset: jp20_vl_text_image_vllm_element
+
+  - name: jp20_vl_text_image_vllm_reranked_element
+    dataset: jp20_vl_text_image_vllm_reranked_element
 
 slack:
   enabled: false

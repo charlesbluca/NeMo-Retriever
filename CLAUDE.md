@@ -64,9 +64,9 @@ retriever-harness --help
 
 `claude/config` is a persistent meta-branch that carries this file and `.claude/` on top of any dev branch. All Claude config work happens here.
 
-**Keep it rebased on main as main advances:**
+**Keep it current as main advances:**
 ```bash
-git rebase main claude/config && git push --force-with-lease origin claude/config
+git merge origin/main && git push origin claude/config
 ```
 
 **Start new feature work with config included:**

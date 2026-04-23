@@ -64,23 +64,25 @@ retriever-harness --help
 
 `claude/config` is a persistent meta-branch that carries this file and `.claude/` on top of any dev branch. All Claude config work happens here.
 
-**Sync with upstream and rebase config on top:**
+**Before any config work, pull the latest:**
 ```bash
-gh repo sync -b main && git rebase main claude/config && git push --force-with-lease origin claude/config
-```
-`gh repo sync -b main` updates the local `main` to match upstream (does not push to `origin/main`).
-
-**Start new feature work — use `/feature-branch <description>` or manually:**
-```bash
-git worktree add -b feature/my-work .claude/worktrees/feature/my-work claude/config
+git fetch origin && git merge origin/claude/config
 ```
 
-**Prepare a branch for PR (strip config commits before pushing):**
+**Keep it current as main advances:**
 ```bash
-git rebase --onto main claude/config   # replays only feature commits on top of main
-git push -u origin feature/my-work
+git merge origin/main && git push origin claude/config
 ```
-Plain `git rebase main` does NOT strip config commits — always use `--onto main claude/config`.
+
+**Start new feature work with config included:**
+```bash
+git checkout -b feature/my-work claude/config
+```
+
+**Apply config onto an existing feature branch (always conflict-free):**
+```bash
+git merge claude/config
+```
 
 When the config is ready to land, open a standalone PR from `claude/config` into `main`, strip this section, and delete the branch.
 
@@ -104,8 +106,6 @@ Things that have caused repeated pain and should eventually be addressed:
 - **Ray workers can't resolve editable path dependencies outside working_dir** — `ray.init()` is called without `runtime_env`, so Ray auto-packages `nemo_retriever/` as the working dir and ships it to workers. Workers then try to `uv sync`, which includes `nv-ingest @ editable+../src`, `nv-ingest-api @ editable+../api`, `nv-ingest-client @ editable+../client`. Those paths don't exist in Ray's temp dir → workers crash-loop silently. Symptom: `(raylet) error: Failed to generate package metadata for nv-ingest @ editable+../src`. Fix candidates: pass `runtime_env` to `ray.init()` to disable working-dir packaging, or remove the legacy editable deps from `nemo_retriever/pyproject.toml` since `src/`/`api/`/`client/` are deprecated.
 
 - **Ray batch mode requires `dangerouslyDisableSandbox: true`** — the sandbox sets `TMPDIR=/tmp/claude-40703`; Ray's compiled Plasma Object Store binary (`plasma_store_server`) fails to create its Unix socket in that path (SIGABRT in `plasma::PlasmaStore`), even though Python can bind AF_UNIX sockets there fine. Running unsandboxed restores `TMPDIR=/tmp` where Plasma works. `RAY_INCLUDE_DASHBOARD=0` suppresses the dashboard crash noise but is not sufficient on its own. Both are needed for harness runs inside Claude Code.
-
-- **vLLM torch inductor requires Python headers (`Python.h`)** — vLLM compiles CUDA kernels at actor init time using torch inductor, which invokes GCC with `-I/usr/include/python3.12`. System Python installs often omit the dev headers; when missing, the build fails with `InductorError: CalledProcessError ... fatal error: Python.h: No such file or file`. Fix: use a uv-managed Python which bundles headers: `uv python install 3.12`, then recreate the venv with `uv venv --python 3.12`. This affects any harness dataset that uses the vLLM ingest backend (`jp20_baseline`, `bo767_baseline`, `jp20_text_vllm_hf`, etc.).
 
 ## Code Style
 

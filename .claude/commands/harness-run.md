@@ -15,7 +15,7 @@ if [ -f "$RETRIEVER_BIN" ]; then
   echo "venv OK: $RETRIEVER_BIN"
 else
   echo "venv missing — creating venv and installing via uv (CLAUDE.md dev setup)"
-  cd nemo_retriever && uv python install 3.12 && uv venv --python 3.12 && uv pip install -e ".[dev]" && cd ..
+  cd nemo_retriever && uv venv --python 3.12 && uv pip install -e ".[dev]" && cd ..
 fi
 RETRIEVER=nemo_retriever/.venv/bin/retriever
 ```
@@ -131,7 +131,7 @@ Harness runs (especially sweeps) are long-running and fail silently. When a run 
 | `VIRTUAL_ENV=... does not match the project environment path` | Ray raylet ignoring active venv, creating a new broken one | Kill |
 | `Module MetricsHead failed to start` + `PermissionError.*AF_UNIX` | Sandbox blocks Unix sockets; Ray dashboard + Plasma store both crash | Kill, use `dangerouslyDisableSandbox: true` for the Bash run command |
 | `CUDA out of memory` | Embedder OOM — four possible causes: (1) prior vLLM run left GPU memory pinned; (2) `embed_workers × gpu_memory_utilization` exceeds one GPU — total Ray GPU fraction > 1.0 spills actors to a second GPU; (3) HF ingest path with large `embed_batch_size` (256 materialises full batch×seq activations — use ≤ 32 for HF); (4) VL image modality with `embed_workers > 1` — each image batch needs ~15 GiB activation; 3 concurrent actors exhaust an 80 GiB GPU — VL text_image dataset configs should set `embed_workers: 1` | Kill, run `nvidia-smi`, check cause from table below, then retry |
-| `EngineCore failed to start` / `InductorError: CalledProcessError` | vLLM engine init failed: torch inductor invokes GCC with `-I/usr/include/python3.12`; if `Python.h` is missing (system Python without dev headers), compile fails. Fix: `uv python install 3.12` then recreate the venv so uv uses its managed Python (which bundles headers). Also: `bo767_baseline`/`jp20_baseline` require the vLLM PR branch (`retriever-vllm-for-embeddings-1`). | Kill; run `uv python install 3.12`, recreate venv, retry |
+| `EngineCore failed to start` / `InductorError: CalledProcessError` | vLLM engine init failed (torch inductor / GCC compilation) **at actor initialization, before any rows are processed**; `bo767_baseline` requires the vLLM PR branch (`retriever-vllm-for-embeddings-1`) | Kill; skip `bo767_baseline` or switch to vLLM branch |
 
 **vLLM GPU memory poisoning:** When a vLLM actor crashes at initialization, CUDA does not immediately reclaim its GPU allocation (model weights + KV cache reservation). Ray marks the actor dead but the CUDA context persists until the process is fully reaped. Subsequent runs on the same node inherit a partially occupied GPU and hit OOM during embedding. Always schedule vLLM experiments **last** in a sweep and verify `nvidia-smi` shows 0 MiB used before starting the next run if a vLLM run failed.
 

@@ -4,7 +4,7 @@ active:
   dataset: jp20
   preset: single_gpu
   run_mode: batch
-  query_csv: data/jp20_query_gt.csv
+  query_csv: /raid/charlesb/datasets/jp20/query.csv
   input_type: pdf
   recall_required: true
   recall_match_mode: pdf_page
@@ -217,7 +217,7 @@ datasets:
 
   jp20:
     path: /datasets/nv-ingest/jp20
-    query_csv: data/jp20_query_gt.csv
+    query_csv: /raid/charlesb/datasets/jp20/query.csv
     input_type: pdf
     recall_required: true
     recall_match_mode: pdf_page

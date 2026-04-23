@@ -22,6 +22,30 @@ RETRIEVER=nemo_retriever/.venv/bin/retriever
 
 If the install fails (e.g. CUDA wheel mismatch for the installed driver), report the error and stop — do not proceed on a broken environment.
 
+### 0a.5 — HF token (required for local inference)
+
+Any run that loads a local model (vLLM embedder, VL reranker, HF embedder) will trigger a `model_info()` call to the HuggingFace API at actor init time — an internal `is_base_mistral` check inside `transformers`/vLLM. This call is **not** suppressed by `HF_HUB_OFFLINE=1`. Without a token, anonymous HF API requests hit rate limits (HTTP 429) and the Ray actor crashes before any inference runs.
+
+Check that `HF_TOKEN` is set before any harness run:
+
+```bash
+echo "HF_TOKEN: ${HF_TOKEN:+set (${HF_TOKEN:0:4}...${HF_TOKEN: -4})}"
+```
+
+If not set, ask the user to set it. The token is automatically forwarded to all Ray workers by the existing `ray_env_vars` forwarding in `executor.py`, `run.py`, `runner.py`, and `graph_ingestor.py` — no code changes needed, just a shell export.
+
+**Model hub cache pre-warming**: on a fresh machine, models must be downloaded before `HF_HUB_OFFLINE=1` can work. Use `snapshot_download` with `HF_HUB_OFFLINE=0` once per model:
+
+```python
+HF_HUB_OFFLINE=0 nemo_retriever/.venv/bin/python -c "
+from huggingface_hub import snapshot_download
+from nemo_retriever.utils.hf_model_registry import get_hf_revision
+model = '<model-id>'
+path = snapshot_download(model, revision=get_hf_revision(model, strict=False), local_files_only=False)
+print('cached at:', path)
+"
+```
+
 ### 0b — CUDA 13 compat libs (cu130 wheels on pre-13 drivers)
 
 The venv installs `torch+cu130` and `vllm+cu130`. On machines where the driver supports

@@ -16,16 +16,20 @@ Start feature work or prepare a branch for a PR, always keeping personal Claude 
 Given `$ARGUMENTS`:
 
 1. Derive a kebab-case branch name from the description (e.g., "add retry logic" → `feature/add-retry-logic`)
-2. Create a new git worktree branched from `claude/config`:
-   ```bash
-   git worktree add -b <branch-name> .claude/worktrees/<branch-name> claude/config
-   ```
-3. Report the worktree path so the user can navigate to it or tell you to enter it.
-
-If already inside a worktree and just need a new branch (no new worktree), do:
-```bash
-git checkout -b <branch-name> claude/config
-```
+2. Check whether we're already inside a Claude worktree (i.e. CWD contains `.claude/worktrees/`):
+   - **Already in a worktree** — check out directly here (no new worktree needed):
+     - If the branch already exists:
+       ```bash
+       git checkout <branch-name>
+       git merge claude/config
+       ```
+       This layers the config commits onto the branch. The PR strip step (`rebase --onto main claude/config`) will drop them before push.
+     - If it's a new branch: `git checkout -b <branch-name> claude/config`
+   - **Not in a worktree** — create a new worktree from the repo root:
+     ```bash
+     git worktree add -b <branch-name> .claude/worktrees/<branch-name> claude/config
+     ```
+     Then report the worktree path so the user can navigate to it or tell you to enter it.
 
 ### Preparing for PR (`--pr` flag or when user says they're ready to open a PR)
 

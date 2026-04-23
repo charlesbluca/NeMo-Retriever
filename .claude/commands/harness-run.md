@@ -15,7 +15,7 @@ if [ -f "$RETRIEVER_BIN" ]; then
   echo "venv OK: $RETRIEVER_BIN"
 else
   echo "venv missing — creating venv and installing via uv (CLAUDE.md dev setup)"
-  cd nemo_retriever && uv venv --python 3.12 && uv pip install -e ".[dev]" && cd ..
+  cd nemo_retriever && uv venv --python 3.12 && uv pip install -e ".[all,dev]" && cd ..
 fi
 RETRIEVER=nemo_retriever/.venv/bin/retriever
 ```

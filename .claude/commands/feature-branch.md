@@ -21,9 +21,10 @@ Given `$ARGUMENTS`:
      - If the branch already exists:
        ```bash
        git checkout <branch-name>
-       git merge claude/config
+       git checkout claude/config -- CLAUDE.md
+       git restore --staged CLAUDE.md
        ```
-       This layers the config commits onto the branch. The PR strip step (`rebase --onto main claude/config`) will drop them before push.
+       The sandbox null-devices `.claude/` entries, so a full `git merge claude/config` fails. Restoring just CLAUDE.md is sufficient — it's the only config file that matters at runtime. No PR strip needed since nothing is committed.
      - If it's a new branch: `git checkout -b <branch-name> claude/config`
    - **Not in a worktree** — create a new worktree from the repo root:
      ```bash

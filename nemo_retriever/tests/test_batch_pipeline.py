@@ -6,6 +6,7 @@ from typer.testing import CliRunner
 
 import nemo_retriever.examples.graph_pipeline as batch_pipeline
 import nemo_retriever.model as model_module
+import nemo_retriever.pipeline.__main__ as pipeline_main
 import nemo_retriever.recall.beir as beir_module
 import nemo_retriever.utils.detection_summary as detection_summary_module
 from nemo_retriever.utils.input_files import resolve_input_patterns
@@ -100,6 +101,17 @@ def test_resolve_input_file_patterns_recurses_for_directory_inputs(tmp_path) -> 
     assert doc_patterns == [str(dataset_dir / "**" / "*.docx"), str(dataset_dir / "**" / "*.pptx")]
 
 
+def test_graph_pipeline_resolves_nested_pdf_directories(tmp_path) -> None:
+    dataset_dir = tmp_path / "earnings_consulting"
+    nested_dir = dataset_dir / "amazon_earnings_call"
+    nested_dir.mkdir(parents=True)
+    (nested_dir / "sample.pdf").write_text("placeholder", encoding="utf-8")
+
+    patterns = batch_pipeline._resolve_file_patterns(dataset_dir, "pdf")
+
+    assert patterns == [str(dataset_dir / "**" / "*.pdf")]
+
+
 def test_batch_pipeline_accepts_multimodal_embed_and_page_image_flags(tmp_path, monkeypatch) -> None:
     dataset_dir = tmp_path / "dataset"
     dataset_dir.mkdir()
@@ -107,10 +119,14 @@ def test_batch_pipeline_accepts_multimodal_embed_and_page_image_flags(tmp_path, 
     missing_query_csv = tmp_path / "missing.csv"
 
     fake_ingestor = _FakeIngestor()
-    monkeypatch.setattr(batch_pipeline, "GraphIngestor", lambda *args, **kwargs: fake_ingestor)
-    monkeypatch.setattr(batch_pipeline, "_ensure_lancedb_table", lambda *args, **kwargs: None)
-    monkeypatch.setattr(batch_pipeline, "handle_lancedb", lambda *args, **kwargs: None)
-    monkeypatch.setitem(sys.modules, "ray", SimpleNamespace(shutdown=lambda: None))
+    monkeypatch.setattr(pipeline_main, "GraphIngestor", lambda *args, **kwargs: fake_ingestor)
+    monkeypatch.setattr(pipeline_main, "_ensure_lancedb_table", lambda *args, **kwargs: None)
+    monkeypatch.setattr(pipeline_main, "handle_lancedb", lambda *args, **kwargs: None)
+    monkeypatch.setitem(
+        sys.modules,
+        "ray",
+        SimpleNamespace(shutdown=lambda: None, is_initialized=lambda: True),
+    )
 
     class _FakeTable:
         def count_rows(self) -> int:
@@ -153,13 +169,15 @@ def test_batch_pipeline_routes_audio_input_to_audio_ingestor(tmp_path, monkeypat
     missing_query_csv = tmp_path / "missing.csv"
 
     fake_ingestor = _FakeIngestor()
-    monkeypatch.setattr(batch_pipeline, "GraphIngestor", lambda *args, **kwargs: fake_ingestor)
-    monkeypatch.setattr(batch_pipeline, "_ensure_lancedb_table", lambda *args, **kwargs: None)
-    monkeypatch.setattr(batch_pipeline, "handle_lancedb", lambda *args, **kwargs: None)
-    monkeypatch.setitem(sys.modules, "ray", SimpleNamespace(shutdown=lambda: None))
-    monkeypatch.setattr(
-        batch_pipeline, "asr_params_from_env", lambda: SimpleNamespace(model_copy=lambda update: update)
+    monkeypatch.setattr(pipeline_main, "GraphIngestor", lambda *args, **kwargs: fake_ingestor)
+    monkeypatch.setattr(pipeline_main, "_ensure_lancedb_table", lambda *args, **kwargs: None)
+    monkeypatch.setattr(pipeline_main, "handle_lancedb", lambda *args, **kwargs: None)
+    monkeypatch.setitem(
+        sys.modules,
+        "ray",
+        SimpleNamespace(shutdown=lambda: None, is_initialized=lambda: True),
     )
+    monkeypatch.setattr(pipeline_main, "asr_params_from_env", lambda: SimpleNamespace(model_copy=lambda update: update))
 
     class _FakeTable:
         def count_rows(self) -> int:
@@ -205,9 +223,9 @@ def test_batch_pipeline_routes_beir_mode_to_evaluator(tmp_path, monkeypatch) -> 
     (dataset_dir / "sample.pdf").write_text("placeholder", encoding="utf-8")
 
     fake_ingestor = _FakeIngestor()
-    monkeypatch.setattr(batch_pipeline, "GraphIngestor", lambda *args, **kwargs: fake_ingestor)
-    monkeypatch.setattr(batch_pipeline, "_ensure_lancedb_table", lambda *args, **kwargs: None)
-    monkeypatch.setattr(batch_pipeline, "handle_lancedb", lambda *args, **kwargs: None)
+    monkeypatch.setattr(pipeline_main, "GraphIngestor", lambda *args, **kwargs: fake_ingestor)
+    monkeypatch.setattr(pipeline_main, "_ensure_lancedb_table", lambda *args, **kwargs: None)
+    monkeypatch.setattr(pipeline_main, "handle_lancedb", lambda *args, **kwargs: None)
     monkeypatch.setattr(detection_summary_module, "print_run_summary", lambda *args, **kwargs: None)
 
     class _FakeTable:
@@ -224,7 +242,11 @@ def test_batch_pipeline_routes_beir_mode_to_evaluator(tmp_path, monkeypatch) -> 
             return _FakeDb()
 
     monkeypatch.setitem(sys.modules, "lancedb", _FakeLanceModule())
-    monkeypatch.setitem(sys.modules, "ray", SimpleNamespace(shutdown=lambda: None))
+    monkeypatch.setitem(
+        sys.modules,
+        "ray",
+        SimpleNamespace(shutdown=lambda: None, is_initialized=lambda: True),
+    )
     monkeypatch.setattr(model_module, "resolve_embed_model", lambda _name: "fake-embed-model")
 
     captured = {}
@@ -266,10 +288,14 @@ def test_batch_pipeline_accepts_harness_runtime_metric_flags(tmp_path, monkeypat
     runtime_dir = tmp_path / "runtime_metrics"
 
     fake_ingestor = _FakeIngestor()
-    monkeypatch.setattr(batch_pipeline, "GraphIngestor", lambda *args, **kwargs: fake_ingestor)
-    monkeypatch.setattr(batch_pipeline, "_ensure_lancedb_table", lambda *args, **kwargs: None)
-    monkeypatch.setattr(batch_pipeline, "handle_lancedb", lambda *args, **kwargs: None)
-    monkeypatch.setitem(sys.modules, "ray", SimpleNamespace(shutdown=lambda: None))
+    monkeypatch.setattr(pipeline_main, "GraphIngestor", lambda *args, **kwargs: fake_ingestor)
+    monkeypatch.setattr(pipeline_main, "_ensure_lancedb_table", lambda *args, **kwargs: None)
+    monkeypatch.setattr(pipeline_main, "handle_lancedb", lambda *args, **kwargs: None)
+    monkeypatch.setitem(
+        sys.modules,
+        "ray",
+        SimpleNamespace(shutdown=lambda: None, is_initialized=lambda: True),
+    )
 
     class _FakeTable:
         def count_rows(self) -> int:

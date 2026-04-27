@@ -200,10 +200,16 @@ class TextEmbedGPUActor(AbstractOperator, GPUOperator):
         max_length = self.detect_kwargs.pop("max_length", 4096)
 
         from nemo_retriever.model import create_local_embedder
+        from nemo_retriever.text_embed.shared import _to_bool
 
+        ingest_backend = (self.detect_kwargs.get("local_ingest_backend") or "vllm").strip().lower()
         self._model = create_local_embedder(
             self.detect_kwargs.get("model_name"),
+            backend=ingest_backend,
             hf_cache_dir=str(hf_cache_dir) if hf_cache_dir is not None else None,
+            gpu_memory_utilization=float(self.detect_kwargs.get("gpu_memory_utilization", 0.45)),
+            enforce_eager=_to_bool(self.detect_kwargs.get("enforce_eager"), default=False),
+            dimensions=self.detect_kwargs.get("dimensions"),
             normalize=normalize,
             max_length=int(max_length),
         )

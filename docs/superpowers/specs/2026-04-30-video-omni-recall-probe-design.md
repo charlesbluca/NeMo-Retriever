@@ -13,7 +13,8 @@ The prototype is intentionally narrow:
 - Generate a deterministic synthetic MP4 fixture.
 - Send the video to Nano Omni using `NGC_NV_DEVELOPER_NVCF`.
 - Convert the model response into structured retrieval rows.
-- Embed rows with a VL embedding model using text+image inputs.
+- Embed rows twice: first as a text-only control, then with VL text+image
+  inputs.
 - Run a small query loop and print ranked hits.
 - Save artifacts that expose what worked, what failed, and what tradeoffs were
   visible.
@@ -139,17 +140,23 @@ Embedding model:
 
 `nvidia/llama-nemotron-embed-vl-1b-v2`
 
-Row embedding mode:
+The first implementation must create two retrieval indexes in memory:
 
-`text_image`
+- **Text-only baseline:** embed each row using only its synthesized retrieval
+  text. This is the anchor because a text-only embedder is a likely production
+  endpoint for some deployments.
+- **VL text+image variant:** embed the same rows with `embed_modality="text_image"`
+  using the representative frame as `_image_b64`.
 
 Query embedding mode:
 
-Text-only with the same embedding model endpoint.
+Text-only with the same embedding model endpoint for both indexes.
 
 The design intentionally uses in-memory cosine similarity rather than LanceDB
 so the early experiment has fewer moving parts and makes row construction
-effects easier to inspect.
+effects easier to inspect. The console and saved artifacts should report both
+rankings side by side so prompt/schema/frame changes can be evaluated against
+the text-only control.
 
 ## Query Loop
 
@@ -166,11 +173,12 @@ Example built-in queries:
 For each query, print:
 
 - Rank
-- Cosine similarity
+- Cosine similarity for the text-only baseline and the VL text+image variant
 - Segment ID and time range
 - Retrieval text
 - Selected raw extracted fields
 - Whether the expected synthetic cue was present
+- Whether the top result changed between baseline and VL retrieval
 
 Save query results to:
 
@@ -185,7 +193,7 @@ Pros to expose:
 - Whether the Omni model captures visual text without separate OCR.
 - Whether it combines audio and visual context in one row.
 - Whether text+image embeddings retrieve the intended segment better than text
-  alone.
+  alone, worse than text alone, or simply tie the text-only baseline.
 - Whether the row schema gives useful metadata for debugging misses.
 
 Cons to expose:
@@ -195,6 +203,8 @@ Cons to expose:
 - Prompt/schema brittleness when strict JSON is not followed.
 - Segment boundary uncertainty from model-generated extraction.
 - Embedding sensitivity to representative frame choice.
+- Cases where text-only retrieval is simpler and performs as well as, or better
+  than, VL retrieval.
 - Risk of hallucinated visual details.
 
 The first implementation should print a short "observations" section after the
@@ -222,19 +232,21 @@ pass, keep verification command-driven:
   generate and inspect the fixture without hosted calls.
 - Run the full script with `NGC_NV_DEVELOPER_NVCF` set.
 - Confirm artifacts are written.
-- Confirm at least one built-in query retrieves its intended segment at rank 1.
+- Confirm at least one built-in query retrieves its intended segment at rank 1
+  in the text-only baseline.
+- Confirm side-by-side text-only and VL query results are written.
 
 If network access is unavailable in CI, tests should cover pure helpers only:
 JSON parsing, row construction, cosine ranking, and fixture path handling.
 
 ## Open Decisions
 
-- Whether to add a text-only embedding baseline in the first implementation or
-  save that for the next iteration.
 - Whether to include sampled frames from every scene or only the representative
   frame selected by deterministic timestamps.
 - Whether to add a real-video input flag immediately after the synthetic fixture
   works.
 
-Initial recommendation: include text+image retrieval first, then add text-only
-baseline as a follow-up once the hosted calls and row artifacts are stable.
+Initial recommendation: start implementation with the text-only control path,
+then add the VL text+image path against the same rows and queries. That keeps a
+simple retrieval anchor in place while making multimodal lift, regressions, and
+debugging costs visible in the same run.

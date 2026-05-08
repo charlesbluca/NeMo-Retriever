@@ -120,7 +120,7 @@ class TxtSplitCPUActor(AbstractOperator, CPUOperator):
             path_str = str(path) if path is not None else ""
             try:
                 payload = _coerce_binary_payload(raw)
-                if payload is None and isinstance(text, str):
+                if (payload is None or payload == b"") and isinstance(text, str):
                     payload = text.encode("utf-8")
                 if payload is None:
                     continue

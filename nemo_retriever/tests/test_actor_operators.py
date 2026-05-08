@@ -640,6 +640,26 @@ class TestTxtSplitActor:
         mock_fn.assert_called_once_with(expected_bytes, "/a.txt", params=actor._params)
         pd.testing.assert_frame_equal(result, expected)
 
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            b"",
+            bytearray(b""),
+            memoryview(b""),
+            _FakeArrowScalar(b""),
+            _FakeTobytes(b""),
+        ],
+    )
+    @patch("nemo_retriever.txt.ray_data.txt_bytes_to_chunks_df")
+    def test_process_falls_back_to_text_for_empty_binary_payload(self, mock_fn, raw):
+        expected = pd.DataFrame({"text": ["chunk"], "path": ["/a.txt"], "page_number": [0], "metadata": [{}]})
+        mock_fn.return_value = expected
+        actor = self._make()
+        df = pd.DataFrame({"bytes": [raw], "text": ["hello"], "path": ["/a.txt"]})
+        result = actor.process(df)
+        mock_fn.assert_called_once_with(b"hello", "/a.txt", params=actor._params)
+        pd.testing.assert_frame_equal(result, expected)
+
     @patch("nemo_retriever.txt.ray_data.txt_bytes_to_chunks_df")
     def test_call_delegates(self, mock_fn):
         expected = pd.DataFrame({"text": ["chunk"], "path": ["/a.txt"], "page_number": [0], "metadata": [{}]})

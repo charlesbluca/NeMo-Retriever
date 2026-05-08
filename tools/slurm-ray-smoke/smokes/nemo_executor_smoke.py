@@ -8,21 +8,27 @@ import pandas as pd
 import ray
 
 from _common import assert_cluster_ready, dataframe_sample, ray_state, write_json
-from nemo_retriever.graph import Graph, Node, RayDataExecutor, UDFOperator
+from nemo_retriever.graph import Graph, Node, RayDataExecutor
 from nemo_retriever.params import TextChunkParams
-from nemo_retriever.txt.ray_data import TextChunkActor, TxtSplitActor
+from nemo_retriever.txt.ray_data import TextChunkCPUActor, TxtSplitCPUActor
 
 
-def _add_split_host(batch: pd.DataFrame) -> pd.DataFrame:
-    output = batch.copy()
-    output["split_host"] = socket.gethostname()
-    return output
+class HostAnnotatedTxtSplitCPUActor(TxtSplitCPUActor):
+    def process(self, data: Any, **kwargs: Any) -> Any:
+        output = super().process(data, **kwargs)
+        if isinstance(output, pd.DataFrame):
+            output = output.copy()
+            output["split_host"] = socket.gethostname()
+        return output
 
 
-def _add_chunk_host(batch: pd.DataFrame) -> pd.DataFrame:
-    output = batch.copy()
-    output["chunk_host"] = socket.gethostname()
-    return output
+class HostAnnotatedTextChunkCPUActor(TextChunkCPUActor):
+    def process(self, data: Any, **kwargs: Any) -> Any:
+        output = super().process(data, **kwargs)
+        if isinstance(output, pd.DataFrame):
+            output = output.copy()
+            output["chunk_host"] = socket.gethostname()
+        return output
 
 
 def parse_args() -> argparse.Namespace:
@@ -37,10 +43,8 @@ def parse_args() -> argparse.Namespace:
 def _build_graph(params: TextChunkParams) -> Graph:
     graph = Graph()
     graph.add_chain(
-        Node(TxtSplitActor(params=params), name="TxtSplitActor"),
-        Node(UDFOperator(_add_split_host, name="ProbeSplitHost"), name="ProbeSplitHost"),
-        Node(TextChunkActor(params=params), name="TextChunkActor"),
-        Node(UDFOperator(_add_chunk_host, name="ProbeChunkHost"), name="ProbeChunkHost"),
+        Node(HostAnnotatedTxtSplitCPUActor(params=params), name="TxtSplitActor"),
+        Node(HostAnnotatedTextChunkCPUActor(params=params), name="TextChunkActor"),
     )
     return graph
 
@@ -53,19 +57,7 @@ def _node_overrides() -> dict[str, dict[str, Any]]:
             "num_gpus": 0,
             "concurrency": 1,
         },
-        "ProbeSplitHost": {
-            "resources": {"nemo_worker": 0.01},
-            "num_cpus": 0.25,
-            "num_gpus": 0,
-            "concurrency": 1,
-        },
         "TextChunkActor": {
-            "resources": {"nemo_head": 0.01},
-            "num_cpus": 0.25,
-            "num_gpus": 0,
-            "concurrency": 1,
-        },
-        "ProbeChunkHost": {
             "resources": {"nemo_head": 0.01},
             "num_cpus": 0.25,
             "num_gpus": 0,

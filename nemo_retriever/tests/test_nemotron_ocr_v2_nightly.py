@@ -38,6 +38,28 @@ def _install_ocr_import_stubs(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setitem(sys.modules, "PIL.Image", image_mod)
 
 
+def _install_upstream_ocr_v2_stub(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, object]]:
+    captured_kwargs: list[dict[str, object]] = []
+
+    class _NemotronOCRV2:
+        def __init__(self, **kwargs: object) -> None:
+            captured_kwargs.append(kwargs)
+
+    nemotron_ocr_mod = ModuleType("nemotron_ocr")
+    inference_mod = ModuleType("nemotron_ocr.inference")
+    pipeline_v2_mod = ModuleType("nemotron_ocr.inference.pipeline_v2")
+    pipeline_v2_mod.NemotronOCRV2 = _NemotronOCRV2
+    inference_mod.pipeline_v2 = pipeline_v2_mod
+    nemotron_ocr_mod.inference = inference_mod
+
+    monkeypatch.setitem(sys.modules, "nemotron_ocr", nemotron_ocr_mod)
+    monkeypatch.setitem(sys.modules, "nemotron_ocr.inference", inference_mod)
+    monkeypatch.setitem(sys.modules, "nemotron_ocr.inference.pipeline_v2", pipeline_v2_mod)
+    monkeypatch.delenv("RETRIEVER_ENABLE_TORCH_TRT", raising=False)
+
+    return captured_kwargs
+
+
 def test_local_extra_depends_on_ocr_2_nightly_only() -> None:
     pyproject = tomllib.loads((PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
@@ -76,6 +98,21 @@ def test_local_ocr_v2_wrapper_rejects_invalid_lang_selector(monkeypatch: pytest.
 
     with pytest.raises(ValueError, match=r"Invalid lang selector 'v3'"):
         NemotronOCRV2(lang="v3")
+
+
+@pytest.mark.parametrize("selector", ["v1", "v2_english", "v2_multi"])
+def test_local_ocr_v2_wrapper_accepts_valid_lang_selectors(
+    monkeypatch: pytest.MonkeyPatch,
+    selector: str,
+) -> None:
+    _install_ocr_import_stubs(monkeypatch)
+    captured_kwargs = _install_upstream_ocr_v2_stub(monkeypatch)
+
+    from nemo_retriever.model.local.nemotron_ocr_v2 import NemotronOCRV2
+
+    NemotronOCRV2(lang=selector)
+
+    assert captured_kwargs == [{"lang": selector}]
 
 
 def test_huggingface_ocr_nightly_does_not_carry_namespace_patch_knobs() -> None:

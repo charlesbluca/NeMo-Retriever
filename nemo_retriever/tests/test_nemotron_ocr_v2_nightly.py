@@ -19,7 +19,10 @@ def test_local_extra_depends_on_ocr_2_nightly_only() -> None:
     uv_tool = pyproject["tool"]["uv"]
     uv_sources = uv_tool["sources"]
 
-    assert "nemotron-ocr>=2.0.0.dev0,<2.0.0a0; sys_platform == 'linux'" in local_deps
+    assert (
+        "nemotron-ocr>=2.0.0.dev0,<2.0.0a0; sys_platform == 'linux' "
+        "and (platform_machine == 'x86_64' or platform_machine == 'aarch64')"
+    ) in local_deps
     assert not any(dep.startswith("nemotron-ocr-v2") for dep in local_deps)
     assert "nemotron-ocr" in uv_tool["no-build-package"]
     assert "nemotron-ocr-v2" not in uv_tool["no-build-package"]

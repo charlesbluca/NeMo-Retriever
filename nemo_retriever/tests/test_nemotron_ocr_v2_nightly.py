@@ -4,12 +4,38 @@
 
 from __future__ import annotations
 
+import sys
 import tomllib
 from pathlib import Path
+from types import ModuleType
+
+import pytest
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = PROJECT_ROOT.parent
+
+
+def _install_ocr_import_stubs(monkeypatch: pytest.MonkeyPatch) -> None:
+    torch_mod = ModuleType("torch")
+    nn_mod = ModuleType("torch.nn")
+
+    class _Module:
+        pass
+
+    nn_mod.Module = _Module
+    torch_mod.nn = nn_mod
+    torch_mod.Tensor = object
+    torch_mod.float16 = "float16"
+
+    pil_mod = ModuleType("PIL")
+    image_mod = ModuleType("PIL.Image")
+    pil_mod.Image = image_mod
+
+    monkeypatch.setitem(sys.modules, "torch", torch_mod)
+    monkeypatch.setitem(sys.modules, "torch.nn", nn_mod)
+    monkeypatch.setitem(sys.modules, "PIL", pil_mod)
+    monkeypatch.setitem(sys.modules, "PIL.Image", image_mod)
 
 
 def test_local_extra_depends_on_ocr_2_nightly_only() -> None:
@@ -36,18 +62,27 @@ def test_local_ocr_v2_wrapper_uses_original_namespace_and_lang_selector() -> Non
     )
 
     assert "from nemotron_ocr.inference import pipeline_v2" in source
-    assert "lang: str = \"v2_multi\"" in source
+    assert 'lang: str = "v2_multi"' in source
     assert "_NemotronOCRV2(model_dir=model_dir, lang=lang)" in source
     assert "_NemotronOCRV2(lang=lang)" in source
     assert "nemotron_ocr_v2" not in source
     assert "nemotron-ocr-v2` from TestPyPI" not in source
 
 
+def test_local_ocr_v2_wrapper_rejects_invalid_lang_selector(monkeypatch: pytest.MonkeyPatch) -> None:
+    _install_ocr_import_stubs(monkeypatch)
+
+    from nemo_retriever.model.local.nemotron_ocr_v2 import NemotronOCRV2
+
+    with pytest.raises(ValueError, match=r"Invalid lang selector 'v3'"):
+        NemotronOCRV2(lang="v3")
+
+
 def test_huggingface_ocr_nightly_does_not_carry_namespace_patch_knobs() -> None:
     workflow = (REPO_ROOT / ".github" / "workflows" / "huggingface-nightly.yml").read_text(encoding="utf-8")
     v2_stanza = workflow.split("- id: nemotron-ocr-v2", 1)[1].split("container:", 1)[0]
 
-    assert "nightly_base_version: \"2.0.0\"" in v2_stanza
+    assert 'nightly_base_version: "2.0.0"' in v2_stanza
     assert "project_name:" not in workflow
     assert "package_rename:" not in workflow
     assert "expected_project_name:" not in workflow

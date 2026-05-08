@@ -733,8 +733,7 @@ def main() -> int:
         "--rename-python-package",
         action="append",
         default=[],
-        help="Rename a Python import package before building, as OLD=NEW "
-        "(repeatable).",
+        help="Rename a Python import package before building, as OLD=NEW " "(repeatable).",
     )
     ap.add_argument(
         "--build-env",

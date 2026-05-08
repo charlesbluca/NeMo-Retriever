@@ -33,11 +33,20 @@ class NemotronOCRV2(BaseModel):
     - v2_multi
     """
 
+    _VALID_LANG_SELECTORS: frozenset[str] = frozenset({"v1", "v2_english", "v2_multi"})
+
     def __init__(
         self,
         model_dir: Optional[str] = None,
         lang: str = "v2_multi",
     ) -> None:
+        if lang not in self._VALID_LANG_SELECTORS:
+            raise ValueError(
+                f"Invalid lang selector {lang!r}. "
+                f"Supported values: {sorted(self._VALID_LANG_SELECTORS)}. "
+                "Pass lang='v2_multi' for multilingual, 'v2_english' for English-only, "
+                "or 'v1' to run the v1 model through the v2 package."
+            )
         super().__init__()
         configure_global_hf_cache_base()
         try:

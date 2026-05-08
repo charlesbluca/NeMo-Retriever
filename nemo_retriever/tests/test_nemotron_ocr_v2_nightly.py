@@ -43,16 +43,14 @@ def test_local_ocr_v2_wrapper_uses_original_namespace_and_lang_selector() -> Non
     assert "nemotron-ocr-v2` from TestPyPI" not in source
 
 
-def test_huggingface_v2_nightly_publishes_to_ocr_project_without_namespace_rename() -> None:
+def test_huggingface_ocr_nightly_does_not_carry_namespace_patch_knobs() -> None:
     workflow = (REPO_ROOT / ".github" / "workflows" / "huggingface-nightly.yml").read_text(encoding="utf-8")
     v2_stanza = workflow.split("- id: nemotron-ocr-v2", 1)[1].split("container:", 1)[0]
 
-    assert "project_name: \"\"" in v2_stanza
-    assert "expected_project_name: nemotron-ocr\n" in v2_stanza
-    assert "package_rename: \"\"" in v2_stanza
-    assert "expected_package: nemotron_ocr\n" in v2_stanza
     assert "nightly_base_version: \"2.0.0\"" in v2_stanza
-    assert "project_name: nemotron-ocr-v2" not in v2_stanza
-    assert "expected_project_name: nemotron-ocr-v2" not in v2_stanza
-    assert "package_rename: nemotron_ocr=nemotron_ocr_v2" not in v2_stanza
-    assert "expected_package: nemotron_ocr_v2" not in v2_stanza
+    assert "project_name:" not in workflow
+    assert "package_rename:" not in workflow
+    assert "expected_project_name:" not in workflow
+    assert "expected_package:" not in workflow
+    assert "--project-name" not in workflow
+    assert "--rename-python-package" not in workflow

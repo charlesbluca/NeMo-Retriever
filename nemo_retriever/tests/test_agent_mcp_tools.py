@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 import json
 from typing import Any
 
@@ -15,12 +17,15 @@ from nemo_retriever.agent_mcp.models import (
     IngestJobRecord,
     JobStatus,
 )
+from nemo_retriever.agent_mcp.server import create_default_service, create_mcp_server
 from nemo_retriever.agent_mcp.tools import AgentMcpToolService
 
 
 class FakeBackend:
     def __init__(self) -> None:
         self.rerank_seen_hits: list[EvidenceHit] = []
+        self.shutdown_called = False
+        self.shutdown_wait: bool | None = None
 
     def list_collections(self) -> list[CollectionRecord]:
         return [
@@ -119,6 +124,10 @@ class FakeBackend:
         self.rerank_seen_hits = hits
         return hits[:top_n]
 
+    def shutdown(self, wait: bool = True) -> None:
+        self.shutdown_called = True
+        self.shutdown_wait = wait
+
 
 class FailingBackend(FakeBackend):
     def list_collections(self) -> list[CollectionRecord]:
@@ -132,6 +141,29 @@ class FailingBackend(FakeBackend):
 
 def assert_json_serializable(value: Any) -> None:
     json.dumps(value)
+
+
+def registered_tool_names(server: Any) -> set[str]:
+    list_tools = getattr(server, "list_tools", None)
+    if callable(list_tools):
+        tools = list_tools()
+        if inspect.isawaitable(tools):
+            tools = asyncio.run(tools)
+        return {tool.name for tool in tools}
+
+    tool_manager = getattr(server, "_tool_manager", None)
+    if tool_manager is not None:
+        tools = getattr(tool_manager, "_tools", None)
+        if isinstance(tools, dict):
+            return set(tools.keys())
+
+    get_tools = getattr(server, "get_tools", None)
+    if callable(get_tools):
+        tools = get_tools()
+        if isinstance(tools, dict):
+            return set(tools.keys())
+
+    raise AssertionError("Could not inspect registered FastMCP tools.")
 
 
 def test_tool_service_returns_json_serializable_collection_payloads() -> None:
@@ -191,3 +223,49 @@ def test_tool_service_serializes_invalid_rerank_hit_payloads() -> None:
     assert payload["error"]["retryable"] is False
     assert "errors" in payload["error"]["details"]
     assert_json_serializable(payload)
+
+
+def test_create_mcp_server_registers_agent_tools() -> None:
+    server = create_mcp_server(AgentMcpToolService(FakeBackend()))
+
+    assert registered_tool_names(server) == {
+        "list_collections",
+        "create_collection",
+        "describe_collection",
+        "delete_collection",
+        "start_ingestion",
+        "get_ingestion_status",
+        "ingest_local_paths",
+        "query_collection",
+        "rerank_results",
+    }
+
+
+def test_mcp_server_lifespan_shuts_down_backend() -> None:
+    backend = FakeBackend()
+    service = AgentMcpToolService(backend)
+    server = create_mcp_server(service)
+    app = server.http_app(path="/")
+
+    async def run_lifespan() -> None:
+        async with app.router.lifespan_context(app):
+            pass
+
+    asyncio.run(run_lifespan())
+
+    assert backend.shutdown_called is True
+    assert backend.shutdown_wait is True
+
+
+def test_create_default_service_initializes_registry(tmp_path) -> None:
+    data_root = tmp_path / "data"
+    allowed_root = tmp_path / "allowed"
+
+    service = create_default_service(data_root, [allowed_root])
+
+    assert isinstance(service, AgentMcpToolService)
+    assert service.backend.registry.data_root == data_root
+    assert service.backend.registry.db_path == data_root / "registry.sqlite"
+    assert service.backend.path_policy.allowed_roots == [allowed_root]
+    assert data_root.exists()
+    assert (data_root / "registry.sqlite").exists()

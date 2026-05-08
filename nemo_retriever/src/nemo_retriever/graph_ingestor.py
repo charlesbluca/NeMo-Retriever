@@ -29,7 +29,7 @@ from __future__ import annotations
 import json
 import os
 import sys
-from typing import Any, Callable, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Union
 
 from nemo_retriever.graph import InprocessExecutor, RayDataExecutor
 from nemo_retriever.graph.ingestor_runtime import batch_tuning_to_node_overrides, build_graph
@@ -58,15 +58,10 @@ from nemo_retriever.utils.ray_resource_hueristics import gather_cluster_resource
 
 
 _ERROR_FIELD_KEYS = ("error", "errors", "exception", "traceback", "failed")
-_REMOTE_EXTRACT_ENDPOINT_FIELDS = (
-    "invoke_url",
-    "page_elements_invoke_url",
-    "ocr_invoke_url",
-    "graphic_elements_invoke_url",
-    "table_structure_invoke_url",
-    "nemotron_parse_invoke_url",
-)
 _REMOTE_EMBED_ENDPOINT_FIELDS = ("embedding_endpoint", "embed_invoke_url")
+_DEFAULT_PAGE_ELEMENTS_COLUMN = "page_elements_v3"
+_DEFAULT_EMBED_COLUMN = "text_embeddings_1b_v2"
+_ERROR_MESSAGE_LIMIT = 256
 
 
 class GraphIngestionError(RuntimeError):
@@ -101,7 +96,7 @@ def _summarize_error_payload(error: Any) -> str:
         parts = []
         stage = error.get("stage")
         err_type = error.get("type") or error.get("error_type")
-        message = error.get("message") or error.get("detail")
+        message = _sanitize_error_text(error.get("message") or error.get("detail"))
         if stage:
             parts.append(str(stage))
         if err_type:
@@ -110,7 +105,20 @@ def _summarize_error_payload(error: Any) -> str:
             parts.append(str(message))
         if parts:
             return ": ".join(parts)
-    return str(error)
+    return _sanitize_error_text(error) or type(error).__name__
+
+
+def _sanitize_error_text(value: Any, *, limit: int = _ERROR_MESSAGE_LIMIT) -> str | None:
+    if value is None:
+        return None
+    text = str(value).encode("ascii", errors="ignore").decode("ascii")
+    text = " ".join(ch if ch.isprintable() else " " for ch in text).split()
+    text = " ".join(text)
+    if not text:
+        return None
+    if len(text) > limit:
+        return text[:limit].rstrip() + "..."
+    return text
 
 
 def _resolve_api_key(params: Any) -> Any:
@@ -555,7 +563,7 @@ class GraphIngestor(ingestor):
         return None
 
     @classmethod
-    def _iter_stage_errors_from_value(cls, value: Any, *, path: str = "") -> Any:
+    def _iter_stage_errors_from_value(cls, value: Any, *, path: str = "") -> Iterator[dict[str, Any]]:
         if isinstance(value, dict):
             for key in _ERROR_FIELD_KEYS:
                 if key in value and cls._is_populated_error_field(key, value.get(key)):
@@ -580,14 +588,15 @@ class GraphIngestor(ingestor):
                 yield from cls._iter_stage_errors_from_value(parsed, path=path)
 
     @classmethod
-    def _stage_error_records(cls, batch: Any) -> list[dict[str, Any]]:
-        columns = getattr(batch, "columns", None)
-        if columns is None:
+    def _stage_error_records(cls, batch: Any, *, columns: Iterable[str] | None = None) -> list[dict[str, Any]]:
+        available_columns = getattr(batch, "columns", None)
+        if available_columns is None:
             return []
+        target_columns = list(available_columns) if columns is None else [c for c in columns if c in available_columns]
 
         records: list[dict[str, Any]] = []
         for row_index, row in batch.iterrows():
-            for column in columns:
+            for column in target_columns:
                 for record in cls._iter_stage_errors_from_value(row[column]):
                     records.append(
                         {
@@ -624,18 +633,32 @@ class GraphIngestor(ingestor):
     def _params_has_configured_field(cls, params: Any, fields: tuple[str, ...]) -> bool:
         return any(cls._is_configured(cls._param_value(params, field)) for field in fields)
 
-    def _has_explicit_remote_nim_endpoint(self) -> bool:
-        return (
-            self._params_has_configured_field(self._extract_params, _REMOTE_EXTRACT_ENDPOINT_FIELDS)
-            or self._params_has_configured_field(self._embed_params, _REMOTE_EMBED_ENDPOINT_FIELDS)
-            or self._params_has_configured_field(self._caption_params, ("endpoint_url",))
-            or self._params_has_configured_field(self._asr_params, ("audio_endpoints",))
-        )
+    def _remote_stage_error_columns(self) -> set[str]:
+        columns: set[str] = set()
+
+        if self._params_has_configured_field(self._extract_params, ("page_elements_invoke_url",)):
+            columns.add(self._param_value(self._extract_params, "output_column") or _DEFAULT_PAGE_ELEMENTS_COLUMN)
+        if self._params_has_configured_field(self._extract_params, ("ocr_invoke_url",)):
+            columns.add("ocr")
+        if self._params_has_configured_field(self._extract_params, ("table_structure_invoke_url",)):
+            columns.add("table_structure_ocr_v1")
+        if self._params_has_configured_field(self._extract_params, ("graphic_elements_invoke_url",)):
+            columns.add("graphic_elements_ocr_v1")
+        if self._params_has_configured_field(self._extract_params, ("invoke_url", "nemotron_parse_invoke_url")):
+            columns.add("nemotron_parse_v1_2")
+
+        if self._params_has_configured_field(self._embed_params, _REMOTE_EMBED_ENDPOINT_FIELDS):
+            columns.add(self._param_value(self._embed_params, "output_column") or _DEFAULT_EMBED_COLUMN)
+
+        return columns
 
     def _raise_for_stage_errors(self, result: Any) -> None:
-        if self._error_policy == "collect" or not self._has_explicit_remote_nim_endpoint():
+        if self._error_policy == "collect":
             return
-        records = self._stage_error_records(result)
+        remote_columns = self._remote_stage_error_columns()
+        if not remote_columns:
+            return
+        records = self._stage_error_records(result, columns=remote_columns)
         if records:
             raise GraphIngestionError(records)
 

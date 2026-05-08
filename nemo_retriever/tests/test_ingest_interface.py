@@ -1,7 +1,8 @@
 import pandas as pd
 import pytest
 
-from nemo_retriever.graph_ingestor import GraphIngestor
+import nemo_retriever
+from nemo_retriever.graph_ingestor import GraphIngestionError, GraphIngestor
 from nemo_retriever.ingestor import IngestorCreateParams, _merge_params, create_ingestor
 from nemo_retriever.params import (
     ASRParams,
@@ -40,6 +41,11 @@ def test_create_ingestor_passes_error_policy_to_graph_ingestor() -> None:
     ingestor = create_ingestor(run_mode="inprocess", error_policy="collect")
     assert isinstance(ingestor, GraphIngestor)
     assert ingestor._error_policy == "collect"
+
+
+def test_graph_ingestion_error_is_exported_from_top_level_package() -> None:
+    assert "GraphIngestionError" in nemo_retriever.__all__
+    assert nemo_retriever.GraphIngestionError is GraphIngestionError
 
 
 def test_create_ingestor_rejects_unknown_kwargs() -> None:
@@ -106,6 +112,7 @@ def test_typed_shortcuts_preserve_legacy_no_default_chunking() -> None:
     assert txt_ingestor._text_params is custom
 
 
+@pytest.mark.integration
 def test_graph_ingestor_raises_for_explicit_remote_stage_errors() -> None:
     ingestor = GraphIngestor(
         run_mode="inprocess",
@@ -130,6 +137,7 @@ def test_graph_ingestor_raises_for_explicit_remote_stage_errors() -> None:
         ingestor.ingest()
 
 
+@pytest.mark.integration
 def test_graph_ingestor_collect_policy_returns_explicit_remote_stage_errors() -> None:
     result = (
         GraphIngestor(
@@ -158,6 +166,71 @@ def test_graph_ingestor_collect_policy_returns_explicit_remote_stage_errors() ->
     assert "page_elements_v3" in result.columns
     payload = result.iloc[0]["page_elements_v3"]
     assert payload["error"]["type"] == "ConnectionError"
+
+
+def test_strict_remote_error_policy_ignores_unrelated_error_columns() -> None:
+    ingestor = GraphIngestor(run_mode="inprocess").extract(
+        page_elements_invoke_url="http://remote.example/v1/page-elements",
+        extract_text=False,
+        extract_images=True,
+        extract_tables=False,
+        extract_charts=False,
+        extract_infographics=False,
+    )
+    result = pd.DataFrame(
+        {
+            "page_elements_v3": [{"detections": [], "error": None}],
+            "metadata": [
+                {
+                    "error": {
+                        "stage": "local_postprocess",
+                        "type": "ValueError",
+                        "message": "local stage failed",
+                    }
+                }
+            ],
+        }
+    )
+
+    ingestor._raise_for_stage_errors(result)
+
+
+def test_graph_ingestion_error_sanitizes_remote_message_fields() -> None:
+    sensitive_tail = "TAIL_SHOULD_NOT_APPEAR"
+    long_message = "π" + ("x" * 600) + sensitive_tail
+
+    err = GraphIngestionError(
+        [
+            {
+                "row_index": 0,
+                "column": "page_elements_v3",
+                "path": "error",
+                "error": {
+                    "stage": "remote_inference",
+                    "type": "BadRequest",
+                    "message": long_message,
+                },
+            }
+        ]
+    )
+
+    rendered = str(err)
+    assert "π" not in rendered
+    assert sensitive_tail not in rendered
+
+    raw_string_err = GraphIngestionError(
+        [
+            {
+                "row_index": 0,
+                "column": "text_embeddings_1b_v2",
+                "path": "error",
+                "error": long_message,
+            }
+        ]
+    )
+    raw_rendered = str(raw_string_err)
+    assert "π" not in raw_rendered
+    assert sensitive_tail not in raw_rendered
 
 
 def test_get_error_rows_accepts_inprocess_dataframe_stage_error_columns() -> None:

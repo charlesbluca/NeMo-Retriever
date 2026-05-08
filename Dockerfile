@@ -67,6 +67,9 @@ RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 
 ENV PATH=/root/.local/bin:$PATH
 ENV UV_LINK_MODE=copy
+# Keep uv-managed Python outside /root so the non-root service user can execute
+# venv console-script interpreters.
+ENV UV_PYTHON_INSTALL_DIR=/opt/uv/python
 
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv python install 3.12 \
@@ -145,7 +148,7 @@ ENV NEMO_RETRIEVER_SERVICE_CONFIG=/etc/nemo-retriever/retriever-service.yaml
 
 ENV PATH=/opt/retriever_runtime/bin:$PATH
 
-RUN chmod -R a+rX /root/.local \
+RUN chmod -R a+rX /root/.local /opt/uv \
     && groupadd -r nemo && useradd -r -g nemo -d /workspace -s /sbin/nologin nemo \
     && mkdir -p /etc/nemo-retriever /var/lib/nemo-retriever \
     && cp /workspace/nemo_retriever/src/nemo_retriever/service/retriever-service.yaml \

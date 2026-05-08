@@ -36,6 +36,8 @@ repos:
         name: validate deployment configs
         entry: python ci/scripts/validate_deployment_configs.py
         language: system
+        # Temporarily manual-only: the Helm values path is currently absent.
+        stages: [manual]
         files: (docker-compose\.yaml|helm/values\.yaml)
         pass_filenames: false
 

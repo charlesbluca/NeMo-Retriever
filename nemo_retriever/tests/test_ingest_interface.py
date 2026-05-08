@@ -270,6 +270,27 @@ def test_graph_ingestion_error_sanitizes_remote_message_fields() -> None:
     assert sensitive_tail not in raw_rendered
 
 
+def test_graph_ingestion_error_preserves_readable_remote_message_text() -> None:
+    err = GraphIngestionError(
+        [
+            {
+                "row_index": 0,
+                "column": "page_elements_v3",
+                "path": "error",
+                "error": {
+                    "stage": "remote_inference",
+                    "type": "ConnectionError",
+                    "message": "connection\nrefused",
+                },
+            }
+        ]
+    )
+
+    rendered = str(err)
+    assert "connection refused" in rendered
+    assert "c o n n e c t i o n" not in rendered
+
+
 def test_get_error_rows_accepts_inprocess_dataframe_stage_error_columns() -> None:
     ingestor = GraphIngestor(run_mode="inprocess")
     df = pd.DataFrame(
@@ -290,6 +311,39 @@ def test_get_error_rows_accepts_inprocess_dataframe_stage_error_columns() -> Non
     )
 
     errors = ingestor.get_error_rows(df)
+
+    assert len(errors) == 1
+    assert errors.iloc[0]["text"] == "first page"
+
+
+def test_get_error_rows_maps_batch_dataset_with_columns_property() -> None:
+    class RayLikeDataset:
+        columns = ["page_elements_v3", "text"]
+
+        def __getitem__(self, key: str):
+            raise AssertionError(f"expected map_batches path, got pandas access for {key}")
+
+        def map_batches(self, fn, *, batch_format: str):
+            assert batch_format == "pandas"
+            batch = pd.DataFrame(
+                {
+                    "page_elements_v3": [
+                        {
+                            "timing": None,
+                            "error": {
+                                "stage": "remote_inference",
+                                "type": "ConnectionError",
+                                "message": "connection refused",
+                            },
+                        },
+                        {"timing": None, "error": None},
+                    ],
+                    "text": ["first page", "second page"],
+                }
+            )
+            return fn(batch)
+
+    errors = GraphIngestor(run_mode="batch").get_error_rows(RayLikeDataset())
 
     assert len(errors) == 1
     assert errors.iloc[0]["text"] == "first page"

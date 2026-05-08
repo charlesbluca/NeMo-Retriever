@@ -111,7 +111,7 @@ def _sanitize_error_text(value: Any, *, limit: int = _ERROR_MESSAGE_LIMIT) -> st
     if value is None:
         return None
     text = str(value).encode("ascii", errors="ignore").decode("ascii")
-    text = " ".join(ch if ch.isprintable() else " " for ch in text).split()
+    text = "".join(ch if ch.isprintable() else " " for ch in text).split()
     text = " ".join(text)
     if not text:
         return None
@@ -675,10 +675,12 @@ class GraphIngestor(ingestor):
         return batch[mask]
 
     def get_error_rows(self, dataset: Any = None) -> Any:
+        import pandas as pd
+
         target = dataset if dataset is not None else self._rd_dataset
         if target is None:
             raise RuntimeError("No Ray Dataset available to inspect for errors.")
-        if getattr(target, "columns", None) is not None:
+        if isinstance(target, pd.DataFrame):
             return self.extract_error_rows(target)
         return target.map_batches(self.extract_error_rows, batch_format="pandas")
 

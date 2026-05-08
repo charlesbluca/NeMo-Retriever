@@ -216,7 +216,7 @@ jobs:
 
           # Use uv so pyproject uv sources are honored for nightly Nemotron packages.
           if [ "${{ inputs.test-selection }}" = "full" ]; then
-            CMD="source /opt/retriever_runtime/bin/activate; uv pip install -e \"./nemo_retriever[all,dev]\" && uv pip install pytest && python -m pytest nemo_retriever/tests"
+            CMD="set -euo pipefail; source /opt/retriever_runtime/bin/activate; uv pip install -e \"./nemo_retriever[all,dev]\" && uv pip install pytest && python -m pytest -m \"$MARKERS\" $COV_ARGS nemo_retriever/tests"
           else
             N="${{ inputs.random-count }}"
             CMD="set -euo pipefail; \

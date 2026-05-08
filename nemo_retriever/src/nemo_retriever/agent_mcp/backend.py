@@ -27,12 +27,21 @@ CANONICAL_MEDIA_ORDER = ("document", "image", "text", "html", "audio", "video")
 
 
 class RetrieverBackend(Protocol):
+    def list_collections(self) -> list[CollectionRecord]:
+        ...
+
     def create_collection(
         self,
         name: str = "default",
         temporary: bool = False,
         hybrid: bool = False,
     ) -> CollectionRecord:
+        ...
+
+    def describe_collection(self, name: str = "default") -> dict[str, Any]:
+        ...
+
+    def delete_collection(self, name: str, delete_data: bool = False) -> CollectionRecord:
         ...
 
     def query_collection(

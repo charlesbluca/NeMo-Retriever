@@ -236,12 +236,17 @@ class InProcessRetrieverBackend:
             )
 
         retriever = self.retriever_factory(
-            vdb=record.vdb_backend,
-            vdb_kwargs={"uri": record.vdb_uri, "table_name": record.vdb_table},
-            embedder=record.embedding_model,
-            embedding_endpoint=record.embedding_endpoint,
             top_k=top_k,
-            reranker=rerank,
+            rerank=rerank,
+            vdb_kwargs={
+                "vdb_op": record.vdb_backend,
+                "vdb_kwargs": {"uri": record.vdb_uri, "table_name": record.vdb_table},
+            },
+            embed_kwargs={
+                "model_name": record.embedding_model,
+                "embed_model_name": record.embedding_model,
+                "embedding_endpoint": record.embedding_endpoint,
+            },
         )
         call_vdb_kwargs = dict(filters) if filters else {}
         if hybrid:

@@ -137,10 +137,11 @@ def test_query_collection_uses_collection_embedding_and_vdb_config(tmp_path: Pat
     assert hits[0].locator.page_number == 3
 
     kwargs = FakeRetriever.constructor_kwargs[0]
-    assert kwargs["vdb"] == record.vdb_backend
-    assert kwargs["embedder"] == record.embedding_model
-    assert kwargs["vdb_kwargs"]["uri"] == record.vdb_uri
-    assert kwargs["vdb_kwargs"]["table_name"] == record.vdb_table
+    assert kwargs["vdb_kwargs"]["vdb_op"] == record.vdb_backend
+    assert kwargs["vdb_kwargs"]["vdb_kwargs"]["uri"] == record.vdb_uri
+    assert kwargs["vdb_kwargs"]["vdb_kwargs"]["table_name"] == record.vdb_table
+    assert kwargs["embed_kwargs"]["model_name"] == record.embedding_model
+    assert kwargs["embed_kwargs"]["embed_model_name"] == record.embedding_model
     assert FakeRetriever.query_calls == [("what is here?", {"top_k": 3, "vdb_kwargs": None})]
 
 
@@ -344,7 +345,7 @@ def test_query_sets_reranker_flag_when_requested(tmp_path: Path) -> None:
 
     backend.query_collection(collection="docs", query="rerank it", rerank=True)
 
-    assert FakeRetriever.constructor_kwargs[0]["reranker"] is True
+    assert FakeRetriever.constructor_kwargs[0]["rerank"] is True
 
 
 def test_query_forwards_hybrid_flag_for_hybrid_collection(tmp_path: Path) -> None:

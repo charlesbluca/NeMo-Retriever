@@ -41,9 +41,11 @@ def _install_ocr_import_stubs(monkeypatch: pytest.MonkeyPatch) -> None:
 def _install_upstream_ocr_v2_stub(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, object]]:
     captured_kwargs: list[dict[str, object]] = []
 
+    from nemo_retriever.model.local.nemotron_ocr_v2 import NemotronOCRV2 as _WrapperOCRV2
+
     class _NemotronOCRV2:
         def __init__(self, **kwargs: object) -> None:
-            if kwargs.get("lang") not in {"en", "english", "multi", "multilingual", "v1", "legacy"}:
+            if kwargs.get("lang") not in _WrapperOCRV2._VALID_LANG_SELECTORS:
                 raise ValueError(f"unsupported upstream lang selector: {kwargs.get('lang')!r}")
             captured_kwargs.append(kwargs)
 

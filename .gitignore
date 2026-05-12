@@ -218,8 +218,6 @@ processed_docs
 # Ignore devcontainer volumes
 .volumes
 
-.worktrees/
-
 
 # Ignore generate docs site
 docs/site

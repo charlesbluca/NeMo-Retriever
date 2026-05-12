@@ -1664,7 +1664,9 @@ async def update_managed_dataset(dataset_id: int, req: DatasetUpdateRequest):
     if effective_mode == "beir" and not str(effective_loader or "").strip():
         raise HTTPException(status_code=422, detail="beir_loader is required when evaluation_mode='beir'")
     effective_ocr_version = requested.get("ocr_version") or existing.get("ocr_version")
-    effective_ocr_lang = requested.get("ocr_lang") if requested.get("ocr_lang") is not None else existing.get("ocr_lang")
+    effective_ocr_lang = (
+        requested.get("ocr_lang") if requested.get("ocr_lang") is not None else existing.get("ocr_lang")
+    )
     if effective_ocr_version == "v1" and effective_ocr_lang is not None:
         raise HTTPException(status_code=422, detail="ocr_lang is only supported when ocr_version='v2'")
 

@@ -20,6 +20,7 @@ from nemo_retriever.api.internal.schemas.extract.extract_infographic_schema impo
 from nemo_retriever.api.util.image_processing.transforms import base64_to_numpy
 from nemo_retriever.api.util.nim import create_inference_client
 from nemo_retriever.api.util.image_processing.table_and_chart import reorder_boxes
+from nemo_retriever.ocr.config import _resolve_ocr_v2_model_dir
 
 logger = logging.getLogger(__name__)
 
@@ -192,12 +193,7 @@ def _local_nemotron_ocr_text_predictions(
     # Keep the same "skip tiny images" behavior as the NIM path.
     valid_images, valid_indices, results = _filter_infographic_images(base64_images)
 
-    model_dir = (
-        os.getenv("RETRIEVER_NEMOTRON_OCR_MODEL_DIR", "").strip()
-        or os.getenv("NEMOTRON_OCR_MODEL_DIR", "").strip()
-        or os.getenv("NEMOTRON_OCR_V2_MODEL_DIR", "").strip()
-        or os.getenv("NEMOTRON_OCR_V1_MODEL_DIR", "").strip()
-    )
+    model_dir = _resolve_ocr_v2_model_dir()
     ocr_version = os.getenv("NEMOTRON_OCR_VERSION", "v2").strip() or "v2"
     ocr_lang = os.getenv("NEMOTRON_OCR_LANG", "").strip() or None
 

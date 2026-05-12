@@ -15,10 +15,13 @@ Covers all three call sites where the OCR engine is selected:
 
 from __future__ import annotations
 
+from typing import get_type_hints
+
 import pytest
 from pydantic import ValidationError
 
 from nemo_retriever.graph.ingestor_runtime import build_graph
+from nemo_retriever.ocr.config import OCRLang, OCRVersion, _resolve_ocr_v2_model_dir, resolve_ocr_v2_lang
 from nemo_retriever.ocr.ocr import OCRActor, OCRV2Actor, resolve_ocr_archetype
 from nemo_retriever.params import EmbedParams, ExtractParams
 
@@ -55,6 +58,29 @@ def test_invalid_ocr_lang_raises_validation_error() -> None:
 def test_v1_rejects_ocr_lang() -> None:
     with pytest.raises(ValidationError):
         ExtractParams(ocr_version="v1", ocr_lang="english")
+
+
+def test_ocr_v2_model_dir_ignores_legacy_v1_env_var() -> None:
+    assert _resolve_ocr_v2_model_dir({"NEMOTRON_OCR_V1_MODEL_DIR": "/models/ocr-v1"}) == ""
+
+
+def test_ocr_v2_model_dir_accepts_v2_compatible_env_vars() -> None:
+    assert (
+        _resolve_ocr_v2_model_dir(
+            {
+                "NEMOTRON_OCR_V1_MODEL_DIR": "/models/ocr-v1",
+                "NEMOTRON_OCR_V2_MODEL_DIR": "/models/ocr-v2",
+            }
+        )
+        == "/models/ocr-v2"
+    )
+
+
+def test_resolve_ocr_v2_lang_uses_public_selector_aliases() -> None:
+    hints = get_type_hints(resolve_ocr_v2_lang)
+
+    assert hints["ocr_version"] == OCRVersion
+    assert hints["ocr_lang"] == OCRLang | None
 
 
 def test_default_graph_uses_unified_ocr_actor() -> None:

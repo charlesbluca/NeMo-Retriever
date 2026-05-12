@@ -4,13 +4,24 @@
 
 from __future__ import annotations
 
-from typing import Literal
+import os
+from typing import Literal, Mapping
 
 OCRVersion = Literal["v1", "v2"]
 OCRLang = Literal["multi", "english"]
 
 
-def resolve_ocr_v2_lang(ocr_version: str = "v2", ocr_lang: str | None = None) -> str:
+def _resolve_ocr_v2_model_dir(environ: Mapping[str, str] | None = None) -> str:
+    """Resolve a model directory that is compatible with ``NemotronOCRV2``."""
+    env = os.environ if environ is None else environ
+    return (
+        env.get("RETRIEVER_NEMOTRON_OCR_MODEL_DIR", "").strip()
+        or env.get("NEMOTRON_OCR_MODEL_DIR", "").strip()
+        or env.get("NEMOTRON_OCR_V2_MODEL_DIR", "").strip()
+    )
+
+
+def resolve_ocr_v2_lang(ocr_version: OCRVersion = "v2", ocr_lang: OCRLang | None = None) -> str:
     """Resolve public OCR selectors to the ``NemotronOCRV2(lang=...)`` selector.
 
     Args:

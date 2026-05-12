@@ -2,14 +2,15 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for ExtractParams.ocr_version + resolve_ocr_archetype selection.
+"""Tests for ExtractParams OCR selectors.
 
 Covers all three call sites where the OCR engine is selected:
 
 * The Ray graph builder (build_graph) for page-elements OCR.
 * The override block (batch_tuning_to_node_overrides) keyed by actor name.
 * The in-process pipeline (multi_type_extract_operator), which forwards
-  ``load_ocr_v2`` into TableStructureActor and GraphicElementsActor.
+  ``ocr_version`` and ``ocr_lang`` into TableStructureActor and
+  GraphicElementsActor.
 """
 
 from __future__ import annotations
@@ -33,15 +34,31 @@ def _linear_nodes(graph):
 
 
 def test_default_ocr_version_is_v2() -> None:
-    """The default ExtractParams must select OCRV2Actor without any flags."""
+    """The default ExtractParams must select the unified OCRActor."""
     params = ExtractParams()
 
     assert params.ocr_version == "v2"
-    assert resolve_ocr_archetype(params) is OCRV2Actor
+    assert resolve_ocr_archetype(params) is OCRActor
+    assert params.ocr_lang is None
 
 
-def test_default_graph_uses_ocr_v2_actor() -> None:
-    """A default-ExtractParams graph must contain OCRV2Actor, not OCRActor."""
+def test_v2_accepts_supported_ocr_lang_values() -> None:
+    assert ExtractParams(ocr_lang="multi").ocr_lang == "multi"
+    assert ExtractParams(ocr_lang="english").ocr_lang == "english"
+
+
+def test_invalid_ocr_lang_raises_validation_error() -> None:
+    with pytest.raises(ValidationError):
+        ExtractParams(ocr_lang="legacy")
+
+
+def test_v1_rejects_ocr_lang() -> None:
+    with pytest.raises(ValidationError):
+        ExtractParams(ocr_version="v1", ocr_lang="english")
+
+
+def test_default_graph_uses_unified_ocr_actor() -> None:
+    """A default-ExtractParams graph must contain the unified OCRActor."""
     graph = build_graph(
         extract_params=ExtractParams(
             method="ocr",
@@ -58,13 +75,16 @@ def test_default_graph_uses_ocr_v2_actor() -> None:
 
     nodes = _linear_nodes(graph)
     classes = [node.operator_class for node in nodes]
+    ocr_node = next(node for node in nodes if node.operator_class is OCRActor)
 
-    assert OCRV2Actor in classes
-    assert OCRActor not in classes
+    assert OCRActor in classes
+    assert OCRV2Actor not in classes
+    assert ocr_node.operator_kwargs["ocr_version"] == "v2"
+    assert "ocr_lang" not in ocr_node.operator_kwargs
 
 
-def test_explicit_ocr_version_v1_uses_legacy_actor() -> None:
-    """Passing ocr_version='v1' must produce OCRActor and not OCRV2Actor."""
+def test_explicit_ocr_version_v1_uses_unified_actor_with_legacy_selector() -> None:
+    """Passing ocr_version='v1' must keep OCRActor and pass the legacy selector."""
     graph = build_graph(
         extract_params=ExtractParams(
             method="ocr",
@@ -82,9 +102,33 @@ def test_explicit_ocr_version_v1_uses_legacy_actor() -> None:
 
     nodes = _linear_nodes(graph)
     classes = [node.operator_class for node in nodes]
+    ocr_node = next(node for node in nodes if node.operator_class is OCRActor)
 
     assert OCRActor in classes
     assert OCRV2Actor not in classes
+    assert ocr_node.operator_kwargs["ocr_version"] == "v1"
+
+
+def test_graph_forwards_v2_ocr_lang_selector() -> None:
+    graph = build_graph(
+        extract_params=ExtractParams(
+            method="ocr",
+            extract_text=True,
+            extract_tables=False,
+            extract_charts=False,
+            extract_infographics=False,
+            ocr_lang="english",
+        ),
+        embed_params=EmbedParams(
+            model_name="nvidia/llama-nemotron-embed-1b-v2",
+            embed_invoke_url="http://embed.example/v1",
+        ),
+    )
+
+    ocr_node = next(node for node in _linear_nodes(graph) if node.operator_class is OCRActor)
+
+    assert ocr_node.operator_kwargs["ocr_version"] == "v2"
+    assert ocr_node.operator_kwargs["ocr_lang"] == "english"
 
 
 def test_invalid_ocr_version_raises_validation_error() -> None:
@@ -93,10 +137,8 @@ def test_invalid_ocr_version_raises_validation_error() -> None:
         ExtractParams(ocr_version="v3")
 
 
-def test_table_structure_actor_receives_load_ocr_v2_kwarg(monkeypatch) -> None:
-    """When ocr_version='v2', the in-process pipeline must forward
-    load_ocr_v2=True into TableStructureActor (and similarly for v1 -> False).
-    """
+def test_table_structure_actor_receives_ocr_selectors(monkeypatch) -> None:
+    """The in-process pipeline must forward OCR selectors to OCR-using stages."""
     from nemo_retriever.graph.multi_type_extract_operator import MultiTypeExtractCPUActor
     from nemo_retriever.utils.ray_resource_hueristics import Resources
     import pandas as pd
@@ -133,6 +175,7 @@ def test_table_structure_actor_receives_load_ocr_v2_kwarg(monkeypatch) -> None:
             extract_charts=True,
             use_graphic_elements=True,
             extract_infographics=True,
+            ocr_lang="english",
         ),
     )
 
@@ -141,5 +184,9 @@ def test_table_structure_actor_receives_load_ocr_v2_kwarg(monkeypatch) -> None:
     table_kwargs = next(kwargs for name, kwargs in captured_kwargs if name == "TableStructureActor")
     graphic_kwargs = next(kwargs for name, kwargs in captured_kwargs if name == "GraphicElementsActor")
 
-    assert table_kwargs.get("load_ocr_v2") is True
-    assert graphic_kwargs.get("load_ocr_v2") is True
+    assert table_kwargs.get("ocr_version") == "v2"
+    assert graphic_kwargs.get("ocr_version") == "v2"
+    assert table_kwargs.get("ocr_lang") == "english"
+    assert graphic_kwargs.get("ocr_lang") == "english"
+    assert "load_ocr_v2" not in table_kwargs
+    assert "load_ocr_v2" not in graphic_kwargs

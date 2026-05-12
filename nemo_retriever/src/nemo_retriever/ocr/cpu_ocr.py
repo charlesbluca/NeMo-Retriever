@@ -17,8 +17,13 @@ from nemo_retriever.ocr.shared import ocr_page_elements
 
 
 class OCRCPUActor(AbstractOperator, CPUOperator):
-    """CPU-only variant of :class:`OCRActor`."""
+    """Remote OCR variant of :class:`OCRActor`.
 
+    Local OCR uses ``NemotronOCRV2`` for both v2 and legacy v1 modes, but the
+    hosted NIM endpoint is still v1-only until OCR v2 is released remotely.
+    """
+
+    # Keep the remote default on v1 until a hosted OCR v2 NIM is available.
     DEFAULT_INVOKE_URL = "https://ai.api.nvidia.com/v1/cv/nvidia/nemotron-ocr-v1"
 
     def __init__(self, **ocr_kwargs: Any) -> None:

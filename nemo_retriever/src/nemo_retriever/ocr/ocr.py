@@ -94,44 +94,34 @@ class OCRActor(ArchetypeOperator):
     compute="gpu",
     description="Performs multilingual optical character recognition using Nemotron OCR v2",
 )
-class OCRV2Actor(ArchetypeOperator):
-    """Graph-facing OCR v2 archetype (multilingual, higher throughput)."""
-
-    @classmethod
-    def prefers_cpu_variant(cls, operator_kwargs: dict[str, Any] | None = None) -> bool:
-        kwargs = operator_kwargs or {}
-        return bool(str(kwargs.get("ocr_invoke_url") or kwargs.get("invoke_url") or "").strip())
+class OCRV2Actor(OCRActor):
+    """Compatibility alias for the unified OCR archetype."""
 
     @classmethod
     def cpu_variant_class(cls):
-        from nemo_retriever.ocr.cpu_ocrv2 import OCRV2CPUActor
+        from nemo_retriever.ocr.cpu_ocr import OCRCPUActor
 
-        return OCRV2CPUActor
+        return OCRCPUActor
 
     @classmethod
     def gpu_variant_class(cls):
-        from nemo_retriever.ocr.gpu_ocrv2 import OCRV2Actor as OCRV2GPUActor
+        from nemo_retriever.ocr.gpu_ocr import OCRActor as OCRGPUActor
 
-        return OCRV2GPUActor
-
-    def __init__(self, **ocr_kwargs: Any) -> None:
-        super().__init__(**ocr_kwargs)
+        return OCRGPUActor
 
 
 def resolve_ocr_archetype(extract_params: Any) -> type:
-    """Pick the OCR archetype class based on ExtractParams.ocr_version.
-
-    Default is v2 (OCRV2Actor). Pass ocr_version="v1" on ExtractParams
-    to fall back to the legacy English-only OCRActor.
+    """Return the unified OCR archetype for all supported OCR selectors.
 
     Args:
-        extract_params: An object exposing an ``ocr_version`` attribute.
-            When the attribute is missing, v2 is assumed.
+        extract_params: Extract parameters. Accepted for compatibility with
+            older callers that expected version-specific archetype selection.
 
     Returns:
-        The OCR archetype class (``OCRActor`` for v1, ``OCRV2Actor`` for v2).
+        The unified OCR archetype class. The concrete local model version is
+        selected by ``ocr_version``/``ocr_lang`` in the actor kwargs.
     """
-    return OCRActor if getattr(extract_params, "ocr_version", "v2") == "v1" else OCRV2Actor
+    return OCRActor
 
 
 def __getattr__(name: str):

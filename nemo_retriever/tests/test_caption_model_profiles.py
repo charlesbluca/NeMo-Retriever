@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import importlib.abc
 import sys
 from types import ModuleType
 
@@ -18,6 +19,79 @@ OMNI_BF16 = "nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-BF16"
 OMNI_FP8 = "nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-FP8"
 OMNI_NVFP4 = "nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-NVFP4"
 OMNI_REMOTE = "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning"
+_LOCAL_CAPTIONER_NEMO_IMPORT_MODULES = (
+    "nemo_retriever.model.local.nemotron_vlm_captioner",
+    "nemo_retriever.utils.nvtx",
+    "nemo_retriever.model.model",
+)
+_LOCAL_CAPTIONER_DEPENDENCY_MODULES = (
+    "torch",
+    "torch.cuda",
+    "torch.cuda.nvtx",
+    "torch.nn",
+    "vllm",
+)
+_LOCAL_CAPTIONER_IMPORT_MODULES = _LOCAL_CAPTIONER_NEMO_IMPORT_MODULES + _LOCAL_CAPTIONER_DEPENDENCY_MODULES
+_LOCAL_CAPTIONER_PARENT_ATTRS = (
+    ("nemo_retriever.model.local", "nemotron_vlm_captioner"),
+    ("nemo_retriever.utils", "nvtx"),
+    ("nemo_retriever.model", "model"),
+    ("torch", "cuda"),
+    ("torch", "nn"),
+    ("torch.cuda", "nvtx"),
+)
+_INITIAL_LOCAL_CAPTIONER_NEMO_IMPORT_MODULES = {
+    module_name for module_name in _LOCAL_CAPTIONER_NEMO_IMPORT_MODULES if module_name in sys.modules
+}
+_MISSING = object()
+
+
+class _VllmImportBlocker(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == "vllm" or fullname.startswith("vllm."):
+            raise AssertionError("vLLM must not be imported before unsupported local model validation")
+        return None
+
+
+def _clear_local_captioner_import_state():
+    for module_name in _LOCAL_CAPTIONER_IMPORT_MODULES:
+        sys.modules.pop(module_name, None)
+    for parent_name, attr_name in _LOCAL_CAPTIONER_PARENT_ATTRS:
+        parent = sys.modules.get(parent_name)
+        if parent is not None:
+            parent.__dict__.pop(attr_name, None)
+
+
+@pytest.fixture
+def isolated_local_captioner_imports():
+    module_snapshot = {
+        module_name: sys.modules.get(module_name, _MISSING) for module_name in _LOCAL_CAPTIONER_IMPORT_MODULES
+    }
+    attr_snapshot = {}
+    for parent_name, attr_name in _LOCAL_CAPTIONER_PARENT_ATTRS:
+        parent = sys.modules.get(parent_name)
+        attr_snapshot[(parent_name, attr_name)] = (
+            _MISSING if parent is None else parent.__dict__.get(attr_name, _MISSING)
+        )
+
+    _clear_local_captioner_import_state()
+    try:
+        yield
+    finally:
+        _clear_local_captioner_import_state()
+        for module_name, module in module_snapshot.items():
+            if module is _MISSING:
+                sys.modules.pop(module_name, None)
+            else:
+                sys.modules[module_name] = module
+        for (parent_name, attr_name), attr_value in attr_snapshot.items():
+            parent = sys.modules.get(parent_name)
+            if parent is None:
+                continue
+            if attr_value is _MISSING:
+                parent.__dict__.pop(attr_name, None)
+            else:
+                setattr(parent, attr_name, attr_value)
 
 
 def test_nano_resolution_remains_unchanged():
@@ -175,3 +249,166 @@ def test_public_fp8_engine_kwargs_are_immutable():
         "quantization": "fp8",
         "hf_overrides": {"quantization_config": {"quant_method": "fp8", "activation_scheme": "static"}},
     }
+
+
+def _install_fake_torch():
+    fake_torch = ModuleType("torch")
+    fake_cuda = ModuleType("torch.cuda")
+    fake_nvtx = ModuleType("torch.cuda.nvtx")
+    fake_nn = ModuleType("torch.nn")
+
+    class FakeModule:
+        pass
+
+    for fake_module in (fake_torch, fake_cuda, fake_nvtx, fake_nn):
+        fake_module._nemo_retriever_test_fake = True
+    fake_nvtx.range_push = lambda *_args, **_kwargs: None
+    fake_nvtx.range_pop = lambda: None
+    fake_cuda.nvtx = fake_nvtx
+    fake_nn.Module = FakeModule
+    fake_torch.cuda = fake_cuda
+    fake_torch.nn = fake_nn
+    sys.modules["torch"] = fake_torch
+    sys.modules["torch.cuda"] = fake_cuda
+    sys.modules["torch.cuda.nvtx"] = fake_nvtx
+    sys.modules["torch.nn"] = fake_nn
+
+
+def _install_fake_vllm():
+    _install_fake_torch()
+    fake_vllm = ModuleType("vllm")
+    fake_vllm._nemo_retriever_test_fake = True
+
+    class FakeSamplingParams:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    class FakeTextOutput:
+        text = " generated caption "
+
+    class FakeRequestOutput:
+        outputs = [FakeTextOutput()]
+
+    class FakeLLM:
+        instances = []
+
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            self.chat_calls = []
+            FakeLLM.instances.append(self)
+
+        def chat(self, conversations, sampling_params, **kwargs):
+            self.chat_calls.append(
+                {
+                    "conversations": conversations,
+                    "sampling_params": sampling_params,
+                    "kwargs": kwargs,
+                }
+            )
+            return [FakeRequestOutput() for _ in conversations]
+
+    fake_vllm.LLM = FakeLLM
+    fake_vllm.SamplingParams = FakeSamplingParams
+    sys.modules["vllm"] = fake_vllm
+    return FakeLLM, FakeSamplingParams
+
+
+@pytest.mark.parametrize(
+    ("model_name", "expected_revision", "expected_engine"),
+    [
+        (
+            OMNI_BF16,
+            "24e67ea000b7c2837fc8f9488aa2008524fac8ba",
+            {"dtype": "bfloat16"},
+        ),
+        (
+            OMNI_FP8,
+            "6647b845a4b786c6e2c7adb1b6a909e1aa71fac2",
+            {
+                "dtype": "auto",
+                "quantization": "fp8",
+                "hf_overrides": {"quantization_config": {"quant_method": "fp8", "activation_scheme": "static"}},
+            },
+        ),
+        (
+            OMNI_NVFP4,
+            "dc5f0b0bfddf8b6e0f5891475be9af05b80126fe",
+            {"dtype": "auto", "quantization": "modelopt"},
+        ),
+    ],
+)
+def test_local_omni_captioner_uses_profile_metadata(
+    isolated_local_captioner_imports, model_name, expected_revision, expected_engine
+):
+    FakeLLM, _FakeSamplingParams = _install_fake_vllm()
+
+    from nemo_retriever.model.local.nemotron_vlm_captioner import NemotronVLMCaptioner
+
+    captioner = NemotronVLMCaptioner(
+        model_path=model_name,
+        tensor_parallel_size=2,
+        gpu_memory_utilization=0.25,
+    )
+
+    llm_kwargs = FakeLLM.instances[-1].kwargs
+    assert captioner.model_name == model_name
+    assert llm_kwargs["model"] == model_name
+    assert llm_kwargs["revision"] == expected_revision
+    assert llm_kwargs["trust_remote_code"] is True
+    assert llm_kwargs["tensor_parallel_size"] == 2
+    assert llm_kwargs["gpu_memory_utilization"] == 0.25
+    for key, value in expected_engine.items():
+        assert llm_kwargs[key] == value
+
+
+def test_local_captioner_passes_omni_no_think_chat_kwargs(isolated_local_captioner_imports):
+    FakeLLM, _FakeSamplingParams = _install_fake_vllm()
+
+    from nemo_retriever.model.local.nemotron_vlm_captioner import NemotronVLMCaptioner
+
+    captioner = NemotronVLMCaptioner(model_path=OMNI_BF16)
+
+    assert captioner.caption_batch(["abc123"]) == ["generated caption"]
+    chat_kwargs = FakeLLM.instances[-1].chat_calls[-1]["kwargs"]
+    assert chat_kwargs["chat_template_kwargs"] == {"enable_thinking": False}
+
+
+def test_local_captioner_user_extra_body_overrides_profile_extras(isolated_local_captioner_imports):
+    FakeLLM, _FakeSamplingParams = _install_fake_vllm()
+
+    from nemo_retriever.model.local.nemotron_vlm_captioner import NemotronVLMCaptioner
+
+    captioner = NemotronVLMCaptioner(model_path=OMNI_BF16)
+    captioner.caption_batch(
+        ["abc123"],
+        extra_body={"chat_template_kwargs": {"enable_thinking": True, "reasoning_budget": 32}},
+    )
+
+    chat_kwargs = FakeLLM.instances[-1].chat_calls[-1]["kwargs"]
+    assert chat_kwargs["chat_template_kwargs"] == {"enable_thinking": True, "reasoning_budget": 32}
+
+
+def test_local_captioner_rejects_unknown_model_before_vllm_import(isolated_local_captioner_imports, monkeypatch):
+    _install_fake_torch()
+    sys.modules.pop("vllm", None)
+    monkeypatch.setattr(sys, "meta_path", [_VllmImportBlocker(), *sys.meta_path])
+
+    from nemo_retriever.model.local.nemotron_vlm_captioner import NemotronVLMCaptioner
+
+    with pytest.raises(ValueError, match="Unsupported caption model"):
+        NemotronVLMCaptioner(model_path="acme/custom-vlm")
+
+
+def test_local_captioner_fake_imports_do_not_leak():
+    leaked_modules = sorted(
+        module_name
+        for module_name in _LOCAL_CAPTIONER_IMPORT_MODULES
+        if (
+            module_name not in _INITIAL_LOCAL_CAPTIONER_NEMO_IMPORT_MODULES
+            and module_name in _LOCAL_CAPTIONER_NEMO_IMPORT_MODULES
+            and module_name in sys.modules
+        )
+        or getattr(sys.modules.get(module_name), "_nemo_retriever_test_fake", False)
+    )
+
+    assert leaked_modules == []

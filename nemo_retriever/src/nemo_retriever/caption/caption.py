@@ -201,11 +201,16 @@ def _caption_batch_remote(
 
     from nemo_retriever.params.models import LLMInferenceParams
 
-    infer_kwargs: Dict[str, Any] = merge_request_extras(request_extras or {}, {})
-    infer_kwargs["model_name"] = model_name
-    infer_kwargs.update(
-        LLMInferenceParams(temperature=temperature, top_p=top_p, max_tokens=max_tokens).to_sampling_kwargs()
+    sampling_kwargs = LLMInferenceParams(
+        temperature=temperature,
+        top_p=top_p,
+        max_tokens=max_tokens,
+    ).to_sampling_kwargs()
+    infer_kwargs: Dict[str, Any] = merge_request_extras(
+        sampling_kwargs,
+        request_extras or {},
     )
+    infer_kwargs["model_name"] = model_name
 
     return nim_client.infer(data, **infer_kwargs)
 

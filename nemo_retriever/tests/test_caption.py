@@ -412,6 +412,38 @@ def test_remote_omni_user_extra_body_overrides_profile_defaults(mock_create_clie
     assert infer_kwargs["chat_template_kwargs"] == {"enable_thinking": True, "reasoning_budget": 32}
 
 
+def test_caption_batch_remote_request_extras_override_sampling_defaults():
+    from nemo_retriever.caption.caption import _caption_batch_remote
+
+    mock_nim = MagicMock()
+    mock_nim.infer.return_value = ["remote cap"]
+
+    result = _caption_batch_remote(
+        [_make_test_png_b64()],
+        nim_client=mock_nim,
+        model_name="nvidia/test-vlm",
+        prompt="Caption this.",
+        system_prompt=None,
+        temperature=0.7,
+        top_p=0.9,
+        max_tokens=512,
+        request_extras={
+            "temperature": 0.05,
+            "top_p": 0.1,
+            "max_tokens": 32,
+            "chat_template_kwargs": {"enable_thinking": False},
+        },
+    )
+
+    assert result == ["remote cap"]
+    infer_kwargs = mock_nim.infer.call_args[1]
+    assert infer_kwargs["model_name"] == "nvidia/test-vlm"
+    assert infer_kwargs["temperature"] == 0.05
+    assert infer_kwargs["top_p"] == 0.1
+    assert infer_kwargs["max_tokens"] == 32
+    assert infer_kwargs["chat_template_kwargs"] == {"enable_thinking": False}
+
+
 @patch("nemo_retriever.caption.caption._create_remote_client")
 def test_remote_extra_body_arbitrary_keys_reach_formatted_payload(mock_create_client):
     from nemo_retriever.api.internal.primitives.nim.model_interface.vlm import VLMModelInterface

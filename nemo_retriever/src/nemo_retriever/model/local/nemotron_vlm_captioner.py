@@ -67,7 +67,7 @@ class NemotronVLMCaptioner(BaseModel):
 
     SUPPORTED_MODELS: dict[str, str] = supported_caption_models_by_variant(target="local")
     MODEL_ALIASES: dict[str, str] = caption_model_aliases(target="local")
-    _MODEL_REVISIONS: dict[str, str] = caption_model_revisions()
+    _MODEL_REVISIONS: dict[str, str | None] = caption_model_revisions()
 
     def __init__(
         self,

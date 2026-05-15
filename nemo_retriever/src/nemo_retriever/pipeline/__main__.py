@@ -234,6 +234,7 @@ def _build_extract_params(
     page_elements_invoke_url: Optional[str],
     ocr_invoke_url: Optional[str],
     ocr_version: str,
+    ocr_lang: Optional[str],
     graphic_elements_invoke_url: Optional[str],
     table_structure_invoke_url: Optional[str],
     pdf_split_batch_size: int,
@@ -300,6 +301,7 @@ def _build_extract_params(
                 "page_elements_invoke_url": page_elements_invoke_url,
                 "ocr_invoke_url": ocr_invoke_url,
                 "ocr_version": ocr_version,
+                "ocr_lang": ocr_lang,
                 "graphic_elements_invoke_url": graphic_elements_invoke_url,
                 "table_structure_invoke_url": table_structure_invoke_url,
                 "use_graphic_elements": use_graphic_elements,
@@ -636,6 +638,9 @@ def _run_evaluation(
     beir_doc_id_field: Optional[str],
     beir_k: list[int],
     local_query_embed_backend: str = "hf",
+    run_mode: str = "inprocess",
+    service_url: Optional[str] = None,
+    service_api_token: Optional[str] = None,
 ) -> tuple[str, float, dict[str, float], Optional[int], bool]:
     """Run recall or BEIR evaluation.
 
@@ -653,9 +658,7 @@ def _run_evaluation(
     eval_vdb_kwargs = dict(vdb_kwargs or {})
 
     if evaluation_mode == "beir":
-        if str(vdb_op).strip().lower() != "lancedb":
-            raise ValueError("--evaluation-mode=beir currently requires --vdb-op=lancedb")
-        from nemo_retriever.recall.beir import BeirConfig, evaluate_lancedb_beir, resolve_beir_dataset_options
+        from nemo_retriever.recall.beir import BeirConfig, resolve_beir_dataset_options
 
         beir_options = resolve_beir_dataset_options(
             dataset_name=beir_dataset_name,
@@ -694,9 +697,21 @@ def _run_evaluation(
             local_hf_batch_size=int(local_hf_batch_size),
             local_query_max_length=int(local_query_max_length),
             local_query_embed_backend=local_query_embed_backend,
+            service_url=service_url if run_mode == "service" else None,
+            service_api_token=service_api_token,
         )
+
         evaluation_start = time.perf_counter()
-        beir_dataset, _raw_hits, _run, metrics = evaluate_lancedb_beir(cfg)
+        if run_mode == "service" and service_url:
+            from nemo_retriever.recall.beir import evaluate_service_beir
+
+            beir_dataset, _raw_hits, _run, metrics = evaluate_service_beir(cfg)
+        else:
+            if str(vdb_op).strip().lower() != "lancedb":
+                raise ValueError("--evaluation-mode=beir currently requires --vdb-op=lancedb")
+            from nemo_retriever.recall.beir import evaluate_lancedb_beir
+
+            beir_dataset, _raw_hits, _run, metrics = evaluate_lancedb_beir(cfg)
         return "BEIR", time.perf_counter() - evaluation_start, metrics, len(beir_dataset.query_ids), True
 
     if recall_match_mode != "audio_segment":
@@ -806,6 +821,12 @@ def run(
         "v2",
         "--ocr-version",
         help="OCR engine: 'v2' (default, multilingual, higher throughput) or 'v1' (legacy, English-only).",
+        rich_help_panel=_PANEL_REMOTE,
+    ),
+    ocr_lang: Optional[str] = typer.Option(
+        None,
+        "--ocr-lang",
+        help="OCR language selector for v2: 'multi' (default) or 'english'. Not valid with --ocr-version v1.",
         rich_help_panel=_PANEL_REMOTE,
     ),
     graphic_elements_invoke_url: Optional[str] = typer.Option(
@@ -1035,6 +1056,15 @@ def run(
         ),
         rich_help_panel=_PANEL_VDB,
     ),
+    vdb_overwrite: Optional[bool] = typer.Option(
+        None,
+        "--vdb-overwrite/--vdb-append",
+        help=(
+            "Overwrite the target VDB table by default. Use --vdb-append to add rows to an existing "
+            "table without duplicate checks; rerunning the same inputs in append mode creates duplicates."
+        ),
+        rich_help_panel=_PANEL_VDB,
+    ),
     no_vdb: bool = typer.Option(
         False,
         "--no-vdb",
@@ -1205,6 +1235,10 @@ def run(
 
         resolved_vdb_op = str(vdb_op or DEFAULT_VDB_OP)
         resolved_vdb_kwargs = _parse_vdb_kwargs_json(vdb_kwargs_json)
+        if vdb_overwrite is None:
+            resolved_vdb_kwargs.setdefault("overwrite", True)
+        else:
+            resolved_vdb_kwargs["overwrite"] = bool(vdb_overwrite)
 
         _sidecar_n = sum(1 for x in (meta_dataframe, meta_source_field, meta_fields) if x is not None)
         if _sidecar_n not in (0, 3):
@@ -1281,6 +1315,7 @@ def run(
             page_elements_invoke_url=page_elements_invoke_url,
             ocr_invoke_url=ocr_invoke_url,
             ocr_version=ocr_version,
+            ocr_lang=ocr_lang,
             graphic_elements_invoke_url=graphic_elements_invoke_url,
             table_structure_invoke_url=table_structure_invoke_url,
             pdf_split_batch_size=pdf_split_batch_size,
@@ -1523,6 +1558,9 @@ def run(
             beir_doc_id_field=beir_doc_id_field,
             beir_k=beir_k,
             local_query_embed_backend=local_query_embed_backend,
+            run_mode=run_mode,
+            service_url=service_url,
+            service_api_token=service_api_token,
         )
 
         if not ran:

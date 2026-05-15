@@ -169,7 +169,24 @@ def test_graph_forwards_v2_ocr_lang_selector() -> None:
     assert ocr_node.operator_kwargs["ocr_lang"] == "english"
 
 
-def test_video_graph_forwards_v2_ocr_lang_selector() -> None:
+def test_video_graph_forwards_v2_ocr_lang_selector(monkeypatch) -> None:
+    from nemo_retriever.graph.abstract_operator import AbstractOperator
+
+    class _GraphOnlyVideoSplitActor(AbstractOperator):
+        def preprocess(self, data, **kwargs):
+            return data
+
+        def process(self, data, **kwargs):
+            return data
+
+        def postprocess(self, data, **kwargs):
+            return data
+
+    monkeypatch.setattr(
+        "nemo_retriever.graph.ingestor_runtime.VideoSplitActor",
+        _GraphOnlyVideoSplitActor,
+    )
+
     graph = build_graph(
         extraction_mode="video",
         extract_params=ExtractParams(ocr_lang="english"),

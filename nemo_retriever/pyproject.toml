@@ -92,6 +92,7 @@ local = [
   "scikit-learn>=1.6.0",
   "timm==1.0.22",
   "albumentations==2.0.8",
+  "matplotlib>=3.8.0",
   "nemotron-page-elements-v3>=0.dev0",
   "nemotron-graphic-elements-v1>=0.dev0",
   "nemotron-table-structure-v1>=0.dev0",
@@ -107,6 +108,29 @@ local = [
   # flashinfer and cubin versions must match
   "flashinfer-cubin==0.6.4; sys_platform == 'linux'",
   "flashinfer-python==0.6.4; sys_platform == 'linux'",
+]
+
+# Minimal local dependency set for page-elements-only GPU smoke tests.
+page-elements-local = [
+  "transformers>=4.57.6,<5",
+  "tokenizers>=0.20.3",
+  "accelerate==1.12.0",
+  "torch~=2.10.0",
+  "torchvision>=0.25,<0.26",
+  "einops",
+  "easydict",
+  "addict",
+  "scikit-learn>=1.6.0",
+  "timm==1.0.22",
+  "albumentations==2.0.8",
+  "matplotlib>=3.8.0",
+  "nemotron-page-elements-v3>=0.dev0",
+  "nvidia-ml-py",
+]
+
+# Add OCR v2 on top of page-elements-local without pulling the full local stack.
+ocr-v2-local = [
+  "nemotron-ocr>=2.0.0.dev0,<2.0.0a0; sys_platform == 'linux' and (platform_machine == 'x86_64' or platform_machine == 'aarch64')",
 ]
 
 # ── Multimedia — audio/ASR and SVG rendering ────────────────────────────────

@@ -129,6 +129,38 @@ Success means `summary.env` has `status=succeeded`, both result JSON files have 
 
 The launcher generates `job.sbatch`. If a normal run requires editing generated sbatch by hand, add a profile field first so the run stays reproducible.
 
+## PDF Page-Elements GPU Smoke
+
+To smoke PDF input with local page-elements inference on compute-node GPUs, add these profile fields:
+
+```bash
+GPUS_PER_NODE=1
+RUN_TEXT_SMOKES=0
+RUN_PDF_PAGE_ELEMENTS_SMOKE=1
+INSTALL_PAGE_ELEMENTS_EXTRAS=1
+INPUT_PDF=data/multimodal_test.pdf
+```
+
+The launcher stages `INPUT_PDF` to `run_dir/input/smoke.pdf`, renders `#SBATCH --gpus-per-node`, starts Ray with `--num-gpus`, and runs `nemo_pdf_page_elements_smoke.py`. That smoke renders PDF pages, runs only the local `page-elements` GPU actor, and records the actor host plus CUDA visibility in `nemo_pdf_page_elements_smoke.result.json`.
+
+To append local OCR v2 after page-elements, enable the OCR rung and use the OCR-specific extra:
+
+```bash
+RUN_PDF_OCRV2_SMOKE=1
+INSTALL_PAGE_ELEMENTS_EXTRAS=0
+INSTALL_OCRV2_EXTRAS=1
+```
+
+The OCR v2 path installs `page-elements-local` plus `ocr-v2-local`, routes page-elements to a worker GPU and OCR v2 to the Ray head GPU, and records both actor hosts plus CUDA visibility in the same result JSON.
+
+To append local text embedding and write a LanceDB artifact after the PDF GPU stages, enable:
+
+```bash
+RUN_PDF_TEXT_EMBED_VDB_SMOKE=1
+```
+
+The text embedding rung uses the local HuggingFace backend for `nvidia/llama-nemotron-embed-1b-v2`, writes 2048-d vectors into the graph rows, uploads them through the LanceDB VDB operator, and stores the artifact at `run_dir/lancedb`.
+
 ## Successful Artifacts
 
 On success, inspect these files under `run_dir`:
@@ -136,6 +168,8 @@ On success, inspect these files under `run_dir`:
 - `summary.env`: contains `status=succeeded`, `job_id`, `run_dir`, `head_node`, `head_ip`, `ray_address`, and allocated nodes.
 - `nemo_executor_smoke.result.json`: direct `RayDataExecutor` proof with `status=succeeded`, `rows=3`, live Ray nodes, `nemo_head` and `nemo_worker` resources, and different `split_hosts` and `chunk_hosts`. The smoke records those host names inside smoke-local actor subclasses.
 - `nemo_graph_ingestor_smoke.result.json`: `GraphIngestor(run_mode="batch", ray_address=...)` proof with `status=succeeded`, `rows=3`, live Ray nodes, and `nemo_head` and `nemo_worker` resources.
+- `nemo_pdf_page_elements_smoke.result.json`: optional PDF GPU proof with page counts, page-elements detections, optional OCR v2 detections, optional local text embeddings and LanceDB row count, Ray GPU resources, actor host names, and CUDA device details.
+- `lancedb/`: optional LanceDB artifact written by `RUN_PDF_TEXT_EMBED_VDB_SMOKE=1`.
 - `logs/`: setup, Ray start/status/stop, smoke, and SLURM stdout/stderr logs.
 
 ## Known Baseline

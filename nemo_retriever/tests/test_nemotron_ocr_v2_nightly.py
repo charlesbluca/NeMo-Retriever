@@ -85,8 +85,10 @@ def test_local_ocr_v2_wrapper_uses_original_namespace_and_lang_selector() -> Non
 
     assert "from nemotron_ocr.inference import pipeline_v2" in source
     assert 'lang: str = "v2_english"' in source
-    assert "_NemotronOCRV2(model_dir=model_dir, lang=lang)" in source
-    assert "_NemotronOCRV2(lang=lang)" in source
+    assert '"v2_english": "english"' in source
+    assert '"v2_multi": "multi"' in source
+    assert "_NemotronOCRV2(model_dir=model_dir, lang=upstream_lang)" in source
+    assert "_NemotronOCRV2(lang=upstream_lang)" in source
     assert "nemotron_ocr_v2" not in source
     assert "nemotron-ocr-v2` from TestPyPI" not in source
 
@@ -100,10 +102,18 @@ def test_local_ocr_v2_wrapper_rejects_invalid_lang_selector(monkeypatch: pytest.
         NemotronOCRV2(lang="v3")
 
 
-@pytest.mark.parametrize("selector", ["v1", "v2_english", "v2_multi"])
+@pytest.mark.parametrize(
+    ("selector", "upstream_lang"),
+    [
+        ("v1", "v1"),
+        ("v2_english", "english"),
+        ("v2_multi", "multi"),
+    ],
+)
 def test_local_ocr_v2_wrapper_accepts_valid_lang_selectors(
     monkeypatch: pytest.MonkeyPatch,
     selector: str,
+    upstream_lang: str,
 ) -> None:
     _install_ocr_import_stubs(monkeypatch)
     captured_kwargs = _install_upstream_ocr_v2_stub(monkeypatch)
@@ -112,7 +122,7 @@ def test_local_ocr_v2_wrapper_accepts_valid_lang_selectors(
 
     NemotronOCRV2(lang=selector)
 
-    assert captured_kwargs == [{"lang": selector}]
+    assert captured_kwargs == [{"lang": upstream_lang}]
 
 
 def test_huggingface_ocr_nightly_does_not_carry_namespace_patch_knobs() -> None:

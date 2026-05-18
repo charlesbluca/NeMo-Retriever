@@ -34,6 +34,21 @@ logger = logging.getLogger(__name__)
 _DEFAULT_GPU_OPERATOR_NUM_GPUS = OCR_GPUS_PER_ACTOR
 
 
+def _runtime_pythonpath_entries(paths: List[str]) -> List[str]:
+    entries: List[str] = []
+    for path in paths:
+        if not path:
+            continue
+        normalized = os.path.normpath(path)
+        # OpenCV may append its package directory to sys.path after cv2 is
+        # imported. Forwarding that path to Ray workers can shadow stdlib
+        # modules such as typing via cv2/typing during worker startup.
+        if os.path.basename(normalized) == "cv2" and os.path.isdir(os.path.join(normalized, "typing")):
+            continue
+        entries.append(path)
+    return entries
+
+
 class AbstractExecutor(ABC):
     """Base class for pipeline executors.
 
@@ -241,12 +256,16 @@ class RayDataExecutor(AbstractExecutor):
         if self._ray_address or not ray.is_initialized():
             venv = os.path.dirname(os.path.dirname(sys.executable))
             venv_bin = os.path.join(venv, "bin")
-            pypath = os.pathsep.join(p for p in sys.path if p)
+            pypath = os.pathsep.join(_runtime_pythonpath_entries(sys.path))
             ray_env_vars: dict[str, str] = {
                 "VIRTUAL_ENV": venv,
                 "PATH": venv_bin + os.pathsep + os.environ.get("PATH", ""),
                 "PYTHONPATH": pypath,
             }
+            for key in ("PYTHONSAFEPATH", "UV_CACHE_DIR", "PIP_CACHE_DIR", "XDG_CACHE_HOME"):
+                value = os.environ.get(key)
+                if value is not None:
+                    ray_env_vars[key] = value
             ray_env_vars.update(collect_hf_runtime_env())
             ray_env_vars.update(collect_remote_auth_runtime_env())
             os.environ["HF_HUB_OFFLINE"] = ray_env_vars["HF_HUB_OFFLINE"]

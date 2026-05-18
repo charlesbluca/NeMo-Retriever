@@ -3,6 +3,7 @@
 #SBATCH --nodes=@@NODES@@
 #SBATCH --ntasks-per-node=@@NTASKS_PER_NODE@@
 #SBATCH --cpus-per-task=@@CPUS_PER_TASK@@
+@@SBATCH_GPUS_PER_NODE@@
 #SBATCH --time=@@TIME_LIMIT@@
 #SBATCH --output=@@RUN_DIR@@/logs/slurm-%j.out
 #SBATCH --error=@@RUN_DIR@@/logs/slurm-%j.err
@@ -14,12 +15,25 @@ RUN_DIR="@@RUN_DIR@@"
 RAY_PORT="@@RAY_PORT@@"
 RAY_DASHBOARD_PORT="@@RAY_DASHBOARD_PORT@@"
 RAY_CLIENT_SERVER_PORT="@@RAY_CLIENT_SERVER_PORT@@"
+GPUS_PER_NODE="@@GPUS_PER_NODE@@"
+RUN_TEXT_SMOKES="@@RUN_TEXT_SMOKES@@"
+RUN_PDF_PAGE_ELEMENTS_SMOKE="@@RUN_PDF_PAGE_ELEMENTS_SMOKE@@"
+RUN_PDF_OCRV2_SMOKE="@@RUN_PDF_OCRV2_SMOKE@@"
+RUN_PDF_TEXT_EMBED_VDB_SMOKE="@@RUN_PDF_TEXT_EMBED_VDB_SMOKE@@"
+INSTALL_PAGE_ELEMENTS_EXTRAS="@@INSTALL_PAGE_ELEMENTS_EXTRAS@@"
+INSTALL_OCRV2_EXTRAS="@@INSTALL_OCRV2_EXTRAS@@"
+INSTALL_LOCAL_EXTRAS="@@INSTALL_LOCAL_EXTRAS@@"
 PYTHON_VERSION="3.12"
 RAY_VERSION="2.55.1"
 
 LOG_DIR="$RUN_DIR/logs"
 WORK_ROOT="/tmp/${USER}/nemo-ray-${SLURM_JOB_ID}"
 UV_INSTALL_DIR="$WORK_ROOT/uv-bin"
+UV_CACHE_DIR="$WORK_ROOT/uv-cache"
+PIP_CACHE_DIR="$WORK_ROOT/pip-cache"
+XDG_CACHE_HOME="$WORK_ROOT/cache"
+NEMO_RETRIEVER_HF_CACHE_DIR="$WORK_ROOT/hf-cache"
+PYTHONSAFEPATH=1
 UV_BIN="$UV_INSTALL_DIR/uv"
 VENV_DIR="$WORK_ROOT/venv"
 SOURCE_ROOT="$WORK_ROOT/source"
@@ -28,20 +42,23 @@ SOURCE_TARBALL="$RUN_DIR/source/nemo_retriever-src.tar.gz"
 INPUT_DIR="$RUN_DIR/input"
 TOKENIZER_DIR="$RUN_DIR/tokenizer"
 
-export RUN_DIR LOG_DIR WORK_ROOT UV_INSTALL_DIR UV_BIN VENV_DIR SOURCE_ROOT SRC_DIR SOURCE_TARBALL
-export RAY_PORT RAY_DASHBOARD_PORT RAY_CLIENT_SERVER_PORT PYTHON_VERSION RAY_VERSION INPUT_DIR TOKENIZER_DIR
+export RUN_DIR LOG_DIR WORK_ROOT UV_INSTALL_DIR UV_CACHE_DIR PIP_CACHE_DIR XDG_CACHE_HOME NEMO_RETRIEVER_HF_CACHE_DIR
+export PYTHONSAFEPATH UV_BIN VENV_DIR SOURCE_ROOT SRC_DIR SOURCE_TARBALL
+export RAY_PORT RAY_DASHBOARD_PORT RAY_CLIENT_SERVER_PORT GPUS_PER_NODE RUN_TEXT_SMOKES RUN_PDF_PAGE_ELEMENTS_SMOKE RUN_PDF_OCRV2_SMOKE RUN_PDF_TEXT_EMBED_VDB_SMOKE INSTALL_PAGE_ELEMENTS_EXTRAS INSTALL_OCRV2_EXTRAS INSTALL_LOCAL_EXTRAS
+export PYTHON_VERSION RAY_VERSION INPUT_DIR TOKENIZER_DIR
 export RETRIEVER_BUILD_DATE=20260508
 export RETRIEVER_BUILD_NUMBER=0
 
 mkdir -p "$LOG_DIR" "$INPUT_DIR" "$TOKENIZER_DIR"
 
 mapfile -t ALLOC_NODES < <(scontrol show hostnames "$SLURM_JOB_NODELIST")
+ALLOCATED_NODE_COUNT="${#ALLOC_NODES[@]}"
 HEAD_NODE="${ALLOC_NODES[0]}"
 WORKER_NODES=("${ALLOC_NODES[@]:1}")
 
 HEAD_IP="$(srun --overlap --nodes=1 --ntasks=1 -w "$HEAD_NODE" hostname -I | awk '{print $1}')"
 RAY_ADDRESS="${HEAD_IP}:${RAY_PORT}"
-export HEAD_NODE HEAD_IP RAY_ADDRESS
+export ALLOCATED_NODE_COUNT HEAD_NODE HEAD_IP RAY_ADDRESS
 
 write_summary() {
   local status=$1
@@ -72,12 +89,12 @@ cat > "$RUN_DIR/setup_node.sh" <<'SETUP_NODE'
 #!/usr/bin/env bash
 set -euo pipefail
 
-mkdir -p "$WORK_ROOT" "$UV_INSTALL_DIR" "$SOURCE_ROOT"
+mkdir -p "$WORK_ROOT" "$UV_INSTALL_DIR" "$UV_CACHE_DIR" "$PIP_CACHE_DIR" "$XDG_CACHE_HOME" "$NEMO_RETRIEVER_HF_CACHE_DIR" "$SOURCE_ROOT"
 rm -rf "$SRC_DIR"
 tar -xzf "$SOURCE_TARBALL" -C "$SOURCE_ROOT"
 
 if [[ ! -x "$UV_BIN" ]]; then
-  curl -LsSf https://astral.sh/uv/install.sh | /usr/bin/env UV_INSTALL_DIR="$UV_INSTALL_DIR" sh
+  curl -LsSf https://astral.sh/uv/install.sh | /usr/bin/env UV_INSTALL_DIR="$UV_INSTALL_DIR" INSTALLER_NO_MODIFY_PATH=1 sh
 fi
 
 "$UV_BIN" python install "$PYTHON_VERSION"
@@ -86,7 +103,15 @@ source "$VENV_DIR/bin/activate"
 
 "$UV_BIN" pip install --upgrade pip
 "$UV_BIN" pip install "ray[data,serve]==${RAY_VERSION}" "transformers>=4.57.6,<5" "tokenizers>=0.20.3"
-"$UV_BIN" pip install "$SRC_DIR"
+if [[ "$INSTALL_LOCAL_EXTRAS" == "1" ]]; then
+  "$UV_BIN" pip install "$SRC_DIR[local]"
+elif [[ "$INSTALL_OCRV2_EXTRAS" == "1" ]]; then
+  "$UV_BIN" pip install "$SRC_DIR[page-elements-local,ocr-v2-local]"
+elif [[ "$INSTALL_PAGE_ELEMENTS_EXTRAS" == "1" ]]; then
+  "$UV_BIN" pip install "$SRC_DIR[page-elements-local]"
+else
+  "$UV_BIN" pip install "$SRC_DIR"
+fi
 
 python - <<'PY'
 import nemo_retriever
@@ -110,6 +135,7 @@ exec ray start \
   --dashboard-port="$RAY_DASHBOARD_PORT" \
   --ray-client-server-port="$RAY_CLIENT_SERVER_PORT" \
   --num-cpus="$SLURM_CPUS_PER_TASK" \
+  --num-gpus="$GPUS_PER_NODE" \
   --resources='{"nemo_head": 1}' \
   --block
 RAY_HEAD
@@ -122,13 +148,19 @@ source "$VENV_DIR/bin/activate"
 exec ray start \
   --address="$RAY_ADDRESS" \
   --num-cpus="$SLURM_CPUS_PER_TASK" \
+  --num-gpus="$GPUS_PER_NODE" \
   --resources='{"nemo_worker": 1}' \
   --block
 RAY_WORKER
 chmod +x "$RUN_DIR/ray_worker.sh"
 
+ray_srun_gpu_args=()
+if [[ "$GPUS_PER_NODE" -gt 0 ]]; then
+  ray_srun_gpu_args=(--gpus-per-task="$GPUS_PER_NODE")
+fi
+
 printf '[ray] starting head on %s (%s)\n' "$HEAD_NODE" "$HEAD_IP" | tee "$LOG_DIR/ray-start.log"
-srun --overlap --nodes=1 --ntasks=1 --cpus-per-task="$SLURM_CPUS_PER_TASK" -w "$HEAD_NODE" "$RUN_DIR/ray_head.sh" > "$LOG_DIR/ray-head.log" 2>&1 &
+srun --overlap --nodes=1 --ntasks=1 --cpus-per-task="$SLURM_CPUS_PER_TASK" "${ray_srun_gpu_args[@]}" -w "$HEAD_NODE" "$RUN_DIR/ray_head.sh" > "$LOG_DIR/ray-head.log" 2>&1 &
 
 wait_for_ray_head() {
   for attempt in $(seq 1 120); do
@@ -139,6 +171,9 @@ import ray
 ray.init(address=os.environ["RAY_ADDRESS"], ignore_reinit_error=True)
 resources = ray.cluster_resources()
 assert resources.get("nemo_head", 0) >= 1, resources
+expected_gpus = int(os.environ.get("GPUS_PER_NODE", "0"))
+if expected_gpus:
+    assert resources.get("GPU", 0) >= expected_gpus, resources
 ray.shutdown()
 PY
       return 0
@@ -152,7 +187,7 @@ wait_for_ray_head
 
 for worker_node in "${WORKER_NODES[@]}"; do
   printf '[ray] starting worker on %s\n' "$worker_node" | tee -a "$LOG_DIR/ray-start.log"
-  srun --overlap --nodes=1 --ntasks=1 --cpus-per-task="$SLURM_CPUS_PER_TASK" -w "$worker_node" "$RUN_DIR/ray_worker.sh" > "$LOG_DIR/ray-worker-${worker_node}.log" 2>&1 &
+  srun --overlap --nodes=1 --ntasks=1 --cpus-per-task="$SLURM_CPUS_PER_TASK" "${ray_srun_gpu_args[@]}" -w "$worker_node" "$RUN_DIR/ray_worker.sh" > "$LOG_DIR/ray-worker-${worker_node}.log" 2>&1 &
 done
 
 wait_for_ray() {
@@ -168,6 +203,9 @@ resources = ray.cluster_resources()
 assert len(alive) >= expected_nodes, (len(alive), expected_nodes)
 assert resources.get("nemo_head", 0) >= 1, resources
 assert resources.get("nemo_worker", 0) >= max(1, expected_nodes - 1), resources
+expected_gpus = expected_nodes * int(os.environ.get("GPUS_PER_NODE", "0"))
+if expected_gpus:
+    assert resources.get("GPU", 0) >= expected_gpus, resources
 ray.shutdown()
 PY
       return 0
@@ -189,6 +227,7 @@ export PYTHONPATH="$RUN_DIR/smokes:$SRC_DIR/src:${PYTHONPATH:-}"
 
 mkdir -p "$INPUT_DIR" "$TOKENIZER_DIR"
 
+if [[ "$RUN_TEXT_SMOKES" == "1" ]]; then
 cat > "$INPUT_DIR/doc-1.txt" <<'DOC'
 alpha beta gamma delta epsilon zeta
 DOC
@@ -229,6 +268,25 @@ python "$RUN_DIR/smokes/nemo_graph_ingestor_smoke.py" \
   --input-glob "$INPUT_DIR/*.txt" \
   --tokenizer-dir "$TOKENIZER_DIR" \
   --output-json "$RUN_DIR/nemo_graph_ingestor_smoke.result.json"
+fi
+
+if [[ "$RUN_PDF_PAGE_ELEMENTS_SMOKE" == "1" ]]; then
+  [[ -f "$INPUT_DIR/smoke.pdf" ]]
+  pdf_smoke_args=(
+    --ray-address "$RAY_ADDRESS" \
+    --input-pdf "$INPUT_DIR/smoke.pdf" \
+    --expected-nodes "$ALLOCATED_NODE_COUNT" \
+    --expected-gpus "$((ALLOCATED_NODE_COUNT * GPUS_PER_NODE))" \
+    --output-json "$RUN_DIR/nemo_pdf_page_elements_smoke.result.json"
+  )
+  if [[ "$RUN_PDF_OCRV2_SMOKE" == "1" ]]; then
+    pdf_smoke_args+=(--enable-ocr-v2)
+  fi
+  if [[ "$RUN_PDF_TEXT_EMBED_VDB_SMOKE" == "1" ]]; then
+    pdf_smoke_args+=(--enable-text-embed-vdb --vdb-uri "$RUN_DIR/lancedb" --vdb-table nv-ingest)
+  fi
+  python "$RUN_DIR/smokes/nemo_pdf_page_elements_smoke.py" "${pdf_smoke_args[@]}"
+fi
 RUN_SMOKES
 chmod +x "$RUN_DIR/run_smokes.sh"
 

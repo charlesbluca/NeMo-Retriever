@@ -27,13 +27,18 @@ class NemotronOCRV2(BaseModel):
     - Text recognizer for transcription (pre-norm Transformer)
     - Relational model for layout and reading order analysis
 
-    Supports the upstream ``lang`` selector:
+    Supports the NeMo-Retriever ``lang`` selector:
     - v1
     - v2_english
     - v2_multi
     """
 
-    _VALID_LANG_SELECTORS: frozenset[str] = frozenset({"v1", "v2_english", "v2_multi"})
+    _UPSTREAM_LANG_ALIASES: dict[str, str] = {
+        "v1": "v1",
+        "v2_english": "english",
+        "v2_multi": "multi",
+    }
+    _VALID_LANG_SELECTORS: frozenset[str] = frozenset(_UPSTREAM_LANG_ALIASES)
 
     def __init__(
         self,
@@ -47,6 +52,7 @@ class NemotronOCRV2(BaseModel):
                 "Pass lang='v2_english' for English-only, 'v2_multi' for multilingual, "
                 "or 'v1' to run the v1 model through the v2 package."
             )
+        upstream_lang = self._UPSTREAM_LANG_ALIASES[lang]
         super().__init__()
         configure_global_hf_cache_base()
         try:
@@ -65,9 +71,9 @@ class NemotronOCRV2(BaseModel):
         _NemotronOCRV2 = _nemotron_ocr_pipeline_v2.NemotronOCRV2
 
         if model_dir:
-            self._model = _NemotronOCRV2(model_dir=model_dir, lang=lang)
+            self._model = _NemotronOCRV2(model_dir=model_dir, lang=upstream_lang)
         else:
-            self._model = _NemotronOCRV2(lang=lang)
+            self._model = _NemotronOCRV2(lang=upstream_lang)
         self._enable_trt = os.getenv("RETRIEVER_ENABLE_TORCH_TRT", "").strip().lower() in {"1", "true", "yes", "on"}
         if self._enable_trt and self._model is not None:
             self._maybe_compile_submodules()

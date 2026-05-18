@@ -16,7 +16,7 @@ The chart ships two deployable layers behind feature flags:
 
 - **the service** — always on; one Deployment (standalone) or three
   Deployments (split topology: gateway / realtime / batch), built from
-  `nemo_retriever/Dockerfile --target service`.
+  `Dockerfile --target service`.
 - **the NIMs** — optional, GPU-backed `NIMCache` + `NIMService` custom
   resources (`apiVersion: apps.nvidia.com/v1alpha1`) reconciled by the
   **NVIDIA NIM Operator**. The chart auto-wires the operator-managed
@@ -91,10 +91,28 @@ then override `service.image.repository` / `service.image.tag`:
 ```bash
 # from the repo root:
 docker build \
-    -f nemo_retriever/Dockerfile \
     --target service \
     -t <YOUR_REGISTRY>/nemo-retriever-service:<TAG> .
 docker push <YOUR_REGISTRY>/nemo-retriever-service:<TAG>
+```
+
+Audio and video extraction require the `ffmpeg` and `ffprobe` system
+binaries inside the service image. The Helm chart does not install operating
+system packages at deploy time; it only selects which image Kubernetes runs.
+If you need audio or video extraction, build an ffmpeg-enabled image and point
+the chart at it:
+
+```bash
+# from the repo root:
+docker build \
+    --target service \
+    --build-arg INSTALL_FFMPEG=true \
+    -t <YOUR_REGISTRY>/nemo-retriever-service:<TAG> .
+docker push <YOUR_REGISTRY>/nemo-retriever-service:<TAG>
+
+helm upgrade --install retriever ./nemo_retriever/helm \
+  --set service.image.repository=<YOUR_REGISTRY>/nemo-retriever-service \
+  --set service.image.tag=<TAG>
 ```
 
 ### 2. Install with external NIM endpoints (operator not required)
@@ -175,6 +193,10 @@ short list of knobs you'll touch first.
 | `service.resources.requests`  | `16 / 16Gi`                        | Tune in tandem with `serviceConfig.pipeline.*Workers`. |
 | `service.resources.limits`    | `96 / 96Gi`                        |       |
 | `service.gpu.enabled`         | `false`                            | The service does **not** need a GPU. |
+
+For audio and video extraction, set `service.image.repository` and
+`service.image.tag` to a service image that was built with
+`--build-arg INSTALL_FFMPEG=true`.
 
 ### Service configuration (rendered into `retriever-service.yaml`)
 

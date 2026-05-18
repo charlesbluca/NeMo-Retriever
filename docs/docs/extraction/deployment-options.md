@@ -22,6 +22,12 @@ Use the sections below to pick documentation and deployment options that match y
 
 **Docker Compose (unsupported, developer-only):** [Docker Compose for local development](https://github.com/NVIDIA/NeMo-Retriever/blob/main/nemo_retriever/docker.md) — **not** a substitute for Helm or the published Library charts.
 
+For audio and video extraction, Kubernetes deployments must run a service image
+that already includes the `ffmpeg` and `ffprobe` binaries. The Helm chart
+selects an image through `service.image.repository` and `service.image.tag`,
+but it does not install operating system packages into that image during
+deployment.
+
 ### I want examples and notebooks
 
 1. [Jupyter Notebooks](notebooks.md)

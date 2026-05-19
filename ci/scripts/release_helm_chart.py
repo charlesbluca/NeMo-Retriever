@@ -4,14 +4,12 @@ Usage:
 helm lint nemo_retriever/helm
 
 python ci/scripts/release_helm_chart.py
-    -o nvidian
-    -t nemo-llm
-    -v 26.05-RC1
-    -n nemo-retriever
+    -o <ngc-org> -t <ngc-team> -v <chart-version> -n nemo-retriever \\
     --chart-dir nemo_retriever/helm
 
 Requires: pip install ngcsdk pyyaml
-Env vars: NGC_CLI_API_KEY (required for publish)
+Env vars: NGC_CLI_API_KEY (required for publish). In CI, org/team come from
+NGC_ORG and NGC_TEAM repository secrets (not committed to the repo).
 """
 
 import argparse
@@ -141,15 +139,23 @@ def main() -> None:
         clt.configure(api_key=api_key, org_name=o, team_name=t)
 
         target = f"{o}/{t}/{n}"
-        print(f"Updating chart metadata for {target} ...")
-        clt.registry.chart.update(
-            target=target,
+        metadata_kwargs = dict(
             overview_filepath=overview,
             short_description=d,
             logo=logo,
             display_name=dn,
             publisher="NVIDIA",
         )
+        print(f"Updating chart metadata for {target} ...")
+        try:
+            clt.registry.chart.update(target=target, **metadata_kwargs)
+        except Exception as exc:
+            # First publish of a renamed or new chart (e.g. nemo-retriever) is not in NGC yet.
+            exc_name = type(exc).__name__
+            if exc_name not in ("ResourceNotFoundException", "ChartNotFoundException"):
+                raise
+            print(f"Chart '{target}' not found ({exc_name}); creating registry entry ...")
+            clt.registry.chart.create(target=target, **metadata_kwargs)
 
         print(f"Pushing chart {target}:{v} ...")
         clt.registry.chart.push(

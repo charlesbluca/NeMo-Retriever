@@ -144,14 +144,14 @@ ENV NEMO_RETRIEVER_SERVICE_CONFIG=/etc/nemo-retriever/retriever-service.yaml
 ENV PATH=/opt/retriever_runtime/bin:$PATH
 
 COPY docker/scripts/retriever_service_entrypoint.sh /usr/local/bin/retriever-service-entrypoint
+COPY docker/scripts/retriever_install_ffmpeg.sh /usr/local/sbin/retriever-install-ffmpeg
 
 RUN chmod a+rx /usr/local/bin/uv /usr/local/bin/uvx /usr/local/bin/retriever-service-entrypoint \
+        /usr/local/sbin/retriever-install-ffmpeg \
     && chmod -R a+rX /opt/uv \
     && groupadd -r -g 1000 nemo && useradd -r -u 1000 -g nemo -d /workspace -s /sbin/nologin nemo \
     && printf '%s\n' \
-         'nemo ALL=(root) NOPASSWD: /usr/bin/apt-get update' \
-         'nemo ALL=(root) NOPASSWD: /usr/bin/apt-get install -y --no-install-recommends ffmpeg' \
-         'nemo ALL=(root) NOPASSWD: /usr/bin/apt-get clean' \
+         'nemo ALL=(root) NOPASSWD: /usr/local/sbin/retriever-install-ffmpeg' \
          > /etc/sudoers.d/nemo-ffmpeg \
     && chmod 0440 /etc/sudoers.d/nemo-ffmpeg \
     && visudo -cf /etc/sudoers.d/nemo-ffmpeg \

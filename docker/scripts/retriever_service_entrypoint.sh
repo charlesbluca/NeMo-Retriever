@@ -9,9 +9,7 @@ case "${install_ffmpeg}" in
             echo "INSTALL_FFMPEG=${INSTALL_FFMPEG}; ffmpeg and ffprobe are already available."
         else
             echo "INSTALL_FFMPEG=${INSTALL_FFMPEG}; installing ffmpeg and ffprobe with apt-get."
-            sudo apt-get update
-            sudo apt-get install -y --no-install-recommends ffmpeg
-            sudo apt-get clean
+            sudo /usr/local/sbin/retriever-install-ffmpeg
         fi
         ;;
 esac

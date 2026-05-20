@@ -28,7 +28,7 @@ class ContainerFfmpegInstallTests(TestCase):
         self.assertNotIn("ARG INSTALL_FFMPEG", dockerfile)
         self.assertNotIn("--build-arg INSTALL_FFMPEG=true", dockerfile)
         self.assertNotIn('RUN if [ "${INSTALL_FFMPEG}" = "true" ]', dockerfile)
-        self.assertNotIn("install_ffmpeg.sh", dockerfile)
+        self.assertNotIn("docker/scripts/install_ffmpeg.sh", dockerfile)
         self.assertNotIn("ffmpeg.org/releases", dockerfile)
 
     def test_service_image_can_install_ffmpeg_at_runtime_with_limited_sudo(self) -> None:
@@ -40,12 +40,15 @@ class ContainerFfmpegInstallTests(TestCase):
             "COPY docker/scripts/retriever_service_entrypoint.sh /usr/local/bin/retriever-service-entrypoint",
             dockerfile,
         )
-        self.assertIn('ENTRYPOINT ["/usr/local/bin/retriever-service-entrypoint"]', dockerfile)
-        self.assertIn("nemo ALL=(root) NOPASSWD: /usr/bin/apt-get update", dockerfile)
         self.assertIn(
-            "nemo ALL=(root) NOPASSWD: /usr/bin/apt-get install -y --no-install-recommends ffmpeg",
+            "COPY docker/scripts/retriever_install_ffmpeg.sh /usr/local/sbin/retriever-install-ffmpeg",
             dockerfile,
         )
+        self.assertIn('ENTRYPOINT ["/usr/local/bin/retriever-service-entrypoint"]', dockerfile)
+        self.assertIn("nemo ALL=(root) NOPASSWD: /usr/local/sbin/retriever-install-ffmpeg", dockerfile)
+        self.assertNotIn("NOPASSWD: /usr/bin/apt-get update", dockerfile)
+        self.assertNotIn("NOPASSWD: /usr/bin/apt-get install", dockerfile)
+        self.assertNotIn("NOPASSWD: /usr/bin/apt-get clean", dockerfile)
 
     def test_service_entrypoint_installs_ffmpeg_when_runtime_flag_enabled(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
@@ -58,9 +61,23 @@ class ContainerFfmpegInstallTests(TestCase):
         self.assertIn("INSTALL_FFMPEG:-false", entrypoint)
         self.assertIn("command -v ffmpeg", entrypoint)
         self.assertIn("command -v ffprobe", entrypoint)
-        self.assertIn("sudo apt-get update", entrypoint)
-        self.assertIn("sudo apt-get install -y --no-install-recommends ffmpeg", entrypoint)
+        self.assertIn("sudo /usr/local/sbin/retriever-install-ffmpeg", entrypoint)
+        self.assertNotIn("sudo apt-get update", entrypoint)
+        self.assertNotIn("sudo apt-get install", entrypoint)
         self.assertIn('exec "$@"', entrypoint)
+
+    def test_runtime_ffmpeg_installer_rejects_arguments(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        installer_path = repo_root / "docker/scripts/retriever_install_ffmpeg.sh"
+
+        self.assertTrue(installer_path.is_file(), f"ffmpeg installer not present: {installer_path}")
+        installer = installer_path.read_text(encoding="utf-8")
+
+        self.assertIn('if [ "$#" -ne 0 ]', installer)
+        self.assertIn("/usr/bin/apt-get update", installer)
+        self.assertIn("/usr/bin/apt-get install -y --no-install-recommends ffmpeg", installer)
+        self.assertIn("/usr/bin/apt-get clean", installer)
+        self.assertNotIn("sudo ", installer)
 
     def test_helm_chart_exposes_first_class_runtime_ffmpeg_value(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]

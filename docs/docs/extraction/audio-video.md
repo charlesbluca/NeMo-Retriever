@@ -36,6 +36,11 @@ For audio and video workflows, install system FFmpeg so both binaries are on
 sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
 ```
 
+Images built with `INSTALL_FFMPEG=true` use the FFmpeg package from the base
+Ubuntu image, rather than the previously source-built FFmpeg release. If your
+workflow depends on exact FFmpeg version or codec behavior, verify the package
+inside the image against those requirements.
+
 For containers and Kubernetes deployments, follow the ffmpeg-enabled service
 image flow in the [Helm chart README](https://github.com/NVIDIA/NeMo-Retriever/blob/main/nemo_retriever/helm/README.md#1-service-image)
 or see [troubleshooting](troubleshoot.md#audio-or-video-extraction-reports-missing-media-dependencies).

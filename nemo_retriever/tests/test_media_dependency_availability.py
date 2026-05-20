@@ -66,6 +66,18 @@ class MediaDependencyAvailabilityTests(TestCase):
         self.assertEqual(message, "VideoFrameActor media dependencies are available.")
         self.assertEqual(message, message.rstrip())
 
+    def test_unknown_dependency_names_are_reported_missing(self) -> None:
+        media_interface = _load_media_interface()
+
+        with (
+            patch.object(media_interface, "ffmpeg", SimpleNamespace()),
+            patch.object(media_interface.shutil, "which", return_value="/usr/bin/tool"),
+        ):
+            self.assertEqual(media_interface.missing_media_dependencies(("future-codec",)), ["future-codec"])
+            message = media_interface.media_dependency_error_message("Media processing", required=("future-codec",))
+
+        self.assertIn("missing: future-codec", message)
+
     def test_run_ffmpeg_dependency_error_wraps_internal_label(self) -> None:
         media_interface = _load_media_interface()
 

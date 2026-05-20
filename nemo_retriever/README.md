@@ -459,6 +459,11 @@ For example, with apt-get on Ubuntu:
 sudo apt install -y ffmpeg
 ```
 
+The bundled Docker image uses the FFmpeg package provided by the base Ubuntu
+image when `INSTALL_FFMPEG=true` is set. If your workflow depends on exact
+FFmpeg codec or version behavior, verify the image package against those
+requirements.
+
 The bundled Dockerfile skips ffmpeg/ffprobe by default. To include them in a
 container image, rebuild from the repository root with:
 ```bash

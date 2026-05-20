@@ -70,7 +70,8 @@ def missing_media_dependencies(required: Tuple[str, ...] = MEDIA_DEPENDENCIES) -
     }
     missing: List[str] = []
     for dependency in required:
-        if not checks[dependency]():
+        check = checks.get(dependency)
+        if check is None or not check():
             missing.append(dependency)
     return missing
 

@@ -97,10 +97,30 @@ docker push <YOUR_REGISTRY>/nemo-retriever-service:<TAG>
 ```
 
 Audio and video extraction require the `ffmpeg` and `ffprobe` system
-binaries inside the service image. The Helm chart does not install operating
-system packages at deploy time; it only selects which image Kubernetes runs.
-If you need audio or video extraction, build an ffmpeg-enabled image and point
-the chart at it:
+binaries inside the service container. The bundled service image can install
+them at container startup when you set `service.installFfmpeg=true`, which
+sets `INSTALL_FFMPEG=true` for the image entrypoint:
+
+```bash
+helm upgrade --install retriever ./nemo_retriever/helm \
+  --set service.image.repository=<YOUR_REGISTRY>/nemo-retriever-service \
+  --set service.image.tag=<TAG> \
+  --set service.installFfmpeg=true
+```
+
+Do not also set `INSTALL_FFMPEG` in `service.env`; the chart fails rendering
+when both are configured so the rendered Pod does not contain duplicate
+environment variables.
+
+Runtime installation uses passwordless `sudo` scoped to installing the
+`ffmpeg` package in the service image. The pod must have network egress to the
+Ubuntu package repositories, a writable root filesystem, and a security policy
+that allows sudo/setuid behavior. Do not set
+`service.securityContext.allowPrivilegeEscalation: false` or
+`service.securityContext.readOnlyRootFilesystem: true` for this path.
+
+For locked-down clusters that cannot install packages at startup, build an
+ffmpeg-enabled image and point the chart at it:
 
 ```bash
 # from the repo root:
@@ -190,13 +210,14 @@ short list of knobs you'll touch first.
 | `service.image.repository`    | `localhost:32000/nemo-retriever-service` | Override to a published image. |
 | `service.image.tag`           | `latest`                           |       |
 | `service.replicas`            | `1`                                | Hard cap = 1 while SQLite is the backend. |
+| `service.installFfmpeg`       | `false`                            | Install `ffmpeg`/`ffprobe` at container startup by setting `INSTALL_FFMPEG=true`. Requires network egress, writable root filesystem, and sudo/setuid allowed. |
 | `service.resources.requests`  | `16 / 16Gi`                        | Tune in tandem with `serviceConfig.pipeline.*Workers`. |
 | `service.resources.limits`    | `96 / 96Gi`                        |       |
 | `service.gpu.enabled`         | `false`                            | The service does **not** need a GPU. |
 
-For audio and video extraction, set `service.image.repository` and
-`service.image.tag` to a service image that was built with
-`--build-arg INSTALL_FFMPEG=true`.
+For audio and video extraction, set `service.installFfmpeg=true`, or set
+`service.image.repository` and `service.image.tag` to a service image that was
+built with `--build-arg INSTALL_FFMPEG=true`.
 
 ### Service configuration (rendered into `retriever-service.yaml`)
 

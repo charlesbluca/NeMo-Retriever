@@ -464,8 +464,19 @@ image when `INSTALL_FFMPEG=true` is set. If your workflow depends on exact
 FFmpeg codec or version behavior, verify the image package against those
 requirements.
 
-The bundled Dockerfile skips ffmpeg/ffprobe by default. To include them in a
-container image, rebuild from the repository root with:
+The bundled Dockerfile skips ffmpeg/ffprobe by default. For the service image,
+set `INSTALL_FFMPEG=true` at runtime to install them during container startup:
+
+```bash
+docker run -e INSTALL_FFMPEG=true nemo-retriever-service
+```
+
+For Kubernetes deployments, set `service.installFfmpeg=true` in the Helm chart.
+This runtime install requires network access to package repositories, a
+writable root filesystem, and security policy that allows the image's scoped
+sudo use. For locked-down environments, include ffmpeg/ffprobe in the image by
+rebuilding from the repository root with:
+
 ```bash
 docker build -f Dockerfile --build-arg INSTALL_FFMPEG=true -t nemo-retriever .
 ```

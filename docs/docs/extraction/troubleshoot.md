@@ -41,8 +41,27 @@ On Debian or Ubuntu systems, install system FFmpeg with root privileges:
 sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
 ```
 
-For containers built from this repository, rebuild the image with FFmpeg
-enabled:
+For the bundled service container, set `INSTALL_FFMPEG=true` at runtime to
+install ffmpeg/ffprobe during container startup:
+
+```bash
+docker run -e INSTALL_FFMPEG=true nemo-retriever-service
+```
+
+For Kubernetes or Helm deployments, set the first-class chart value:
+
+```yaml
+service:
+  installFfmpeg: true
+```
+
+This runtime install requires network egress to package repositories, a
+writable root filesystem, and security policy that allows the image's scoped
+sudo use. It will fail if the service container sets
+`allowPrivilegeEscalation: false` or `readOnlyRootFilesystem: true`.
+
+For locked-down clusters that cannot install packages at startup, rebuild the
+image with FFmpeg enabled:
 
 ```bash
 docker build \
@@ -52,10 +71,8 @@ docker build \
   -t nemo-retriever-service:ffmpeg .
 ```
 
-For Kubernetes or Helm deployments, push that image to a registry and set
-`service.image.repository` and `service.image.tag` to the ffmpeg-enabled image.
-The Helm chart does not install `ffmpeg` or `ffprobe` into the service image at
-deploy time.
+Then push that image to a registry and set `service.image.repository` and
+`service.image.tag` to the ffmpeg-enabled image.
 
 ## Can't start new thread error
 

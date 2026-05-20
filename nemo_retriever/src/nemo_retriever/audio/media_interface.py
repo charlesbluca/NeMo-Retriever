@@ -30,7 +30,9 @@ except Exception:
     ffmpeg = None  # type: ignore[assignment]
 
 MANUAL_FFMPEG_INSTALL_COMMAND = "apt-get update && apt-get install -y --no-install-recommends ffmpeg"
+CONTAINER_FFMPEG_INSTALL_ENV = "-e INSTALL_FFMPEG=true"
 CONTAINER_FFMPEG_INSTALL_FLAG = "--build-arg INSTALL_FFMPEG=true"
+HELM_FFMPEG_INSTALL_VALUE = "service.installFfmpeg=true"
 MEDIA_DEPENDENCIES: Tuple[str, ...] = ("ffmpeg-python", "ffmpeg", "ffprobe")
 FFMPEG_DEPENDENCIES: Tuple[str, ...] = ("ffmpeg-python", "ffmpeg")
 FFPROBE_DEPENDENCIES: Tuple[str, ...] = ("ffmpeg-python", "ffprobe")
@@ -93,8 +95,10 @@ def media_dependency_error_message(
         install_hints.append(
             "Install system FFmpeg with "
             f"`{MANUAL_FFMPEG_INSTALL_COMMAND}`. "
-            "For the bundled container, rebuild with "
-            f"`docker build -f Dockerfile {CONTAINER_FFMPEG_INSTALL_FLAG} ...`."
+            "For the bundled service container, run with "
+            f"`docker run {CONTAINER_FFMPEG_INSTALL_ENV} ...` or rebuild with "
+            f"`docker build -f Dockerfile {CONTAINER_FFMPEG_INSTALL_FLAG} ...`. "
+            f"For Helm deployments, set `{HELM_FFMPEG_INSTALL_VALUE}`."
         )
     hints_str = (" " + " ".join(install_hints)) if install_hints else ""
     return f"{component} requires media dependencies; missing: {missing_text}.{hints_str}"

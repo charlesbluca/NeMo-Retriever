@@ -8,9 +8,9 @@ from pathlib import Path
 from unittest import SkipTest, TestCase, main
 
 
-def _read_required_dockerfile(path: Path) -> str:
+def _read_required_file(path: Path) -> str:
     if not path.is_file():
-        raise SkipTest(f"Dockerfile not present in this test environment: {path}")
+        raise SkipTest(f"Required file not present in this test environment: {path}")
     return path.read_text(encoding="utf-8")
 
 
@@ -19,17 +19,69 @@ class ContainerFfmpegInstallTests(TestCase):
         missing_dockerfile = Path("/tmp/nemo-retriever-missing-root/Dockerfile")
 
         with self.assertRaises(SkipTest):
-            _read_required_dockerfile(missing_dockerfile)
+            _read_required_file(missing_dockerfile)
 
     def test_dockerfile_uses_default_off_apt_ffmpeg_build_arg(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
-        dockerfile = _read_required_dockerfile(repo_root / "Dockerfile")
+        dockerfile = _read_required_file(repo_root / "Dockerfile")
 
         self.assertIn("ARG INSTALL_FFMPEG=false", dockerfile)
         self.assertIn("--build-arg INSTALL_FFMPEG=true", dockerfile)
         self.assertIn("apt-get install -y --no-install-recommends ffmpeg", dockerfile)
         self.assertNotIn("install_ffmpeg.sh", dockerfile)
         self.assertNotIn("ffmpeg.org/releases", dockerfile)
+
+    def test_service_image_can_install_ffmpeg_at_runtime_with_limited_sudo(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        dockerfile = _read_required_file(repo_root / "Dockerfile")
+
+        self.assertIn("      sudo \\", dockerfile)
+        self.assertIn(
+            "COPY docker/scripts/retriever_service_entrypoint.sh /usr/local/bin/retriever-service-entrypoint",
+            dockerfile,
+        )
+        self.assertIn('ENTRYPOINT ["/usr/local/bin/retriever-service-entrypoint"]', dockerfile)
+        self.assertIn("nemo ALL=(root) NOPASSWD: /usr/bin/apt-get update", dockerfile)
+        self.assertIn(
+            "nemo ALL=(root) NOPASSWD: /usr/bin/apt-get install -y --no-install-recommends ffmpeg",
+            dockerfile,
+        )
+
+    def test_service_entrypoint_installs_ffmpeg_when_runtime_flag_enabled(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        _read_required_file(repo_root / "Dockerfile")
+        entrypoint_path = repo_root / "docker/scripts/retriever_service_entrypoint.sh"
+
+        self.assertTrue(entrypoint_path.is_file(), f"service entrypoint not present: {entrypoint_path}")
+        entrypoint = entrypoint_path.read_text(encoding="utf-8")
+
+        self.assertIn("INSTALL_FFMPEG:-false", entrypoint)
+        self.assertIn("command -v ffmpeg", entrypoint)
+        self.assertIn("command -v ffprobe", entrypoint)
+        self.assertIn("sudo apt-get update", entrypoint)
+        self.assertIn("sudo apt-get install -y --no-install-recommends ffmpeg", entrypoint)
+        self.assertIn('exec "$@"', entrypoint)
+
+    def test_helm_chart_exposes_first_class_runtime_ffmpeg_value(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        values = _read_required_file(repo_root / "nemo_retriever/helm/values.yaml")
+        deployment = _read_required_file(repo_root / "nemo_retriever/helm/templates/deployment.yaml")
+
+        self.assertIn("installFfmpeg: false", values)
+        self.assertIn("service.installFfmpeg", values)
+        self.assertIn("cannot both set INSTALL_FFMPEG", deployment)
+        self.assertEqual(deployment.count("- name: INSTALL_FFMPEG"), 2)
+        self.assertEqual(deployment.count("{{- if $svc.installFfmpeg }}"), 2)
+
+    def test_helm_docs_describe_runtime_ffmpeg_caveats(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        helm_readme = _read_required_file(repo_root / "nemo_retriever/helm/README.md")
+
+        self.assertIn("service.installFfmpeg", helm_readme)
+        self.assertIn("INSTALL_FFMPEG=true", helm_readme)
+        self.assertIn("allowPrivilegeEscalation: false", helm_readme)
+        self.assertIn("readOnlyRootFilesystem: true", helm_readme)
+        self.assertIn("network egress", helm_readme)
 
 
 if __name__ == "__main__":

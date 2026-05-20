@@ -36,14 +36,18 @@ For audio and video workflows, install system FFmpeg so both binaries are on
 sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
 ```
 
-Images built with `INSTALL_FFMPEG=true` use the FFmpeg package from the base
-Ubuntu image, rather than the previously source-built FFmpeg release. If your
-workflow depends on exact FFmpeg version or codec behavior, verify the package
-inside the image against those requirements.
+Containers use the FFmpeg package from the base Ubuntu image, rather than the
+previously source-built FFmpeg release. If your workflow depends on exact
+FFmpeg version or codec behavior, verify the package inside the image against
+those requirements.
 
-For containers and Kubernetes deployments, follow the ffmpeg-enabled service
-image flow in the [Helm chart README](https://github.com/NVIDIA/NeMo-Retriever/blob/main/nemo_retriever/helm/README.md#1-service-image)
-or see [troubleshooting](troubleshoot.md#audio-or-video-extraction-reports-missing-media-dependencies).
+For Kubernetes deployments, set `service.installFfmpeg=true` in the
+[Helm chart](https://github.com/NVIDIA/NeMo-Retriever/blob/main/nemo_retriever/helm/README.md#1-service-image)
+to install ffmpeg/ffprobe at service startup. This runtime path requires
+package-repository network egress, a writable root filesystem, and a security
+policy that allows the image's scoped sudo use. If your cluster blocks startup
+package installation, build an ffmpeg-enabled service image instead; see
+[troubleshooting](troubleshoot.md#audio-or-video-extraction-reports-missing-media-dependencies).
 
 !!! important
 
@@ -63,12 +67,12 @@ Use the following procedure to run the NIM on your own infrastructure. Self-host
 
 1. Deploy or upgrade NeMo Retriever Library with the Helm chart and enable the ASR / audio components your release requires (Parakeet and related services). Follow [Deploy (Helm chart)](https://github.com/NVIDIA/NeMo-Retriever/blob/main/nemo_retriever/helm/README.md) and [Deployment options](deployment-options.md). Ensure the chart values for your cluster request the ASR NIM.
 
-2. If the service will process audio or video files, deploy an ffmpeg-enabled
-   service image. Use the
+2. If the service will process audio or video files, set
+   `service.installFfmpeg=true` in the Helm chart. If your cluster blocks
+   runtime package installation, use the
    [Helm chart README](https://github.com/NVIDIA/NeMo-Retriever/blob/main/nemo_retriever/helm/README.md#1-service-image)
-   for the build, push, and `service.image.repository` / `service.image.tag`
-   override flow. The chart cannot add `ffmpeg` or `ffprobe` to an image at
-   install time.
+   for the ffmpeg-enabled image build, push, and `service.image.repository` /
+   `service.image.tag` override flow.
 
 3. After the services are running, interact with the pipeline from Python.
 

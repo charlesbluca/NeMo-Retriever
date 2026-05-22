@@ -23,6 +23,7 @@ __all__ = [
     "_have_media_dependencies_for_jpeg_video_pipeline",
     "_make_test_mp4_with_av",
     "_ffprobe_first_stream_type",
+    "_assert_jpeg_bytes",
 ]
 
 
@@ -136,3 +137,11 @@ def _ffprobe_first_stream_type(path: Path) -> str:
     )
     lines = result.stdout.splitlines()
     return lines[0].strip() if lines else ""
+
+
+def _assert_jpeg_bytes(raw: bytes) -> None:
+    import io
+    from PIL import Image
+
+    with Image.open(io.BytesIO(raw)) as image:
+        assert image.format == "JPEG"

@@ -11,7 +11,6 @@ and that ``VideoSplitActor`` emits both audio and frame rows on a synthetic MP4.
 from __future__ import annotations
 
 import base64
-import io
 from pathlib import Path
 
 import pandas as pd
@@ -19,6 +18,7 @@ import pytest
 
 from tests import _have_ffmpeg_binary
 from tests import _have_media_dependencies_for_jpeg_video_pipeline
+from tests import _assert_jpeg_bytes
 from tests import _ffprobe_first_stream_type
 from tests import _make_test_mp4_with_av
 from nemo_retriever.graph.ingestor_runtime import build_graph
@@ -47,13 +47,6 @@ def _collect_node_names(graph: Graph) -> list[str]:
     for root in graph.roots:
         walk(root)
     return names
-
-
-def _assert_jpeg_bytes(raw: bytes) -> None:
-    from PIL import Image
-
-    with Image.open(io.BytesIO(raw)) as image:
-        assert image.format == "JPEG"
 
 
 def test_video_asr_chunk_params_force_audio_demux() -> None:

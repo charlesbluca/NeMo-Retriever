@@ -7,13 +7,13 @@
 from __future__ import annotations
 
 import base64
-import io
 import subprocess
 from pathlib import Path
 
 import pandas as pd
 import pytest
 
+from tests import _assert_jpeg_bytes
 from tests import _have_ffmpeg_binary_for_jpeg_frames
 from nemo_retriever.audio.media_interface import MediaInterface
 from nemo_retriever.params import VideoFrameParams
@@ -43,13 +43,6 @@ def _make_test_mp4_video_only(path: Path, *, duration_sec: int = 5, size: str = 
         str(path),
     ]
     subprocess.run(cmd, check=True)
-
-
-def _assert_jpeg_bytes(raw: bytes) -> None:
-    from PIL import Image
-
-    with Image.open(io.BytesIO(raw)) as image:
-        assert image.format == "JPEG"
 
 
 @pytest.mark.skipif(

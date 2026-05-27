@@ -457,6 +457,8 @@ class RetrieverPipelineBuilder:
                 extra_params=dict(transport.extra_params) if transport.extra_params else None,
                 num_retries=transport.num_retries,
                 timeout=transport.timeout,
+                rag_system_prompt=getattr(transport, "rag_system_prompt", None),
+                rag_system_prompt_prefix=getattr(transport, "rag_system_prompt_prefix", None),
             )
         else:
             operator = QAGenerationOperator(model=model, **kwargs)

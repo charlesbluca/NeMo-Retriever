@@ -38,12 +38,39 @@ Question: {query}
 Answer:"""
 
 
-def _build_rag_prompt(query: str, chunks: list[str]) -> list[dict]:
+def _format_rag_system_prompt(
+    *,
+    rag_system_prompt: Optional[str] = None,
+    rag_system_prompt_prefix: Optional[str] = None,
+) -> str:
+    """Resolve the system prompt used for RAG answer generation."""
+    prompt = (rag_system_prompt if rag_system_prompt is not None else _RAG_SYSTEM_PROMPT).strip()
+    prefix = (rag_system_prompt_prefix or "").strip()
+    if not prefix:
+        return prompt
+    if not prompt:
+        return prefix
+    return f"{prefix}\n{prompt}"
+
+
+def _build_rag_prompt(
+    query: str,
+    chunks: list[str],
+    *,
+    rag_system_prompt: Optional[str] = None,
+    rag_system_prompt_prefix: Optional[str] = None,
+) -> list[dict]:
     """Build the OpenAI-style messages list for a RAG prompt."""
     context = "\n\n---\n\n".join(chunks) if chunks else "(no context retrieved)"
     user_content = _RAG_USER_TEMPLATE.format(context=context, query=query)
     return [
-        {"role": "system", "content": _RAG_SYSTEM_PROMPT},
+        {
+            "role": "system",
+            "content": _format_rag_system_prompt(
+                rag_system_prompt=rag_system_prompt,
+                rag_system_prompt_prefix=rag_system_prompt_prefix,
+            ),
+        },
         {"role": "user", "content": user_content},
     ]
 
@@ -84,6 +111,10 @@ class LiteLLMClient:
         # ``max_tokens=1024`` for captioning/summarization workloads; RAG
         # answers routinely exceed that, so the client overrides it.
         self.sampling = sampling if sampling is not None else LLMInferenceParams(temperature=0.0, max_tokens=4096)
+        self._rag_system_prompt = _format_rag_system_prompt(
+            rag_system_prompt=transport.rag_system_prompt,
+            rag_system_prompt_prefix=transport.rag_system_prompt_prefix,
+        )
 
     @property
     def model(self) -> str:
@@ -103,6 +134,8 @@ class LiteLLMClient:
         extra_params: Optional[dict[str, Any]] = None,
         num_retries: int = 3,
         timeout: float = 120.0,
+        rag_system_prompt: Optional[str] = None,
+        rag_system_prompt_prefix: Optional[str] = None,
     ) -> "LiteLLMClient":
         """Flat-kwarg constructor for zero-churn migration from the old signature.
 
@@ -117,6 +150,8 @@ class LiteLLMClient:
             num_retries=num_retries,
             timeout=timeout,
             extra_params=extra_params or {},
+            rag_system_prompt=rag_system_prompt,
+            rag_system_prompt_prefix=rag_system_prompt_prefix,
         )
         sampling = LLMInferenceParams(
             temperature=temperature,
@@ -169,7 +204,7 @@ class LiteLLMClient:
 
     def generate(self, query: str, chunks: list[str]) -> GenerationResult:
         """Generate an answer for the given query using retrieved chunks as context."""
-        messages = _build_rag_prompt(query, chunks)
+        messages = _build_rag_prompt(query, chunks, rag_system_prompt=self._rag_system_prompt)
         try:
             raw_answer, latency = self.complete(messages)
             answer = strip_think_tags(raw_answer)

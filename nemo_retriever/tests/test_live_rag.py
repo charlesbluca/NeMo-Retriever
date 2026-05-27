@@ -518,6 +518,22 @@ class TestPipelineBuilder:
         assert kwargs.get("temperature") == 0.0
         assert kwargs.get("max_tokens") == 512
 
+    def test_builder_forwards_rag_prompt_from_llm_client(self):
+        r = _make_retriever()
+
+        with patch("nemo_retriever.evaluation.generation.QAGenerationOperator") as mock_gen_cls:
+            mock_gen_cls.return_value = _build_mock_operator("QAGenerationOperator", lambda df, **_: df)
+            llm = _build_fake_llm_client(
+                rag_system_prompt="Use only the retrieved context.",
+                rag_system_prompt_prefix="/no_think",
+            )
+            r.pipeline().generate(llm)
+
+        mock_gen_cls.assert_called_once()
+        kwargs = mock_gen_cls.call_args.kwargs
+        assert kwargs.get("rag_system_prompt") == "Use only the retrieved context."
+        assert kwargs.get("rag_system_prompt_prefix") == "/no_think"
+
     def test_builder_forwards_none_top_p_when_unset(self):
         """Default path (``top_p=None``) must forward ``None`` -- not raise
         and not silently substitute a non-default."""
@@ -617,7 +633,12 @@ def _build_mock_operator(class_name: str, process_fn):
     return op
 
 
-def _build_fake_llm_client(*, top_p: float | None = None):
+def _build_fake_llm_client(
+    *,
+    top_p: float | None = None,
+    rag_system_prompt: str | None = None,
+    rag_system_prompt_prefix: str | None = None,
+):
     """Build a fake LiteLLMClient-shaped object for the builder."""
     transport = SimpleNamespace(
         model="fake-llm/test",
@@ -627,6 +648,10 @@ def _build_fake_llm_client(*, top_p: float | None = None):
         num_retries=3,
         timeout=120.0,
     )
+    if rag_system_prompt is not None:
+        transport.rag_system_prompt = rag_system_prompt
+    if rag_system_prompt_prefix is not None:
+        transport.rag_system_prompt_prefix = rag_system_prompt_prefix
     sampling = SimpleNamespace(temperature=0.0, top_p=top_p, max_tokens=512)
     return SimpleNamespace(transport=transport, sampling=sampling)
 

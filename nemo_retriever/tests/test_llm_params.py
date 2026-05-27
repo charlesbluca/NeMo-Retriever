@@ -223,6 +223,39 @@ class TestLiteLLMCompleteCallKwargs:
         assert kwargs["num_retries"] == 99
 
 
+class TestLiteLLMRAGPrompt:
+    """RAG prompt customization for local OpenAI-compatible answer models."""
+
+    @patch("litellm.completion")
+    def test_generate_prepends_rag_system_prompt_prefix(self, mock_completion):
+        from nemo_retriever.llm.clients import LiteLLMClient
+
+        mock_completion.return_value = _fake_litellm_response("answer")
+        client = LiteLLMClient.from_kwargs(model="m", rag_system_prompt_prefix="/no_think")
+        result = client.generate(query="q", chunks=["ctx"])
+
+        messages = mock_completion.call_args.kwargs["messages"]
+        assert messages[0]["role"] == "system"
+        assert messages[0]["content"].startswith("/no_think\n")
+        assert "precise question-answering assistant" in messages[0]["content"]
+        assert result.answer == "answer"
+
+    @patch("litellm.completion")
+    def test_generate_uses_custom_rag_system_prompt(self, mock_completion):
+        from nemo_retriever.llm.clients import LiteLLMClient
+
+        mock_completion.return_value = _fake_litellm_response("answer")
+        client = LiteLLMClient.from_kwargs(
+            model="m",
+            rag_system_prompt="Use only context.",
+            rag_system_prompt_prefix="/no_think",
+        )
+        client.generate(query="q", chunks=["ctx"])
+
+        messages = mock_completion.call_args.kwargs["messages"]
+        assert messages[0]["content"] == "/no_think\nUse only context."
+
+
 class TestLLMJudgeConstruction:
     """LLMJudge should default to deterministic sampling and expose .model."""
 

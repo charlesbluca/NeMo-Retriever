@@ -15,6 +15,43 @@ requires_workflows = pytest.mark.skipif(
     reason="Workflow files are not present in the Docker image test environment.",
 )
 
+IGNORED_SCAN_DIRS = {
+    ".git",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".venv",
+    ".worktrees",
+    "__pycache__",
+}
+IGNORED_SCAN_SUFFIXES = (".egg-info",)
+
+
+def _legacy_text_offenders(tokens: tuple[str, ...], ignored_files: set[Path]) -> list[str]:
+    ignored_resolved = {path.resolve() for path in ignored_files}
+    offenders: list[str] = []
+
+    for path in REPO_ROOT.rglob("*"):
+        relative = path.relative_to(REPO_ROOT)
+        if (
+            path.resolve() in ignored_resolved
+            or not path.is_file()
+            or any(part in IGNORED_SCAN_DIRS for part in relative.parts)
+            or any(part.endswith(IGNORED_SCAN_SUFFIXES) for part in relative.parts)
+        ):
+            continue
+
+        try:
+            text = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            continue
+
+        for token in tokens:
+            if token in text:
+                offenders.append(f"{relative}: {token}")
+
+    return offenders
+
 
 def _load_workflow(name):
     with (WORKFLOWS / name).open() as f:
@@ -93,34 +130,23 @@ def test_legacy_nv_ingest_compose_stack_is_removed():
     for relative_path in legacy_paths:
         assert not (REPO_ROOT / relative_path).exists(), relative_path
 
+    legacy_tokens = (
+        "docker-compose",
+        "docker compose",
+        "docker.md",
+        "nv-ingest-ms-runtime",
+        "validate_deployment_configs",
+        "skaffold/nv-ingest.skaffold.yaml",
+    )
+    ignored_files = {
+        THIS_FILE,
+        REPO_ROOT / "nemo_retriever" / "tests" / "test_harness_helm_profiles.py",
+    }
+    assert _legacy_text_offenders(legacy_tokens, ignored_files) == []
+
 
 def test_legacy_tools_harness_is_removed():
     assert not (REPO_ROOT / "tools" / "harness").exists()
 
     legacy_tokens = ("tools/harness", "nv_ingest_harness", "nv-ingest-harness")
-    ignored_dirs = {
-        ".git",
-        ".mypy_cache",
-        ".pytest_cache",
-        ".ruff_cache",
-        ".venv",
-        ".worktrees",
-        "__pycache__",
-    }
-    offenders: list[str] = []
-
-    for path in REPO_ROOT.rglob("*"):
-        relative = path.relative_to(REPO_ROOT)
-        if path == THIS_FILE or not path.is_file() or any(part in ignored_dirs for part in relative.parts):
-            continue
-
-        try:
-            text = path.read_text(encoding="utf-8")
-        except UnicodeDecodeError:
-            continue
-
-        for token in legacy_tokens:
-            if token in text:
-                offenders.append(f"{relative}: {token}")
-
-    assert offenders == []
+    assert _legacy_text_offenders(legacy_tokens, {THIS_FILE}) == []

@@ -8,8 +8,9 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKFLOWS = REPO_ROOT / ".github" / "workflows"
 REUSABLE_PRE_COMMIT = "./.github/workflows/reusable-pre-commit.yml"
 REUSABLE_DOCKER_BUILD_AND_TEST = "./.github/workflows/reusable-docker-build-and-test.yml"
+THIS_FILE = Path(__file__).resolve()
 
-pytestmark = pytest.mark.skipif(
+requires_workflows = pytest.mark.skipif(
     not WORKFLOWS.exists(),
     reason="Workflow files are not present in the Docker image test environment.",
 )
@@ -20,6 +21,7 @@ def _load_workflow(name):
         return yaml.safe_load(f)
 
 
+@requires_workflows
 def test_main_and_pr_ci_share_reusable_pre_commit_job():
     for workflow_name in ("ci-main.yml", "ci-pull-request.yml"):
         workflow = _load_workflow(workflow_name)
@@ -31,6 +33,7 @@ def test_main_and_pr_ci_share_reusable_pre_commit_job():
         }
 
 
+@requires_workflows
 def test_reusable_pre_commit_installs_uv_before_pre_commit():
     workflow = _load_workflow("reusable-pre-commit.yml")
     steps = workflow["jobs"]["pre-commit"]["steps"]
@@ -41,6 +44,7 @@ def test_reusable_pre_commit_installs_uv_before_pre_commit():
     assert uses_steps.index("astral-sh/setup-uv@v6") < uses_steps.index("pre-commit/action@v3.0.1")
 
 
+@requires_workflows
 def test_main_ci_uses_single_job_docker_build_and_test():
     workflow = _load_workflow("ci-main.yml")
     jobs = workflow["jobs"]
@@ -67,6 +71,7 @@ def test_main_ci_uses_single_job_docker_build_and_test():
     }
 
 
+@requires_workflows
 def test_legacy_ghcr_push_publish_workflow_is_removed():
     assert not (WORKFLOWS / "docker-build-publish-retriever.yml").exists()
 
@@ -88,7 +93,7 @@ def test_legacy_tools_harness_is_removed():
 
     for path in REPO_ROOT.rglob("*"):
         relative = path.relative_to(REPO_ROOT)
-        if path == Path(__file__) or not path.is_file() or any(part in ignored_dirs for part in relative.parts):
+        if path == THIS_FILE or not path.is_file() or any(part in ignored_dirs for part in relative.parts):
             continue
 
         try:

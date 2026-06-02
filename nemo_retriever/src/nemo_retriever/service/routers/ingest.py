@@ -27,6 +27,7 @@ from typing import Any
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse, Response
+from pydantic import BaseModel, Field
 from starlette.responses import StreamingResponse
 
 from nemo_retriever.service.models.pipeline_spec import PipelineSpec
@@ -77,6 +78,23 @@ _PAGE_THRESHOLD_FOR_BATCH = 5
 # they don't have to wait the production 30 s before the generator
 # re-checks ``request.is_disconnected()`` and exits cleanly.
 SSE_KEEPALIVE_TIMEOUT_S = 30.0
+
+
+class AnswerRequest(BaseModel):
+    query: str
+    top_k: int = Field(default=5, ge=1, le=1000)
+    include_chunks: bool = False
+
+
+class AnswerResponse(BaseModel):
+    query: str
+    answer: str
+    model: str
+    latency_s: float
+    chunk_count: int
+    chunks: list[str] | None = None
+    metadata: list[dict[str, Any]] | None = None
+
 
 logger = logging.getLogger(__name__)
 
@@ -1302,6 +1320,110 @@ async def pipeline_config(request: Request):
             "pool_stats": pool_stats,
             "allowed_overrides": policy.describe(),
         }
+    )
+
+
+# ------------------------------------------------------------------
+# POST /v1/answer  -- vector search + configured LLM generation
+# ------------------------------------------------------------------
+
+
+def _text_from_hit(hit: dict[str, Any]) -> str:
+    value = hit.get("text") or hit.get("content") or hit.get("chunk") or hit.get("page_content")
+    return str(value or "")
+
+
+def _metadata_from_hit(hit: dict[str, Any]) -> dict[str, Any]:
+    return {k: v for k, v in hit.items() if k not in {"text", "content", "chunk", "page_content", "vector"}}
+
+
+@router.post(
+    "/answer",
+    response_model=AnswerResponse,
+    summary="Search ingested documents and generate an answer",
+)
+async def answer(req: AnswerRequest, request: Request) -> Response | AnswerResponse:
+    """Retrieve context from VectorDB and answer with the configured LLM."""
+    import httpx
+
+    config = request.app.state.config
+
+    if not config.vectordb.enabled:
+        raise HTTPException(
+            status_code=404,
+            detail="VectorDB is not enabled in the service configuration.",
+        )
+
+    if not config.llm.enabled:
+        raise HTTPException(
+            status_code=404,
+            detail="LLM answer generation is not enabled in the service configuration.",
+        )
+
+    mode = _mode(request)
+    if mode in ("realtime", "batch"):
+        raise HTTPException(
+            status_code=404,
+            detail="Answer endpoint is not available on worker pods. Use the gateway.",
+        )
+
+    vectordb_url = config.vectordb.vectordb_url.rstrip("/")
+    target = f"{vectordb_url}/v1/query"
+
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            resp = await client.post(target, json={"query": req.query, "top_k": req.top_k})
+    except Exception as exc:
+        logger.exception("Failed to query vectordb at %s for answer generation", target)
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to reach VectorDB service: {type(exc).__name__}: {exc}",
+        )
+
+    if resp.status_code != 200:
+        return Response(content=resp.content, status_code=resp.status_code, media_type="application/json")
+
+    payload = resp.json()
+    result_sets = payload.get("results") or []
+    hits = result_sets[0].get("hits", []) if result_sets else []
+    chunks = [_text_from_hit(hit) for hit in hits]
+    metadata = [_metadata_from_hit(hit) for hit in hits]
+
+    from nemo_retriever.llm.clients import LiteLLMClient
+
+    llm_cfg = config.llm
+    llm = getattr(request.app.state, "answer_llm_client", None)
+    if llm is None:
+        llm = LiteLLMClient.from_kwargs(
+            model=llm_cfg.model,
+            api_base=llm_cfg.api_base,
+            api_key=llm_cfg.api_key,
+            temperature=llm_cfg.temperature,
+            top_p=llm_cfg.top_p,
+            max_tokens=llm_cfg.max_tokens,
+            extra_params=dict(llm_cfg.extra_params),
+            num_retries=llm_cfg.num_retries,
+            timeout=llm_cfg.timeout,
+            rag_system_prompt=llm_cfg.rag_system_prompt,
+            rag_system_prompt_prefix=llm_cfg.rag_system_prompt_prefix,
+        )
+        request.app.state.answer_llm_client = llm
+    gen = await asyncio.to_thread(llm.generate, req.query, chunks)
+    if gen.error:
+        logger.error("LLM answer generation failed for model %s: %s", gen.model, gen.error)
+        raise HTTPException(
+            status_code=502,
+            detail=f"LLM answer generation failed: {gen.error}",
+        )
+
+    return AnswerResponse(
+        query=req.query,
+        answer=gen.answer,
+        model=gen.model,
+        latency_s=gen.latency_s,
+        chunk_count=len(chunks),
+        chunks=chunks if req.include_chunks else None,
+        metadata=metadata if req.include_chunks else None,
     )
 
 

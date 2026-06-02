@@ -626,6 +626,8 @@ def _build_fake_llm_client(*, top_p: float | None = None):
         extra_params={},
         num_retries=3,
         timeout=120.0,
+        rag_system_prompt=None,
+        rag_system_prompt_prefix=None,
     )
     sampling = SimpleNamespace(temperature=0.0, top_p=top_p, max_tokens=512)
     return SimpleNamespace(transport=transport, sampling=sampling)

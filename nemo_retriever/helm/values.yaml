@@ -490,6 +490,35 @@ serviceConfig:
     # Required for audio/video ingestion in service mode (without torch).
     audioGrpcEndpoint: ""
 
+  # Remote LLM endpoint used by POST /v1/answer. When the Super-49B
+  # NIM is enabled under nimOperator.llama_3_3_nemotron_super_49b_v1_5
+  # (and the NIM Operator CRDs exist), the chart auto-wires apiBase to
+  # the in-cluster OpenAI-compatible /v1 endpoint and flips answering on.
+  # Explicit apiBase/model values below always win, which lets operators
+  # point /v1/answer at an external OpenAI-compatible endpoint instead.
+  llm:
+    enabled: false
+    model: "openai/nvidia/llama-3.3-nemotron-super-49b-v1.5"
+    apiBase: ""
+    # Optional Secret reference for external LLM credentials. The Secret is
+    # mounted as NEMO_RETRIEVER_LLM_API_KEY and read by the service CLI, so
+    # the key is not rendered into the retriever-service ConfigMap.
+    apiKeySecret:
+      name: ""
+      key: api_key
+      optional: false
+    temperature: 0.0
+    topP: null
+    maxTokens: 512
+    extraParams: {}
+    numRetries: 3
+    timeout: 180.0
+    ragSystemPrompt: ""
+    # Optional prefix prepended to the RAG system prompt. Leave empty
+    # for external LLMs; the chart auto-wires /no_think when it
+    # resolves the in-cluster Super-49B NIM endpoint.
+    ragSystemPromptPrefix: ""
+
   # Pipeline worker pools.  Workers are abstract dispatchers — sizing
   # depends on whether they do local GPU work or fan out to remote NIMs.
   # For CPU-only NIM-forwarding nodes, higher worker counts are fine.
@@ -805,6 +834,8 @@ nimOperator:
   #     - nemotron_parse                           (Parse v1.2, ≈ 3.5 GiB GPU)
   #     - nemotron_3_nano_omni_30b_a3b_reasoning   (Omni 30B caption NIM,
   #                                                 ≈ 62 GiB BF16 weights)
+  #     - llama_3_3_nemotron_super_49b_v1_5        (Super-49B answer LLM,
+  #                                                 2-GPU tensor-parallel NIM)
   #     - audio                                    (Parakeet ASR)
   #
   # Two flags gate every NIM, so each one is opt-in along two independent
@@ -1004,6 +1035,66 @@ nimOperator:
   # `nimOperator.<key>.enabled: false` to skip one without disabling the
   # whole sub-stack.
   # ---------------------------------------------------------------------------
+
+  # Llama 3.3 Nemotron Super 49B v1.5. Optional answer-generation LLM.
+  #
+  # Disabled by default because it is much larger than the core extraction
+  # NIMs. The default resources request two GPUs and only auto-wire
+  # /v1/answer after explicit opt-in.
+  llama_3_3_nemotron_super_49b_v1_5:
+    enabled: false
+    # NIMService / NIMCache resource name and in-cluster Service DNS label.
+    nimServiceName: llama-3-3-nemotron-super-49b-v1-5
+    image:
+      repository: nvcr.io/nim/nvidia/llama-3.3-nemotron-super-49b-v1.5
+      tag: "2.0.5"
+      pullPolicy: IfNotPresent
+      pullSecrets:
+        - ngc-secret
+    authSecret: ngc-api
+    # Per-NIM NIMCache GPU/profile filter. See `nimOperator.modelProfile`
+    # above for the shape; non-empty REPLACES the chart-wide default.
+    # Cache only the default BF16 2-GPU profile used by the Super-49B
+    # service resources. Override this when deploying a different profile
+    # or GPU topology.
+    modelProfile:
+      profiles:
+        - "1146f49f84dff5dea09f5aa633cc70b92d7d972223d67878c841cd0fbccad4fb"
+    storage:
+      pvc:
+        create: true
+        storageClass: ""
+        size: "250Gi"
+        volumeAccessMode: ReadWriteOnce
+    replicas: 1
+    # Super-49B uses a 2-GPU tensor-parallel profile by default. This
+    # non-empty resources block intentionally replaces
+    # nimOperator.nimServiceGpuLimit.
+    resources:
+      limits:
+        nvidia.com/gpu: 2
+    nodeSelector: {}
+    tolerations: []
+    expose:
+      service:
+        type: ClusterIP
+        port: 8000
+        grpcPort: 8001
+    env:
+      - name: NIM_HTTP_API_PORT
+        value: "8000"
+      - name: NIM_TENSOR_PARALLEL_SIZE
+        value: "2"
+      # Conservative tensor-parallel startup default; override when your
+      # deployment fabric has been validated with custom all-reduce enabled.
+      - name: NIM_PASSTHROUGH_ARGS
+        value: "--disable-custom-all-reduce"
+      # Conservative single-pod tensor-parallel defaults that avoid
+      # transport assumptions across GPU fabrics.
+      - name: NCCL_IB_DISABLE
+        value: "1"
+      - name: NCCL_P2P_DISABLE
+        value: "1"
 
   # Llama Nemotron rerank VL 1B v2 — multimodal reranking NIM.
   #

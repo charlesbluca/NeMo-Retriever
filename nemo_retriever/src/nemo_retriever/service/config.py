@@ -78,6 +78,25 @@ class NimEndpointsConfig(RichModel):
     api_key: str | None = None
 
 
+class LLMConfig(RichModel):
+    """Remote LLM configuration for service-mode RAG answer generation."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    model: str = "openai/nvidia/llama-3.3-nemotron-super-49b-v1.5"
+    api_base: str | None = None
+    api_key: str | None = None
+    temperature: float = 0.0
+    top_p: float | None = None
+    max_tokens: int = 512
+    extra_params: dict[str, Any] = Field(default_factory=dict)
+    num_retries: int = 3
+    timeout: float = 180.0
+    rag_system_prompt: str | None = None
+    rag_system_prompt_prefix: str | None = None
+
+
 class ResourceLimitsConfig(RichModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -265,6 +284,7 @@ class ServiceConfig(RichModel):
     server: ServerConfig = Field(default_factory=ServerConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     nim_endpoints: NimEndpointsConfig = Field(default_factory=NimEndpointsConfig)
+    llm: LLMConfig = Field(default_factory=LLMConfig)
     resources: ResourceLimitsConfig = Field(default_factory=ResourceLimitsConfig)
     auth: AuthConfig = Field(default_factory=AuthConfig)
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)

@@ -97,6 +97,16 @@ spec:
                   name: {{ .Values.ngcApiSecret.name }}
                   key: NGC_API_KEY
                   optional: true
+            {{- with .Values.serviceConfig.llm.apiKeySecret }}
+            {{- if .name }}
+            - name: NEMO_RETRIEVER_LLM_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .name | quote }}
+                  key: {{ .key | default "api_key" | quote }}
+                  optional: {{ .optional | default false }}
+            {{- end }}
+            {{- end }}
             {{- if $svc.installFfmpeg }}
             - name: INSTALL_FFMPEG
               value: "true"
@@ -261,6 +271,16 @@ spec:
                   name: {{ $.Values.ngcApiSecret.name }}
                   key: NGC_API_KEY
                   optional: true
+            {{- with $.Values.serviceConfig.llm.apiKeySecret }}
+            {{- if .name }}
+            - name: NEMO_RETRIEVER_LLM_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .name | quote }}
+                  key: {{ .key | default "api_key" | quote }}
+                  optional: {{ .optional | default false }}
+            {{- end }}
+            {{- end }}
             {{- if $svc.installFfmpeg }}
             - name: INSTALL_FFMPEG
               value: "true"

@@ -976,8 +976,7 @@ fields become hard rejections, not warnings.
 
 ```yaml
 # OpenShift overrides for nemo-retriever Helm chart (restricted-v2 / PSA restricted).
-# Save locally, then:
-# helm install retriever nemo-microservices/nemo-retriever --version 26.5.0 -f <your-file>.yaml ...
+# Save locally, then: helm install retriever ./nemo_retriever/helm -f <your-file>.yaml ...
 
 service:
   podSecurityContext:
@@ -1024,7 +1023,7 @@ oc create secret generic ngc-api -n nemo-retriever \
   --from-literal=NGC_API_KEY="$NGC_API_KEY" \
   --from-literal=NGC_CLI_API_KEY="$NGC_API_KEY"
 
-helm install retriever nemo-microservices/nemo-retriever --version 26.5.0 -n nemo-retriever \
+helm install retriever ./nemo_retriever/helm -n nemo-retriever \
   -f <your-openshift-overrides>.yaml \
   --set ngcImagePullSecret.create=false \
   --set ngcApiSecret.create=false \

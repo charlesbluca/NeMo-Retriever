@@ -572,7 +572,26 @@ def ingest_command(
 @app.command("query")
 def query_command(
     query: str = typer.Argument(..., help="Query text."),
-    top_k: int = typer.Option(10, "--top-k", min=1, help="Number of hits to retrieve."),
+    top_k: int = typer.Option(10, "--top-k", min=1, help="Final number of hits to return."),
+    candidate_k: int | None = typer.Option(
+        None,
+        "--candidate-k",
+        min=1,
+        help=(
+            "Candidate pool size before page deduplication or content-type filtering; "
+            "must be greater than or equal to --top-k."
+        ),
+    ),
+    page_dedup: bool = typer.Option(
+        False,
+        "--page-dedup/--no-page-dedup",
+        help="Collapse hits to unique document pages.",
+    ),
+    content_types: str | None = typer.Option(
+        None,
+        "--content-types",
+        help="Comma-separated content types to keep, such as text,table; untyped hits are excluded.",
+    ),
     lancedb_uri: str = typer.Option(DEFAULT_LANCEDB_URI, "--lancedb-uri", help="LanceDB database URI."),
     table_name: str = typer.Option(DEFAULT_TABLE_NAME, "--table-name", help="LanceDB table name."),
     embed_invoke_url: str | None = typer.Option(None, "--embed-invoke-url", help="Embedding NIM endpoint URL."),
@@ -616,6 +635,9 @@ def query_command(
             hits = query_documents(
                 query,
                 top_k=top_k,
+                candidate_k=candidate_k,
+                page_dedup=page_dedup,
+                content_types=content_types,
                 lancedb_uri=lancedb_uri,
                 table_name=table_name,
                 embed_invoke_url=embed_invoke_url,

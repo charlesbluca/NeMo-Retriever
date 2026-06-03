@@ -324,7 +324,8 @@ The retriever service picks up the in-cluster ASR endpoint when `nimOperator.aud
 | `serviceConfig.llm.apiKeySecret.name`                | `""`    | Optional Secret name for external LLM credentials. Explicit values win; otherwise operator-managed `answer_llm` mounts its `authSecret` as `NEMO_RETRIEVER_LLM_API_KEY` so LiteLLM/OpenAI has a credential value without writing it to the ConfigMap. |
 | `serviceConfig.llm.apiKeySecret.key`                 | `api_key` | Secret key for external LLM credentials. Operator-managed `answer_llm` uses `NGC_API_KEY` from `nimOperator.answer_llm.authSecret` when no explicit LLM Secret is set. |
 | `serviceConfig.llm.model`                           | `""` | Optional explicit LiteLLM model id. Leave empty to inherit `nimOperator.answer_llm.model` when using the operator-managed answer LLM; set it for external endpoints. |
-| `serviceConfig.llm.ragSystemPromptPrefix`           | `""` | Optional explicit RAG prompt prefix. Leave empty to inherit `nimOperator.answer_llm.ragSystemPromptPrefix` when using the operator-managed answer LLM. |
+| `serviceConfig.llm.ragSystemPromptPrefix`           | `""` | Optional explicit RAG prompt prefix. Leave empty unless an endpoint needs model-specific prompt directives. |
+| `serviceConfig.llm.reasoningEnabled`               | `false` | Request-level reasoning toggle for `/v1/answer`. When false, the service adds portable no-reasoning metadata; when true, requests leave reasoning behavior to the LLM endpoint defaults. |
 | `serviceConfig.vectordb.enabled`                  | `true`  | Deploy the LanceDB vectordb Pod. When `true` the chart **requires** a resolvable embed endpoint (see [VectorDB and the embed endpoint](#vectordb-and-the-embed-endpoint)); `helm install` / `helm upgrade` fails fast otherwise. |
 | `serviceConfig.vectordb.lancedbUri`               | `/data/vectordb` | LanceDB on the vectordb Pod's PVC. |
 | `serviceConfig.vectordb.embedModel`               | `nvidia/llama-nemotron-embed-vl-1b-v2` | Passed to vectordb + worker `embed_model_name`. |
@@ -384,13 +385,20 @@ llm:
   enabled: true
   model: "openai/nvidia/llama-3.3-nemotron-super-49b-v1.5"
   api_base: "http://answer-llm:8000/v1"
-  rag_system_prompt_prefix: "/no_think"
+  rag_system_prompt_prefix: null
+  reasoning_enabled: false
 ```
 
 The retriever service then exposes `POST /v1/answer`, which calls the
 VectorDB pod's `/v1/query` endpoint for context and sends those chunks to
-the configured LLM endpoint. The default Super-49B NIMService resources
-request two GPUs (`nvidia.com/gpu: 2`) to match the bundled
+the configured LLM endpoint. The `answer_llm` NIM deployment leaves
+reasoning defaults model-neutral; `/v1/answer` controls reasoning per
+request. With `serviceConfig.llm.reasoningEnabled=false`, the service adds
+both `/no_think` and `chat_template_kwargs.enable_thinking=false` so
+Super-49B and Nemotron 3 Nano both skip reasoning. Set
+`serviceConfig.llm.reasoningEnabled=true` to leave answer requests at the
+LLM endpoint's default reasoning behavior. The default Super-49B NIMService
+resources request two GPUs (`nvidia.com/gpu: 2`) to match the bundled
 tensor-parallel NIM profile. Override `resources`, `modelProfile`, or
 `env` for deployments that use a different profile or hardware topology.
 When `answer_llm` is enabled and no explicit `serviceConfig.llm.apiKeySecret`
@@ -410,7 +418,6 @@ helm upgrade --install retriever ./nemo_retriever/helm \
   --set nimOperator.answer_llm.image.repository=nvcr.io/nim/nvidia/nemotron-3-nano \
   --set nimOperator.answer_llm.image.tag=1.7.0-variant \
   --set nimOperator.answer_llm.model=openai/nvidia/nemotron-3-nano-30b-a3b \
-  --set nimOperator.answer_llm.ragSystemPromptPrefix= \
   --set-json nimOperator.answer_llm.modelProfile='{"profiles":["5f89f01a0af587fd8bae50c611b1f358f92effdb9fb29362e1af0a986e5561c3"]}' \
   --set-json nimOperator.answer_llm.resources='{"limits":{"nvidia.com/gpu":1},"requests":{"nvidia.com/gpu":1}}' \
   --set nimOperator.answer_llm.env[0].name=NIM_HTTP_API_PORT \
@@ -427,8 +434,8 @@ or tags. `nimOperator.answer_llm.model` is the LiteLLM model id used by
 the retriever service; for an OpenAI-compatible in-cluster NIM, keep the
 `openai/` prefix there and set `NIM_SERVED_MODEL_NAME` to the raw model
 name advertised by the NIM. Replace the default Super-49B `modelProfile`,
-`resources`, `env`, and prompt prefix when the target model requires a
-different GPU/profile setup. Leaving `modelProfile` empty preserves NIM
+`resources`, and `env` when the target model requires a different
+GPU/profile setup. Leaving `modelProfile` empty preserves NIM
 Operator auto-discovery, but for Nano it can cache every advertised
 profile on first reconciliation; pin a known-compatible profile when you
 know the target GPU topology.
@@ -464,7 +471,7 @@ pair gated on three conditions ALL holding:
 | `nimOperator.nemotron_3_nano_omni_30b_a3b_reasoning.enabled` | `false` | Omni 30B caption NIM (optional). Set `true` to enable image captioning — see [Image captioning (Omni 30B)](#image-captioning-omni-30b). Default `false` so 26.05 installs do not silently pull ≈ 62 GiB of BF16 weights or claim a second dedicated GPU. Image tag follows the [image tag conventions](#image-tag-conventions). |
 | `nimOperator.answer_llm.enabled`       | `false` | Generic answer-generation LLM NIM (optional; Super-49B defaults). Set `true` to enable `/v1/answer` — see [Answer generation (operator-managed LLM)](#answer-generation-llm). Default `false` so installs do not silently claim answer-generation GPUs. |
 | `nimOperator.answer_llm.model`         | `openai/nvidia/llama-3.3-nemotron-super-49b-v1.5` | LiteLLM/OpenAI model id inherited by `serviceConfig.llm.model` when the operator-managed answer LLM is enabled and no explicit service model is set. |
-| `nimOperator.answer_llm.ragSystemPromptPrefix` | `/no_think` | Prompt prefix inherited by `serviceConfig.llm.ragSystemPromptPrefix` for the operator-managed answer LLM. Override to `""` for models that should receive the plain RAG prompt. |
+| `nimOperator.answer_llm.ragSystemPromptPrefix` | `""` | Optional prompt prefix inherited by `serviceConfig.llm.ragSystemPromptPrefix` only when explicitly set. Leave empty to keep the operator-managed LLM model-neutral and use `serviceConfig.llm.reasoningEnabled` for request-level reasoning control. |
 | `nimOperator.audio.enabled`            | `false` | Parakeet ASR NIM (optional). Set `true` for audio/video transcription; pair with `serviceConfig.nimEndpoints.audioGrpcEndpoint=audio:50051` so the retriever-service can reach it. |
 | `nimOperator.<key>.image.repository`   | `nvcr.io/nim/nvidia/...` | Per-NIM image. |
 | `nimOperator.<key>.image.pullSecrets`  | `[ngc-secret]` | Referenced by the NIMService CR. |

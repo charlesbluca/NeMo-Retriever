@@ -521,9 +521,13 @@ serviceConfig:
     timeout: 180.0
     ragSystemPrompt: ""
     # Optional prefix prepended to the RAG system prompt. Leave empty
-    # for external LLMs; the chart auto-wires /no_think when it
-    # resolves the operator-managed answer LLM endpoint.
+    # unless an endpoint needs model-specific prompt directives.
     ragSystemPromptPrefix: ""
+    # Unified request-level reasoning control for /v1/answer. When false,
+    # the service sends portable no-reasoning metadata understood by both
+    # Super-49B and Nemotron 3 Nano. Set true to leave reasoning behavior
+    # to the LLM endpoint defaults for answer requests.
+    reasoningEnabled: false
 
   # Pipeline worker pools.  Workers are abstract dispatchers — sizing
   # depends on whether they do local GPU work or fan out to remote NIMs.
@@ -1054,10 +1058,11 @@ nimOperator:
     # this operator-managed LLM is enabled and serviceConfig.llm.model is
     # left empty.
     model: "openai/nvidia/llama-3.3-nemotron-super-49b-v1.5"
-    # Prompt prefix to apply when this operator-managed LLM auto-wires
-    # /v1/answer. Super-49B uses /no_think by default; override to ""
-    # for models that should receive the plain RAG system prompt.
-    ragSystemPromptPrefix: "/no_think"
+    # Optional prompt prefix to apply when this operator-managed LLM
+    # auto-wires /v1/answer. Leave empty to keep the LLM deployment and
+    # prompt defaults model-neutral; use serviceConfig.llm.reasoningEnabled
+    # for the portable request-level reasoning toggle.
+    ragSystemPromptPrefix: ""
     image:
       repository: nvcr.io/nim/nvidia/llama-3.3-nemotron-super-49b-v1.5
       tag: "2.0.5"

@@ -79,7 +79,8 @@ class HelmAnswerLLMGenerationTests(TestCase):
         self.assertIn("nvidia.com/gpu: 2", block)
         self.assertIn('size: "250Gi"', block)
         self.assertIn(_SUPER49B_PROFILE, block)
-        self.assertIn('ragSystemPromptPrefix: "/no_think"', block)
+        self.assertIn("reasoningEnabled: false", values)
+        self.assertIn('ragSystemPromptPrefix: ""', block)
 
     def test_default_render_omits_answer_llm_and_disables_llm_answering(self) -> None:
         proc = _helm_template()
@@ -107,7 +108,8 @@ class HelmAnswerLLMGenerationTests(TestCase):
         self.assertIn("NCCL_P2P_DISABLE", proc.stdout)
         self.assertIn(f'api_base: "http://{_ANSWER_LLM_SERVICE}:8000/v1"', proc.stdout)
         self.assertIn(f'model: "{_SUPER49B_MODEL}"', proc.stdout)
-        self.assertIn('rag_system_prompt_prefix: "/no_think"', proc.stdout)
+        self.assertIn("reasoning_enabled: false", proc.stdout)
+        self.assertIn("rag_system_prompt_prefix: null", proc.stdout)
         self.assertIn("enabled: true", proc.stdout)
         self.assertIn("NEMO_RETRIEVER_LLM_API_KEY", proc.stdout)
         self.assertIn('name: "ngc-api"', proc.stdout)
@@ -126,8 +128,6 @@ class HelmAnswerLLMGenerationTests(TestCase):
                 f"nimOperator.answer_llm.image.tag={_NANO_TAG}",
                 "--set",
                 f"nimOperator.answer_llm.model={_NANO_MODEL}",
-                "--set",
-                "nimOperator.answer_llm.ragSystemPromptPrefix=",
                 "--set-json",
                 f'nimOperator.answer_llm.modelProfile={{"profiles":["{_NANO_A100_PROFILE}"]}}',
                 "--set-json",
@@ -178,6 +178,22 @@ class HelmAnswerLLMGenerationTests(TestCase):
         self.assertNotIn(f"name: {_ANSWER_LLM_SERVICE}", proc.stdout)
         self.assertIn('api_base: "http://external-llm:8000/v1"', proc.stdout)
         self.assertIn('model: "openai/custom-answerer"', proc.stdout)
+        self.assertIn("rag_system_prompt_prefix: null", proc.stdout)
+
+    def test_service_llm_reasoning_enabled_can_be_overridden(self) -> None:
+        proc = _helm_template(
+            extra_args=(
+                "--set",
+                "serviceConfig.llm.enabled=true",
+                "--set",
+                "serviceConfig.llm.apiBase=http://external-llm:8000/v1",
+                "--set",
+                "serviceConfig.llm.reasoningEnabled=true",
+            )
+        )
+        _assert_helm_ok(self, proc)
+
+        self.assertIn("reasoning_enabled: true", proc.stdout)
         self.assertIn("rag_system_prompt_prefix: null", proc.stdout)
 
     def test_llm_api_key_secret_renders_env_not_configmap_value(self) -> None:

@@ -95,6 +95,7 @@ class LLMConfig(RichModel):
     timeout: float = 180.0
     rag_system_prompt: str | None = None
     rag_system_prompt_prefix: str | None = None
+    reasoning_enabled: bool = False
 
 
 class ResourceLimitsConfig(RichModel):

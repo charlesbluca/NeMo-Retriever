@@ -85,6 +85,7 @@ llm:
   timeout: {{ .Values.serviceConfig.llm.timeout }}
   rag_system_prompt: {{ if .Values.serviceConfig.llm.ragSystemPrompt }}{{ .Values.serviceConfig.llm.ragSystemPrompt | quote }}{{ else }}null{{ end }}
   rag_system_prompt_prefix: {{ if .llmRagSystemPromptPrefix }}{{ .llmRagSystemPromptPrefix | quote }}{{ else }}null{{ end }}
+  reasoning_enabled: {{ .Values.serviceConfig.llm.reasoningEnabled }}
 
 pipeline:
   realtime_workers: {{ .Values.serviceConfig.pipeline.realtimeWorkers }}

@@ -84,6 +84,7 @@ class AnswerRequest(BaseModel):
     query: str
     top_k: int = Field(default=5, ge=1, le=1000)
     include_chunks: bool = False
+    reasoning_enabled: bool | None = None
 
 
 class AnswerResponse(BaseModel):
@@ -1406,9 +1407,15 @@ async def answer(req: AnswerRequest, request: Request) -> Response | AnswerRespo
             timeout=llm_cfg.timeout,
             rag_system_prompt=llm_cfg.rag_system_prompt,
             rag_system_prompt_prefix=llm_cfg.rag_system_prompt_prefix,
+            reasoning_enabled=llm_cfg.reasoning_enabled,
         )
         request.app.state.answer_llm_client = llm
-    gen = await asyncio.to_thread(llm.generate, req.query, chunks)
+    gen = await asyncio.to_thread(
+        llm.generate,
+        req.query,
+        chunks,
+        reasoning_enabled=req.reasoning_enabled,
+    )
     if gen.error:
         logger.error("LLM answer generation failed for model %s: %s", gen.model, gen.error)
         raise HTTPException(

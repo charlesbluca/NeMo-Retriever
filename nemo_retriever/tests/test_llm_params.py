@@ -148,6 +148,12 @@ class TestLiteLLMClientConstruction:
         client = LiteLLMClient.from_kwargs(model="m")
         assert client.sampling.top_p is None
 
+    def test_from_kwargs_defaults_reasoning_disabled_for_rag_answers(self):
+        from nemo_retriever.llm.clients import LiteLLMClient
+
+        client = LiteLLMClient.from_kwargs(model="m")
+        assert client.transport.reasoning_enabled is False
+
 
 class TestLiteLLMCompleteCallKwargs:
     """Inspect the exact kwargs LiteLLMClient.complete() forwards to litellm."""
@@ -227,18 +233,48 @@ class TestLiteLLMRAGPrompt:
     """RAG prompt customization for local OpenAI-compatible answer models."""
 
     @patch("litellm.completion")
-    def test_generate_prepends_rag_system_prompt_prefix(self, mock_completion):
+    def test_generate_disables_reasoning_with_portable_request_controls(self, mock_completion):
         from nemo_retriever.llm.clients import LiteLLMClient
 
         mock_completion.return_value = _fake_litellm_response("answer")
-        client = LiteLLMClient.from_kwargs(model="m", rag_system_prompt_prefix="/no_think")
+        client = LiteLLMClient.from_kwargs(
+            model="m",
+            extra_params={"chat_template_kwargs": {"reasoning_budget": 32}},
+        )
         result = client.generate(query="q", chunks=["ctx"])
 
-        messages = mock_completion.call_args.kwargs["messages"]
+        kwargs = mock_completion.call_args.kwargs
+        messages = kwargs["messages"]
         assert messages[0]["role"] == "system"
         assert messages[0]["content"].startswith("/no_think\n")
         assert "precise question-answering assistant" in messages[0]["content"]
+        assert kwargs["chat_template_kwargs"] == {"reasoning_budget": 32, "enable_thinking": False}
         assert result.answer == "answer"
+
+    @patch("litellm.completion")
+    def test_generate_leaves_reasoning_request_defaults_when_enabled(self, mock_completion):
+        from nemo_retriever.llm.clients import LiteLLMClient
+
+        mock_completion.return_value = _fake_litellm_response("answer")
+        client = LiteLLMClient.from_kwargs(model="m", reasoning_enabled=True)
+        client.generate(query="q", chunks=["ctx"])
+
+        kwargs = mock_completion.call_args.kwargs
+        messages = kwargs["messages"]
+        assert not messages[0]["content"].startswith("/no_think\n")
+        assert "chat_template_kwargs" not in kwargs
+
+    @patch("litellm.completion")
+    def test_generate_can_override_reasoning_per_call(self, mock_completion):
+        from nemo_retriever.llm.clients import LiteLLMClient
+
+        mock_completion.return_value = _fake_litellm_response("answer")
+        client = LiteLLMClient.from_kwargs(model="m", reasoning_enabled=True)
+        client.generate(query="q", chunks=["ctx"], reasoning_enabled=False)
+
+        kwargs = mock_completion.call_args.kwargs
+        assert kwargs["messages"][0]["content"].startswith("/no_think\n")
+        assert kwargs["chat_template_kwargs"] == {"enable_thinking": False}
 
     @patch("litellm.completion")
     def test_generate_uses_custom_rag_system_prompt(self, mock_completion):

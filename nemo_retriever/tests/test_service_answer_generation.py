@@ -47,7 +47,7 @@ def app_with_answer_config(monkeypatch: pytest.MonkeyPatch, tmp_path):
             api_key="not-needed",
             max_tokens=128,
             timeout=180.0,
-            rag_system_prompt_prefix="/no_think",
+            reasoning_enabled=False,
         ),
     )
     app = create_app(cfg)
@@ -96,7 +96,7 @@ def test_answer_retrieves_from_vectordb_and_generates_with_configured_llm(
     monkeypatch.setattr("httpx.AsyncClient", _FakeAsyncClient)
 
     fake_llm = SimpleNamespace(
-        generate=lambda query, chunks: GenerationResult(
+        generate=lambda query, chunks, *, reasoning_enabled=None: GenerationResult(
             answer=f"{query}: {len(chunks)} chunks",
             latency_s=0.25,
             model="openai/nvidia/llama-3.3-nemotron-super-49b-v1.5",
@@ -137,7 +137,8 @@ def test_answer_retrieves_from_vectordb_and_generates_with_configured_llm(
         num_retries=3,
         timeout=180.0,
         rag_system_prompt=None,
-        rag_system_prompt_prefix="/no_think",
+        rag_system_prompt_prefix=None,
+        reasoning_enabled=False,
     )
 
 
@@ -201,6 +202,46 @@ def test_answer_returns_404_when_vectordb_disabled(monkeypatch: pytest.MonkeyPat
     assert "VectorDB is not enabled" in resp.json()["detail"]
 
 
+def test_answer_forwards_request_reasoning_override(
+    app_with_answer_config: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _FakeResponse:
+        status_code = 200
+        content = json.dumps({"results": [{"hits": [{"text": "context"}]}]}).encode()
+
+        def json(self) -> dict[str, Any]:
+            return json.loads(self.content.decode())
+
+    class _FakeAsyncClient:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        async def post(self, url: str, **kwargs) -> _FakeResponse:
+            return _FakeResponse()
+
+    monkeypatch.setattr("httpx.AsyncClient", _FakeAsyncClient)
+    seen: dict[str, Any] = {}
+
+    def _generate(query, chunks, *, reasoning_enabled=None):
+        seen["reasoning_enabled"] = reasoning_enabled
+        return GenerationResult(answer="ok", latency_s=0.1, model="m")
+
+    fake_llm = SimpleNamespace(generate=_generate)
+
+    with patch("nemo_retriever.llm.clients.LiteLLMClient.from_kwargs", return_value=fake_llm):
+        resp = app_with_answer_config.post("/v1/answer", json={"query": "q", "reasoning_enabled": True})
+
+    assert resp.status_code == 200, resp.text
+    assert seen["reasoning_enabled"] is True
+
+
 def test_answer_returns_502_when_llm_generation_fails(
     app_with_answer_config: TestClient,
     monkeypatch: pytest.MonkeyPatch,
@@ -227,7 +268,7 @@ def test_answer_returns_502_when_llm_generation_fails(
 
     monkeypatch.setattr("httpx.AsyncClient", _FakeAsyncClient)
     fake_llm = SimpleNamespace(
-        generate=lambda query, chunks: GenerationResult(
+        generate=lambda query, chunks, *, reasoning_enabled=None: GenerationResult(
             answer="",
             latency_s=0.0,
             model="openai/nvidia/llama-3.3-nemotron-super-49b-v1.5",

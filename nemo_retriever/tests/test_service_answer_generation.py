@@ -142,6 +142,64 @@ def test_answer_retrieves_from_vectordb_and_generates_with_configured_llm(
     )
 
 
+def test_answer_can_return_metadata_without_chunks(
+    app_with_answer_config: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _FakeResponse:
+        status_code = 200
+        content = json.dumps(
+            {
+                "results": [
+                    {
+                        "hits": [
+                            {
+                                "text": "citation context",
+                                "source": "doc.pdf",
+                                "page_number": 3,
+                            }
+                        ]
+                    }
+                ]
+            }
+        ).encode()
+
+        def json(self) -> dict[str, Any]:
+            return json.loads(self.content.decode())
+
+    class _FakeAsyncClient:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        async def post(self, url: str, **kwargs) -> _FakeResponse:
+            return _FakeResponse()
+
+    monkeypatch.setattr("httpx.AsyncClient", _FakeAsyncClient)
+    seen: dict[str, Any] = {}
+
+    def _generate(query, chunks, *, reasoning_enabled=None):
+        seen["chunks"] = chunks
+        return GenerationResult(answer="answer", latency_s=0.1, model="m")
+
+    fake_llm = SimpleNamespace(generate=_generate)
+
+    with patch("nemo_retriever.llm.clients.LiteLLMClient.from_kwargs", return_value=fake_llm):
+        resp = app_with_answer_config.post("/v1/answer", json={"query": "q", "include_metadata": True})
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["chunk_count"] == 1
+    assert body["chunks"] is None
+    assert body["metadata"] == [{"source": "doc.pdf", "page_number": 3}]
+    assert seen["chunks"] == ["citation context"]
+
+
 def test_answer_returns_404_when_llm_disabled(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     async def _stub_work(_item):
         return 0, []

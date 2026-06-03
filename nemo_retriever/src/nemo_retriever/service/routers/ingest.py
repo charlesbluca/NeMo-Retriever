@@ -85,6 +85,7 @@ class AnswerRequest(BaseModel):
     query: str
     top_k: int = Field(default=5, ge=1, le=1000)
     include_chunks: bool = False
+    include_metadata: bool = False
     reasoning_enabled: bool | None = None
 
 
@@ -1465,7 +1466,7 @@ async def answer(req: AnswerRequest, request: Request) -> Response | AnswerRespo
         latency_s=gen.latency_s,
         chunk_count=len(chunks),
         chunks=chunks if req.include_chunks else None,
-        metadata=metadata if req.include_chunks else None,
+        metadata=metadata if req.include_chunks or req.include_metadata else None,
     )
 
 

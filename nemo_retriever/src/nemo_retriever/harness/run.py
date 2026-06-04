@@ -275,7 +275,11 @@ def _count_failed_pdf_pages(
         failure_key = _service_failure_key(failure)
         filename = document_filenames.get(failure_key, failure_key)
         page_count = filename_to_pages.get(Path(filename).name)
-        pages_failed += page_count if page_count is not None else 1
+        if page_count is None:
+            # Unknown failed PDFs can be unreadable or have ambiguous basenames; count one failed unit
+            # to preserve failure visibility, with pages_processed remaining an approximation.
+            page_count = 1
+        pages_failed += page_count
     return pages_failed
 
 

@@ -1,0 +1,96 @@
+topology:
+  mode: split
+
+  otel:
+    enabled: false
+
+  gateway:
+    resources:
+      requests:
+        cpu: "500m"
+        memory: "1Gi"
+      limits:
+        cpu: "4"
+        memory: "8Gi"
+
+  realtime:
+    resources:
+      requests:
+        cpu: "500m"
+        memory: "2Gi"
+      limits:
+        cpu: "8"
+        memory: "16Gi"
+    hpa:
+      enabled: true
+      minReplicas: 1
+      maxReplicas: 4
+      metrics:
+        queueDepthRatio:
+          enabled: true
+          target: "300m"
+        processingLatencyP95:
+          enabled: true
+          targetSeconds: "10"
+        cpu:
+          enabled: false
+          targetUtilizationPercentage: 60
+      behavior:
+        scaleUp:
+          stabilizationWindowSeconds: 0
+          policies:
+            - type: Pods
+              value: 4
+              periodSeconds: 15
+        scaleDown:
+          stabilizationWindowSeconds: 120
+          policies:
+            - type: Percent
+              value: 100
+              periodSeconds: 60
+
+  batch:
+    resources:
+      requests:
+        cpu: "500m"
+        memory: "2Gi"
+      limits:
+        cpu: "8"
+        memory: "16Gi"
+    gpu:
+      enabled: false
+      count: 0
+    hpa:
+      enabled: false
+
+networkService:
+  type: ClusterIP
+
+ingress:
+  enabled: false
+
+persistence:
+  enabled: false
+
+retrieverResults:
+  enabled: false
+
+service:
+  installFfmpeg: false
+
+serviceConfig:
+  pipeline:
+    realtimeWorkers: 1
+    realtimeQueueSize: 4
+    batchWorkers: 1
+    batchQueueSize: 4
+  vectordb:
+    enabled: false
+  nimEndpoints:
+    pageElementsInvokeUrl: "https://ai.api.nvidia.com/v1/cv/nvidia/nemotron-page-elements-v3"
+    ocrInvokeUrl: "https://ai.api.nvidia.com/v1/cv/nvidia/nemotron-ocr-v1"
+    embedInvokeUrl: "https://integrate.api.nvidia.com/v1/embeddings"
+    embedModel: "nvidia/llama-nemotron-embed-vl-1b-v2"
+
+nims:
+  enabled: false

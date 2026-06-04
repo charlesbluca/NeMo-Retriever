@@ -1,0 +1,12 @@
+{
+  "mode": "worker",
+  "base_url": "http://127.0.0.1:7671",
+  "job_id": "direct-one-pod-skew",
+  "count": 32,
+  "concurrency": 16,
+  "duration_s": 90.285,
+  "status_counts": {
+    "202": 5,
+    "429": 27
+  }
+}

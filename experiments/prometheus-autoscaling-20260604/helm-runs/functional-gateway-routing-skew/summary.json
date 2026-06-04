@@ -1,0 +1,16 @@
+{
+  "label": "gateway-routing-while-one-pod-full",
+  "base_url": "http://127.0.0.1:17680",
+  "job_id": "13a171c66aa64d06bed8d6643c5de982",
+  "count": 12,
+  "concurrency": 12,
+  "duration_s": 20.165,
+  "metrics": {
+    "old": "http://127.0.0.1:17681",
+    "new": "http://127.0.0.1:17682"
+  },
+  "status_counts": {
+    "202": 5,
+    "429": 7
+  }
+}

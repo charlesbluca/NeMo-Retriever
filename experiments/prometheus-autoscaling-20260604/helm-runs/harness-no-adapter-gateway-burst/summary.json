@@ -1,0 +1,12 @@
+{
+  "mode": "gateway",
+  "base_url": "http://127.0.0.1:17670",
+  "job_id": "683b788c9c154e2b91b835d86665d9ce",
+  "count": 16,
+  "concurrency": 8,
+  "duration_s": 10.415,
+  "status_counts": {
+    "202": 5,
+    "429": 11
+  }
+}

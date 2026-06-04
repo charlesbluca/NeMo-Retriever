@@ -1,0 +1,15 @@
+{
+  "label": "direct-old-pod-local-queue",
+  "base_url": "http://127.0.0.1:17681",
+  "job_id": "9ca1b10c670549c5be44cd97fd52a6dd",
+  "count": 5,
+  "concurrency": 5,
+  "duration_s": 8.084,
+  "metrics": {
+    "old": "http://127.0.0.1:17681",
+    "new": "http://127.0.0.1:17682"
+  },
+  "status_counts": {
+    "202": 5
+  }
+}

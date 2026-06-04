@@ -1,0 +1,14 @@
+{
+  "label": "active-worker-invisible",
+  "base_url": "http://127.0.0.1:17680",
+  "job_id": "b4701467cea34994befdb7a74a19eaf4",
+  "count": 1,
+  "concurrency": 1,
+  "duration_s": 55.128,
+  "metrics": {
+    "old": "http://127.0.0.1:17681"
+  },
+  "status_counts": {
+    "202": 1
+  }
+}

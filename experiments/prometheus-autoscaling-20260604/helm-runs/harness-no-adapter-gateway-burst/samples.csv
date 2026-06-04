@@ -1,0 +1,7 @@
+ts,elapsed_s,queue_ratio_avg,queue_ratio_max,queue_depth_sum,queue_depth_max,processing_p95_s,processed_completed,processed_failed
+1780591678.007,0.001,,,,,,,
+1780591680.027,2.020,,,,,,,
+1780591682.033,4.026,,,,,,,
+1780591684.041,6.034,,,,,,,
+1780591686.051,8.045,,,,,,,
+1780591688.062,10.055,,,,,,,

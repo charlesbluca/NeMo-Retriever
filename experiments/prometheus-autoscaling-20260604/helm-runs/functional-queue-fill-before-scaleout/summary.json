@@ -1,0 +1,14 @@
+{
+  "label": "queue-fill-before-scaleout",
+  "base_url": "http://127.0.0.1:17680",
+  "job_id": "e4cbef45249d4f55af6e83686179c6fa",
+  "count": 5,
+  "concurrency": 5,
+  "duration_s": 5.091,
+  "metrics": {
+    "old": "http://127.0.0.1:17681"
+  },
+  "status_counts": {
+    "202": 5
+  }
+}

@@ -1,0 +1,35 @@
+active:
+  dataset: lab_pdf
+  preset: lab
+  run_mode: service
+  manage_service: true
+  keep_up: false
+
+  input_type: pdf
+  recall_required: false
+  evaluation_mode: none
+  service_max_concurrency: 8
+
+  helm_chart: nemo_retriever/helm
+  helm_release: nrl-autoscale-lab
+  helm_namespace: nrl-autoscale-lab
+  helm_values_file: helm-autoscale-lab-values.yaml
+  helm_timeout: 120
+  readiness_timeout: 120
+  helm_service_local_port: 17670
+
+  helm_set:
+    ngcImagePullSecret.create: false
+    ngcImagePullSecret.name: ngc-secret
+    ngcApiSecret.create: false
+    ngcApiSecret.name: ngc-api
+
+presets:
+  lab: {}
+
+datasets:
+  lab_pdf:
+    path: experiments/prometheus-autoscaling-20260604/input
+    input_type: pdf
+    recall_required: false
+    evaluation_mode: none

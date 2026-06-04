@@ -1004,6 +1004,69 @@ def test_run_service_mode_counts_pdf_pages_not_completed_documents(monkeypatch, 
     assert result["summary_metrics"]["pages_per_sec_ingest"] == 3.5
 
 
+def test_run_service_mode_counts_failed_pdf_documents_as_pages(monkeypatch, tmp_path: Path) -> None:
+    dataset_dir = tmp_path / "dataset"
+    dataset_dir.mkdir()
+    input_files = [dataset_dir / name for name in ("a.pdf", "b.pdf", "c.pdf")]
+    for input_file in input_files:
+        input_file.write_bytes(b"%PDF-1.4\n")
+    artifact_dir = tmp_path / "artifacts"
+    artifact_dir.mkdir()
+
+    cfg = HarnessConfig(
+        dataset_dir=str(dataset_dir),
+        dataset_label="tiny",
+        preset="base",
+        run_mode="service",
+        service_url="http://localhost:17670",
+    )
+
+    class FakeResult(list):
+        def __init__(self) -> None:
+            super().__init__(
+                [
+                    {"document_id": "doc-a", "status": "completed"},
+                    {"document_id": "doc-b", "status": "failed"},
+                    {"document_id": "doc-c", "status": "completed"},
+                ]
+            )
+            self.job_id = "job-1"
+            self.document_ids = ["doc-a", "doc-b", "doc-c"]
+            self.document_filenames = {"doc-a": "a.pdf", "doc-b": "b.pdf", "doc-c": "c.pdf"}
+            self.failures = [("doc-b", "boom")]
+            self.elapsed_s = 5.0
+            self.job_status = "partial_success"
+
+    class FakeServiceIngestor:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        def ingest(self) -> FakeResult:
+            return FakeResult()
+
+    import nemo_retriever.service_ingestor as service_ingestor
+
+    monkeypatch.setattr(service_ingestor, "ServiceIngestor", FakeServiceIngestor)
+    monkeypatch.setattr(harness_run, "resolve_input_files", lambda *_args, **_kwargs: input_files)
+    monkeypatch.setattr(harness_run, "_safe_pdf_page_count", lambda path: 5 if path in input_files else None)
+    monkeypatch.setattr(harness_run, "last_commit", lambda: "abc123")
+    monkeypatch.setattr(harness_run, "now_timestr", lambda: "20260305_000000_UTC")
+    monkeypatch.setattr(harness_run, "_collect_run_metadata", lambda: {"host": "builder-01"})
+    monkeypatch.setattr(harness_run, "write_json", lambda _path, _payload: None)
+
+    result = harness_run._run_service_mode(cfg, artifact_dir, run_id="r1")
+
+    assert result["success"] is False
+    assert result["failure_reason"] == "5 page(s) failed during service ingestion"
+    assert result["metrics"]["files"] == 3
+    assert result["metrics"]["pages"] == 15
+    assert result["metrics"]["pages_processed"] == 10
+    assert result["metrics"]["pages_failed"] == 5
+    assert result["metrics"]["pages_per_sec_ingest"] == 3.0
+    assert result["summary_metrics"]["pages"] == 15
+    assert result["summary_metrics"]["pages_per_sec_ingest"] == 3.0
+
+
 def test_run_service_mode_evaluates_beir_recall_against_service(monkeypatch, tmp_path: Path) -> None:
     dataset_dir = tmp_path / "dataset"
     dataset_dir.mkdir()

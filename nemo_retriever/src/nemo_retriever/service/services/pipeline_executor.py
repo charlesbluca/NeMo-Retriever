@@ -498,6 +498,9 @@ def _run_pipeline_in_process(
     pipeline_spec: dict[str, Any] | None = None,
     caption_params_dict: dict[str, Any] | None = None,
     asr_params_dict: dict[str, Any] | None = None,
+    trace_context: dict[str, str] | None = None,
+    pool_label: str | None = None,
+    service_role: str | None = None,
 ) -> tuple[int, list[dict[str, Any]], float]:
     """Execute one pipeline run inside a child process.
 
@@ -517,19 +520,32 @@ def _run_pipeline_in_process(
     When ``pipeline_spec`` is ``None`` (or empty) the behaviour exactly
     matches the original closure-baked pipeline.
     """
+    from nemo_retriever.service import tracing
+
     t0 = time.monotonic()
 
-    ingestor, _extraction_mode, has_per_request_vdb = _build_graph_ingestor_from_spec(
-        filename,
-        payload,
-        extract_params_dict,
-        embed_params_dict,
-        pipeline_spec,
-        caption_params_dict,
-        asr_params_dict,
-    )
+    tracing.configure_tracing(service_role=service_role or "worker-process")
+    span_context = tracing.extract_trace_context(trace_context)
+    span_attributes = {
+        "pool": (pool_label or "").lower(),
+        "document.filename": filename,
+    }
+    try:
+        with tracing.start_span("pipeline.ingest", context=span_context, attributes=span_attributes):
+            ingestor, _extraction_mode, has_per_request_vdb = _build_graph_ingestor_from_spec(
+                filename,
+                payload,
+                extract_params_dict,
+                embed_params_dict,
+                pipeline_spec,
+                caption_params_dict,
+                asr_params_dict,
+            )
 
-    result_df = ingestor.ingest()
+            result_df = ingestor.ingest()
+    finally:
+        tracing.force_flush(timeout_millis=500)
+
     elapsed = time.monotonic() - t0
 
     row_count = len(result_df)
@@ -718,6 +734,9 @@ def _make_work_fn(
         resolved_spec = _resolve_sidecar_in_spec(item.pipeline_spec)
 
         try:
+            from nemo_retriever.service import tracing
+
+            trace_context = dict(tracing.inject_trace_context())
             row_count, result_data, elapsed = await loop.run_in_executor(
                 executor_ref[0],
                 _run_pipeline_in_process,
@@ -729,6 +748,9 @@ def _make_work_fn(
                 resolved_spec,
                 caption_params_dict,
                 asr_params_dict,
+                trace_context,
+                label,
+                config.mode,
             )
         except BrokenProcessPool:
             logger.error(

@@ -470,6 +470,8 @@ topology:
     nodeSelector: {}
     tolerations: []
     affinity: {}
+    podSecurityContext: {}
+    securityContext: {}
     exporter:
       enabled: true
       endpoint: ""

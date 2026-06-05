@@ -268,6 +268,52 @@ def test_zipkin_disabled_with_external_endpoint_still_exports_to_zipkin() -> Non
     assert "zipkin" in config["service"]["pipelines"]["traces"]["exporters"]
 
 
+def test_zipkin_exporter_injection_preserves_custom_exporter_settings() -> None:
+    external_endpoint = "http://external-zipkin:9411/api/v2/spans"
+    docs = _helm_template(
+        extra_args=[
+            "--set-string",
+            "topology.otel.config.exporters.zipkin.endpoint=http://stale-zipkin:9411/api/v2/spans",
+            "--set-string",
+            "topology.otel.config.exporters.zipkin.timeout=15s",
+            "--set",
+            "topology.otel.config.exporters.zipkin.sending_queue.enabled=true",
+            "--set-string",
+            f"topology.zipkin.exporter.endpoint={external_endpoint}",
+        ]
+    )
+    config = yaml.safe_load(_find(docs, "ConfigMap", OTEL_CONFIG_NAME)["data"]["config.yaml"])
+
+    zipkin_exporter = config["exporters"]["zipkin"]
+    assert zipkin_exporter["endpoint"] == external_endpoint
+    assert zipkin_exporter["timeout"] == "15s"
+    assert zipkin_exporter["sending_queue"]["enabled"] is True
+
+
+def test_zipkin_deployment_renders_security_contexts() -> None:
+    docs = _helm_template(
+        extra_args=[
+            "--set-json",
+            'topology.zipkin.podSecurityContext={"runAsNonRoot":true,"seccompProfile":{"type":"RuntimeDefault"}}',
+            "--set-json",
+            (
+                'topology.zipkin.securityContext={"allowPrivilegeEscalation":false,'
+                '"readOnlyRootFilesystem":true,"capabilities":{"drop":["ALL"]}}'
+            ),
+        ]
+    )
+    deployment = _find(docs, "Deployment", ZIPKIN_NAME)
+    pod_spec = deployment["spec"]["template"]["spec"]
+    container = pod_spec["containers"][0]
+
+    assert pod_spec["securityContext"] == {"runAsNonRoot": True, "seccompProfile": {"type": "RuntimeDefault"}}
+    assert container["securityContext"] == {
+        "allowPrivilegeEscalation": False,
+        "readOnlyRootFilesystem": True,
+        "capabilities": {"drop": ["ALL"]},
+    }
+
+
 def test_zipkin_injection_allows_traces_pipeline_without_processors() -> None:
     docs = _helm_template(
         extra_args=[
@@ -320,6 +366,30 @@ def test_zipkin_injection_requires_non_empty_trace_receivers() -> None:
 
         assert proc.returncode != 0
         assert expected in proc.stderr
+
+
+def test_zipkin_injection_requires_referenced_receiver_to_exist() -> None:
+    proc = _helm_template_process(extra_args=["--set-json", "topology.otel.config.receivers.otlp=null"])
+
+    assert proc.returncode != 0
+    assert 'trace receiver "otlp" is missing or empty' in proc.stderr
+    assert "fix topology.otel.config or set topology.zipkin.exporter.enabled=false" in proc.stderr
+
+
+def test_zipkin_injection_requires_referenced_processor_to_exist() -> None:
+    proc = _helm_template_process(extra_args=["--set-json", "topology.otel.config.processors.batch=null"])
+
+    assert proc.returncode != 0
+    assert 'trace processor "batch" is missing or empty' in proc.stderr
+    assert "fix topology.otel.config or set topology.zipkin.exporter.enabled=false" in proc.stderr
+
+
+def test_zipkin_injection_requires_referenced_exporter_to_exist() -> None:
+    proc = _helm_template_process(extra_args=["--set-json", "topology.otel.config.exporters.debug=null"])
+
+    assert proc.returncode != 0
+    assert 'trace exporter "debug" is missing or empty' in proc.stderr
+    assert "fix topology.otel.config or set topology.zipkin.exporter.enabled=false" in proc.stderr
 
 
 def test_otel_config_exports_traces_to_rendered_zipkin_endpoint() -> None:
@@ -403,6 +473,41 @@ def test_per_nim_otel_endpoint_overrides_chart_endpoint() -> None:
     rerank_values = _env_values(_nim_env(rerank))
     assert rerank_values["NIM_OTEL_EXPORTER_OTLP_ENDPOINT"] == "http://per-nim-otel:4318"
     assert rerank_values["TRITON_OTEL_URL"] == "http://per-nim-otel:4318/v1/traces"
+
+
+def test_chart_nim_otel_env_endpoint_drives_triton_url() -> None:
+    docs = _helm_template(["nimOperator.otel.env.NIM_OTEL_EXPORTER_OTLP_ENDPOINT=http://env-otel:4318"])
+
+    page_elements = _find(docs, "NIMService", "nemotron-page-elements-v3")
+    page_values = _env_values(_nim_env(page_elements))
+
+    assert page_values["NIM_OTEL_EXPORTER_OTLP_ENDPOINT"] == "http://env-otel:4318"
+    assert page_values["TRITON_OTEL_URL"] == "http://env-otel:4318/v1/traces"
+
+
+def test_per_nim_otel_env_endpoint_drives_triton_url() -> None:
+    docs = _helm_template(["nimOperator.rerankqa.otel.env.NIM_OTEL_EXPORTER_OTLP_ENDPOINT=http://per-env-otel:4318"])
+
+    rerank = _find(docs, "NIMService", "llama-nemotron-rerank-vl-1b-v2")
+    rerank_values = _env_values(_nim_env(rerank))
+
+    assert rerank_values["NIM_OTEL_EXPORTER_OTLP_ENDPOINT"] == "http://per-env-otel:4318"
+    assert rerank_values["TRITON_OTEL_URL"] == "http://per-env-otel:4318/v1/traces"
+
+
+def test_nim_otel_env_triton_url_override_is_preserved() -> None:
+    docs = _helm_template(
+        [
+            "nimOperator.otel.env.NIM_OTEL_EXPORTER_OTLP_ENDPOINT=http://env-otel:4318",
+            "nimOperator.otel.env.TRITON_OTEL_URL=http://explicit-triton/v1/traces",
+        ]
+    )
+
+    page_elements = _find(docs, "NIMService", "nemotron-page-elements-v3")
+    page_values = _env_values(_nim_env(page_elements))
+
+    assert page_values["NIM_OTEL_EXPORTER_OTLP_ENDPOINT"] == "http://env-otel:4318"
+    assert page_values["TRITON_OTEL_URL"] == "http://explicit-triton/v1/traces"
 
 
 def test_per_nim_otel_opt_out_and_override() -> None:

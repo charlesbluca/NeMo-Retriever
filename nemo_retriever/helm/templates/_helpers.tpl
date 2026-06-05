@@ -249,12 +249,38 @@ Tracing helpers
 {{- if not $traceReceivers -}}
 {{- fail "topology.zipkin.exporter.enabled requires topology.otel.config.service.pipelines.traces with non-empty receivers; provide that traces pipeline or set topology.zipkin.exporter.enabled=false" -}}
 {{- end -}}
+{{- $receivers := get $config "receivers" | default dict -}}
+{{- range $receiverName := $traceReceivers -}}
+{{- $receiver := get $receivers $receiverName -}}
+{{- if not $receiver -}}
+{{- fail (printf "topology.otel.config.service.pipelines.traces trace receiver %q is missing or empty in topology.otel.config.receivers; fix topology.otel.config or set topology.zipkin.exporter.enabled=false" $receiverName) -}}
+{{- end -}}
+{{- end -}}
+{{- $processors := get $config "processors" | default dict -}}
+{{- $traceProcessors := get $traces "processors" | default list -}}
+{{- range $processorName := $traceProcessors -}}
+{{- $processor := get $processors $processorName -}}
+{{- if not $processor -}}
+{{- fail (printf "topology.otel.config.service.pipelines.traces trace processor %q is missing or empty in topology.otel.config.processors; fix topology.otel.config or set topology.zipkin.exporter.enabled=false" $processorName) -}}
+{{- end -}}
+{{- end -}}
 {{- $exporters := get $config "exporters" | default dict -}}
-{{- $_ := set $exporters "zipkin" (dict "endpoint" (include "nemo-retriever.zipkin.endpoint" .)) -}}
+{{- $zipkinExporter := get $exporters "zipkin" | default dict -}}
+{{- if not (kindIs "map" $zipkinExporter) -}}
+{{- fail "topology.otel.config.exporters.zipkin must be a map; fix topology.otel.config or set topology.zipkin.exporter.enabled=false" -}}
+{{- end -}}
+{{- $zipkinExporter = mergeOverwrite (deepCopy $zipkinExporter) (dict "endpoint" (include "nemo-retriever.zipkin.endpoint" .)) -}}
+{{- $_ := set $exporters "zipkin" $zipkinExporter -}}
 {{- $_ := set $config "exporters" $exporters -}}
 {{- $traceExporters := get $traces "exporters" | default list -}}
 {{- if not (has "zipkin" $traceExporters) -}}
 {{- $traceExporters = append $traceExporters "zipkin" -}}
+{{- end -}}
+{{- range $exporterName := $traceExporters -}}
+{{- $exporter := get $exporters $exporterName -}}
+{{- if not $exporter -}}
+{{- fail (printf "topology.otel.config.service.pipelines.traces trace exporter %q is missing or empty in topology.otel.config.exporters; fix topology.otel.config or set topology.zipkin.exporter.enabled=false" $exporterName) -}}
+{{- end -}}
 {{- end -}}
 {{- $_ := set $traces "exporters" $traceExporters -}}
 {{- $_ := set $pipelines "traces" $traces -}}
@@ -348,7 +374,11 @@ Tracing helpers
   "TRITON_OTEL_URL" (printf "%s%s" $endpoint $tritonPath)
   "TRITON_OTEL_RATE" "1"
 -}}
+{{- $explicitTritonUrl := or (hasKey $chartNimOtelEnv "TRITON_OTEL_URL") (hasKey $nimOtelEnv "TRITON_OTEL_URL") -}}
 {{- $otelEnv := mergeOverwrite (deepCopy $defaults) (deepCopy $chartNimOtelEnv) (deepCopy $nimOtelEnv) -}}
+{{- if not $explicitTritonUrl -}}
+{{- $_ := set $otelEnv "TRITON_OTEL_URL" (printf "%s%s" (get $otelEnv "NIM_OTEL_EXPORTER_OTLP_ENDPOINT") $tritonPath) -}}
+{{- end -}}
 {{- range $envName, $envValue := $otelEnv }}
 {{- if not (hasKey $existingEnvNames $envName) }}
 - name: {{ $envName }}

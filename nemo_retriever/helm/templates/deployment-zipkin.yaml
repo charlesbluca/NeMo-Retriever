@@ -16,6 +16,10 @@ spec:
       labels:
         {{- include "nemo-retriever.role.selectorLabels" (dict "context" $ "role" "zipkin") | nindent 8 }}
     spec:
+      {{- with $zipkin.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       {{- with $zipkin.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
@@ -32,6 +36,10 @@ spec:
         - name: zipkin
           image: "{{ $zipkin.image.repository }}:{{ $zipkin.image.tag }}"
           imagePullPolicy: {{ $zipkin.image.pullPolicy }}
+          {{- with $zipkin.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           {{- with $zipkin.javaOpts }}
           env:
             - name: JAVA_OPTS

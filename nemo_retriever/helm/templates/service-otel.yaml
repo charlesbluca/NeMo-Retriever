@@ -1,10 +1,10 @@
 {{- if .Values.topology.otel.enabled }}
-{{- $fullname := include "nemo-retriever.fullname" . -}}
+{{- $otelName := include "nemo-retriever.otel.fullname" . -}}
 {{- $otel := .Values.topology.otel -}}
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ $fullname }}-otel
+  name: {{ $otelName }}
   labels:
     {{- include "nemo-retriever.role.labels" (dict "context" $ "role" "otel") | nindent 4 }}
 spec:

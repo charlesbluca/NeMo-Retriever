@@ -208,11 +208,18 @@ Tracing helpers
 */}}
 
 {{- define "nemo-retriever.zipkin.fullname" -}}
-{{- printf "%s-zipkin" (include "nemo-retriever.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- $base := include "nemo-retriever.fullname" . | trunc 56 | trimSuffix "-" -}}
+{{- printf "%s-zipkin" $base -}}
 {{- end -}}
 
 {{- define "nemo-retriever.otel.fullname" -}}
-{{- printf "%s-otel" (include "nemo-retriever.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- $base := include "nemo-retriever.fullname" . | trunc 58 | trimSuffix "-" -}}
+{{- printf "%s-otel" $base -}}
+{{- end -}}
+
+{{- define "nemo-retriever.otel.config.fullname" -}}
+{{- $base := include "nemo-retriever.fullname" . | trunc 51 | trimSuffix "-" -}}
+{{- printf "%s-otel-config" $base -}}
 {{- end -}}
 
 {{- define "nemo-retriever.zipkin.endpoint" -}}

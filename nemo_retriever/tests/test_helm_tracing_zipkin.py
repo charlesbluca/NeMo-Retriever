@@ -36,7 +36,9 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
-def _helm_template_cmd(extra_sets: list[str] | None = None, extra_args: list[str] | None = None) -> list[str]:
+def _helm_template_cmd(
+    extra_sets: list[str] | None = None, extra_args: list[str] | None = None, release_name: str = RELEASE
+) -> list[str]:
     helm = shutil.which("helm")
     if helm is None:
         raise SkipTest("`helm` binary not available in this environment.")
@@ -44,7 +46,7 @@ def _helm_template_cmd(extra_sets: list[str] | None = None, extra_args: list[str
     cmd = [
         helm,
         "template",
-        RELEASE,
+        release_name,
         str(chart_path),
         "--set",
         "ngcImagePullSecret.create=false",
@@ -68,15 +70,20 @@ def _helm_template_cmd(extra_sets: list[str] | None = None, extra_args: list[str
 
 
 def _helm_template_process(
-    extra_sets: list[str] | None = None, extra_args: list[str] | None = None
+    extra_sets: list[str] | None = None, extra_args: list[str] | None = None, release_name: str = RELEASE
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        _helm_template_cmd(extra_sets=extra_sets, extra_args=extra_args), check=False, capture_output=True, text=True
+        _helm_template_cmd(extra_sets=extra_sets, extra_args=extra_args, release_name=release_name),
+        check=False,
+        capture_output=True,
+        text=True,
     )
 
 
-def _helm_template(extra_sets: list[str] | None = None, extra_args: list[str] | None = None) -> list[dict]:
-    proc = _helm_template_process(extra_sets=extra_sets, extra_args=extra_args)
+def _helm_template(
+    extra_sets: list[str] | None = None, extra_args: list[str] | None = None, release_name: str = RELEASE
+) -> list[dict]:
+    proc = _helm_template_process(extra_sets=extra_sets, extra_args=extra_args, release_name=release_name)
     if proc.returncode != 0:
         raise AssertionError(f"`helm template` failed:\nSTDOUT:\n{proc.stdout}\nSTDERR:\n{proc.stderr}")
     return [doc for doc in yaml.safe_load_all(proc.stdout) if doc]
@@ -108,6 +115,82 @@ def _env_values(env: list[dict]) -> dict[str, str]:
 def _assert_unique_env_names(env: list[dict]) -> None:
     names = [item["name"] for item in env]
     assert len(names) == len(set(names))
+
+
+def _container_names(doc: dict) -> set[str]:
+    return {container.get("name") for container in doc["spec"]["template"]["spec"].get("containers", [])}
+
+
+def _find_deployment_by_container(docs: list[dict], container_name: str) -> dict:
+    for doc in docs:
+        if doc.get("kind") == "Deployment" and container_name in _container_names(doc):
+            return doc
+    raise AssertionError(f"Rendered Deployment with container {container_name!r} not found.")
+
+
+def _find_service_by_port_name(docs: list[dict], port_name: str) -> dict:
+    for doc in docs:
+        if doc.get("kind") != "Service":
+            continue
+        port_names = {port.get("name") for port in doc.get("spec", {}).get("ports", [])}
+        if port_name in port_names:
+            return doc
+    raise AssertionError(f"Rendered Service with port {port_name!r} not found.")
+
+
+def _find_configmap_with_key(docs: list[dict], key: str) -> dict:
+    for doc in docs:
+        if doc.get("kind") == "ConfigMap" and key in doc.get("data", {}):
+            return doc
+    raise AssertionError(f"Rendered ConfigMap with key {key!r} not found.")
+
+
+def _find_by_component(docs: list[dict], kind: str, component: str) -> dict:
+    for doc in docs:
+        if (
+            doc.get("kind") == kind
+            and doc.get("metadata", {}).get("labels", {}).get("app.kubernetes.io/component") == component
+        ):
+            return doc
+    raise AssertionError(f"Rendered {kind} with component {component!r} not found.")
+
+
+def test_long_release_preserves_tracing_name_suffixes_and_references() -> None:
+    long_release = "trace-parity-long-release-name-abcdefghijklmnopqrst"
+    docs = _helm_template(release_name=long_release)
+
+    otel_deployment = _find_deployment_by_container(docs, "otel-collector")
+    zipkin_deployment = _find_deployment_by_container(docs, "zipkin")
+    service_deployment = _find_deployment_by_container(docs, "nemo-retriever")
+    otel_service = _find_service_by_port_name(docs, "otlp-grpc")
+    zipkin_service = _find_by_component(docs, "Service", "zipkin")
+    otel_config = _find_configmap_with_key(docs, "config.yaml")
+
+    deployment_names = [doc["metadata"]["name"] for doc in docs if doc.get("kind") == "Deployment"]
+    service_names = [doc["metadata"]["name"] for doc in docs if doc.get("kind") == "Service"]
+    assert len(deployment_names) == len(set(deployment_names))
+    assert len(service_names) == len(set(service_names))
+
+    otel_name = otel_deployment["metadata"]["name"]
+    zipkin_name = zipkin_deployment["metadata"]["name"]
+    relevant_names = {
+        otel_name,
+        otel_service["metadata"]["name"],
+        otel_config["metadata"]["name"],
+        zipkin_name,
+        zipkin_service["metadata"]["name"],
+    }
+    assert all(len(name) <= 63 for name in relevant_names)
+    assert otel_name.endswith("-otel")
+    assert otel_service["metadata"]["name"] == otel_name
+    assert zipkin_name.endswith("-zipkin")
+    assert zipkin_service["metadata"]["name"] == zipkin_name
+
+    volume_config_name = otel_deployment["spec"]["template"]["spec"]["volumes"][0]["configMap"]["name"]
+    assert volume_config_name == otel_config["metadata"]["name"]
+
+    service_env = _env_values(_deployment_env(service_deployment))
+    assert service_env["OTEL_EXPORTER_OTLP_ENDPOINT"] == f"http://{otel_name}:4317"
 
 
 def test_default_renders_zipkin_deployment_and_service() -> None:

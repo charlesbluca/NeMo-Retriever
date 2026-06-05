@@ -90,6 +90,39 @@ def _sanitize_result_data(df: Any) -> list[dict[str, Any]]:
     return dataframe_to_transport_records(df)
 
 
+def _pipeline_tracing() -> Any | None:
+    try:
+        from nemo_retriever.service import tracing
+    except Exception:
+        logger.debug("Service tracing helper unavailable for pipeline execution", exc_info=True)
+        return None
+    return tracing
+
+
+def _capture_trace_context_for_pipeline() -> dict[str, str]:
+    tracing = _pipeline_tracing()
+    if tracing is None:
+        return {}
+    try:
+        return dict(tracing.inject_trace_context())
+    except Exception as exc:
+        logger.warning("OpenTelemetry trace context capture failed for pipeline execution: %s", exc)
+        return {}
+
+
+def _extract_trace_context_for_pipeline(trace_context: dict[str, str] | None) -> Any | None:
+    if not trace_context:
+        return None
+    tracing = _pipeline_tracing()
+    if tracing is None:
+        return None
+    try:
+        return tracing.extract_trace_context(trace_context)
+    except Exception as exc:
+        logger.warning("OpenTelemetry trace context extraction failed for pipeline execution: %s", exc)
+        return None
+
+
 # ── Process pool registry ────────────────────────────────────────────
 
 _process_executors: list[ProcessPoolExecutor] = []
@@ -525,7 +558,7 @@ def _run_pipeline_in_process(
     t0 = time.monotonic()
 
     tracing.configure_tracing(service_role=service_role or "worker-process")
-    span_context = tracing.extract_trace_context(trace_context)
+    span_context = _extract_trace_context_for_pipeline(trace_context)
     span_attributes = {
         "pool": (pool_label or "").lower(),
         "document.filename": filename,
@@ -734,9 +767,7 @@ def _make_work_fn(
         resolved_spec = _resolve_sidecar_in_spec(item.pipeline_spec)
 
         try:
-            from nemo_retriever.service import tracing
-
-            trace_context = dict(tracing.inject_trace_context())
+            trace_context = _capture_trace_context_for_pipeline()
             row_count, result_data, elapsed = await loop.run_in_executor(
                 executor_ref[0],
                 _run_pipeline_in_process,

@@ -10,7 +10,9 @@ from typing import Any
 
 import numpy as np
 import pytest
+import requests
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor, SpanExportResult
+from opentelemetry.trace import StatusCode
 
 from nemo_retriever.api.internal.primitives.nim.nim_client import NimClient as InternalNimClient
 from nemo_retriever.nim.nim import NIMClient as HttpNIMClient
@@ -444,3 +446,50 @@ def test_internal_dynamic_batching_keeps_different_trace_contexts_in_separate_ba
     assert client._request_queue.qsize() == 1
     assert first_future.done() is False
     assert second_future.done() is False
+
+
+def test_post_with_retries_marks_final_500_span_as_error_without_secrets(
+    monkeypatch: pytest.MonkeyPatch,
+    exported_spans: list[Any],
+) -> None:
+    class _Response:
+        status_code = 500
+        text = "server body with secret-token"
+
+        def raise_for_status(self) -> None:
+            raise requests.HTTPError("HTTP 500 from upstream", response=self)
+
+        def json(self) -> dict[str, bool]:
+            return {"ok": False}
+
+    def _post(*args: Any, **kwargs: Any) -> _Response:
+        return _Response()
+
+    monkeypatch.setattr("nemo_retriever.nim.nim.requests.post", _post)
+
+    with pytest.raises(requests.HTTPError):
+        _post_with_retries(
+            invoke_url="http://nim.example/v1/infer?api_key=secret-token",
+            payload={
+                "input": [
+                    {"Authorization": "Bearer secret-token", "secret": "payload"},
+                ],
+            },
+            headers={"Authorization": "Bearer secret-token"},
+            timeout_s=10,
+            max_retries=1,
+            max_429_retries=1,
+        )
+
+    span = _span_by_name(exported_spans, "nim.http.post")
+    attrs = dict(span.attributes)
+    assert attrs["http.status_code"] == 500
+    assert (
+        span.status.status_code == StatusCode.ERROR
+        or attrs.get("error.type") == "HTTP 500"
+    )
+    attr_text = repr(attrs)
+    assert "secret-token" not in attr_text
+    assert "Bearer" not in attr_text
+    assert "payload" not in attr_text
+    assert "server body" not in attr_text

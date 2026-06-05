@@ -56,6 +56,24 @@ def _set_span_attribute(span: Any, key: str, value: Any) -> None:
         logger.debug("Ignoring NIM tracing span attribute failure", exc_info=True)
 
 
+def _set_span_error(span: Any, exc_or_status: Any) -> None:
+    if isinstance(exc_or_status, int):
+        error_type = f"HTTP {exc_or_status}"
+    else:
+        error_type = type(exc_or_status).__name__
+    _set_span_attribute(span, "error.type", error_type)
+
+    setter = getattr(span, "set_status", None)
+    if setter is None:
+        return
+    try:
+        from opentelemetry.trace import Status, StatusCode
+
+        setter(Status(StatusCode.ERROR))
+    except Exception:
+        logger.debug("Ignoring NIM tracing span status failure", exc_info=True)
+
+
 def _safe_endpoint_attribute(invoke_url: str) -> str:
     parts = urlsplit(str(invoke_url))
     if not parts.scheme or not parts.netloc:
@@ -149,9 +167,15 @@ def _post_with_retries(
                         service_tracing.inject_trace_context(request_headers)
                     except Exception as exc:
                         logger.warning("OpenTelemetry trace propagation failed for NIM request: %s", exc)
-                response = requests.post(invoke_url, headers=request_headers, json=payload, timeout=float(timeout_s))
+                try:
+                    response = requests.post(invoke_url, headers=request_headers, json=payload, timeout=float(timeout_s))
+                except (requests.Timeout, requests.RequestException) as exc:
+                    _set_span_error(span, exc)
+                    raise
                 status_code = response.status_code
                 _set_span_attribute(span, "http.status_code", status_code)
+                if status_code >= 400:
+                    _set_span_error(span, status_code)
 
             if status_code == 429:
                 retries_429 += 1

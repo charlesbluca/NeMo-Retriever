@@ -6,6 +6,9 @@
 
 from __future__ import annotations
 
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
 from typing import Any
 
 import pandas as pd
@@ -90,3 +93,85 @@ def test_run_pipeline_in_process_links_child_span_to_parent_trace(
     assert f"{pipeline_span.context.trace_id:032x}" == parent_trace_id
     assert pipeline_span.attributes["pool"] == "realtime"
     assert pipeline_span.attributes["document.filename"] == "contract.pdf"
+
+
+def test_run_pipeline_in_process_continues_when_trace_extraction_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _fake_build_graph_ingestor_from_spec(*args: Any, **kwargs: Any) -> tuple[_FakeIngestor, str, bool]:
+        return _FakeIngestor(), "pdf", False
+
+    def _raise_extract(*args: Any, **kwargs: Any) -> None:
+        raise RuntimeError("bad carrier")
+
+    monkeypatch.setattr(
+        pipeline_executor,
+        "_build_graph_ingestor_from_spec",
+        _fake_build_graph_ingestor_from_spec,
+    )
+    monkeypatch.setattr(tracing, "extract_trace_context", _raise_extract)
+
+    row_count, result_data, _elapsed = pipeline_executor._run_pipeline_in_process(
+        "contract.pdf",
+        b"%PDF-1.4\n",
+        {},
+        None,
+        trace_context={"traceparent": "invalid"},
+        pool_label="Realtime",
+        service_role="standalone",
+    )
+
+    assert row_count == 1
+    assert result_data == [{"document_id": "doc-1", "text": "chunk"}]
+
+
+def test_make_work_fn_continues_when_trace_capture_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Params:
+        def model_dump(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+            return {}
+
+    class _WorkItem:
+        id = "item-1"
+        filename = "contract.pdf"
+        payload = b"%PDF-1.4\n"
+        pipeline_spec = None
+
+    def _fake_process_pool_executor(*args: Any, **kwargs: Any) -> ThreadPoolExecutor:
+        return ThreadPoolExecutor(max_workers=1)
+
+    def _raise_inject(*args: Any, **kwargs: Any) -> None:
+        raise RuntimeError("inject failed")
+
+    def _fake_run_pipeline_in_process(*args: Any, **kwargs: Any) -> tuple[int, list[dict[str, Any]], float]:
+        return 1, [{"document_id": "doc-1", "text": "chunk"}], 0.01
+
+    monkeypatch.setattr(pipeline_executor, "build_extract_params", lambda nim: _Params())
+    monkeypatch.setattr(pipeline_executor, "build_embed_params", lambda nim: None)
+    monkeypatch.setattr(pipeline_executor, "build_caption_params", lambda nim: None)
+    monkeypatch.setattr(pipeline_executor, "build_asr_params", lambda nim: None)
+    monkeypatch.setattr(pipeline_executor, "ProcessPoolExecutor", _fake_process_pool_executor)
+    monkeypatch.setattr(pipeline_executor, "_run_pipeline_in_process", _fake_run_pipeline_in_process)
+    monkeypatch.setattr(tracing, "inject_trace_context", _raise_inject)
+
+    config = SimpleNamespace(
+        nim_endpoints=SimpleNamespace(model_dump=lambda *args, **kwargs: {}),
+        vectordb=SimpleNamespace(enabled=False, vectordb_url=None),
+        pipeline=SimpleNamespace(
+            realtime_workers=1,
+            batch_workers=1,
+            realtime_queue_size=1,
+            batch_queue_size=1,
+        ),
+        mode="standalone",
+    )
+
+    work = pipeline_executor._make_work_fn(config, label="Realtime")
+    try:
+        row_count, result_data = asyncio.run(work(_WorkItem()))
+    finally:
+        pipeline_executor.shutdown_process_executors()
+
+    assert row_count == 1
+    assert result_data == [{"document_id": "doc-1", "text": "chunk"}]

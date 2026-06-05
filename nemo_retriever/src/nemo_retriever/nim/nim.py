@@ -6,12 +6,43 @@ from __future__ import annotations
 
 import logging
 import time
+from contextlib import nullcontext
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from urllib.parse import urlsplit, urlunsplit
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import requests
 
 logger = logging.getLogger(__name__)
+
+
+def _service_tracing() -> Any | None:
+    try:
+        from nemo_retriever.service import tracing
+    except Exception:
+        logger.debug("Service tracing helper unavailable for NIM request", exc_info=True)
+        return None
+    return tracing
+
+
+def _set_span_attribute(span: Any, key: str, value: Any) -> None:
+    setter = getattr(span, "set_attribute", None)
+    if setter is None:
+        return
+    try:
+        setter(key, value)
+    except Exception:
+        logger.debug("Ignoring NIM tracing span attribute failure", exc_info=True)
+
+
+def _safe_endpoint_attribute(invoke_url: str) -> str:
+    parts = urlsplit(str(invoke_url))
+    if not parts.scheme or not parts.netloc:
+        return str(invoke_url).split("?", 1)[0].split("#", 1)[0]
+    netloc = parts.hostname or ""
+    if parts.port is not None:
+        netloc = f"{netloc}:{parts.port}"
+    return urlunsplit((parts.scheme, netloc, parts.path, "", ""))
 
 
 def _chunk_ranges(total: int, chunk_size: int) -> List[Tuple[int, int]]:
@@ -71,10 +102,32 @@ def _post_with_retries(
     attempt = 0
     retries_429 = 0
 
+    service_tracing = _service_tracing()
+
     while attempt < int(max_retries):
+        request_headers = dict(headers)
         try:
-            response = requests.post(invoke_url, headers=headers, json=payload, timeout=float(timeout_s))
-            status_code = response.status_code
+            span_context = (
+                service_tracing.start_span(
+                    "nim.http.post",
+                    attributes={
+                        "http.method": "POST",
+                        "nim.endpoint": _safe_endpoint_attribute(invoke_url),
+                        "retry.attempt": attempt,
+                    },
+                )
+                if service_tracing is not None
+                else nullcontext()
+            )
+            with span_context as span:
+                if service_tracing is not None:
+                    try:
+                        service_tracing.inject_trace_context(request_headers)
+                    except Exception as exc:
+                        logger.warning("OpenTelemetry trace propagation failed for NIM request: %s", exc)
+                response = requests.post(invoke_url, headers=request_headers, json=payload, timeout=float(timeout_s))
+                status_code = response.status_code
+                _set_span_attribute(span, "http.status_code", status_code)
 
             if status_code == 429:
                 retries_429 += 1

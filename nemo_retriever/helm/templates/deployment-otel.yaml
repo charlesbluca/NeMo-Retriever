@@ -1,7 +1,10 @@
-{{- if .Values.topology.otel.enabled }}
+{{- $otel := .Values.topology.otel | default dict -}}
+{{- if not (kindIs "map" $otel) -}}
+{{- fail "topology.otel must be a map" -}}
+{{- end -}}
+{{- if get $otel "enabled" }}
 {{- $otelName := include "nemo-retriever.otel.fullname" . -}}
 {{- $otelConfigName := include "nemo-retriever.otel.configMapName" . -}}
-{{- $otel := .Values.topology.otel -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:

@@ -228,16 +228,41 @@ Tracing helpers
 
 
 {{- define "nemo-retriever.zipkin.endpoint" -}}
-{{- if .Values.topology.zipkin.exporter.endpoint -}}
-{{- tpl .Values.topology.zipkin.exporter.endpoint . -}}
+{{- $zipkin := .Values.topology.zipkin | default dict -}}
+{{- if not (kindIs "map" $zipkin) -}}
+{{- fail "topology.zipkin must be a map" -}}
+{{- end -}}
+{{- $exporter := get $zipkin "exporter" | default dict -}}
+{{- if not (kindIs "map" $exporter) -}}
+{{- fail "topology.zipkin.exporter must be a map" -}}
+{{- end -}}
+{{- $endpoint := get $exporter "endpoint" -}}
+{{- if $endpoint -}}
+{{- tpl $endpoint . -}}
 {{- else -}}
-{{- printf "http://%s:%v/api/v2/spans" (include "nemo-retriever.zipkin.fullname" .) .Values.topology.zipkin.port -}}
+{{- printf "http://%s:%v/api/v2/spans" (include "nemo-retriever.zipkin.fullname" .) (get $zipkin "port") -}}
 {{- end -}}
 {{- end -}}
 
 {{- define "nemo-retriever.otel.config" -}}
-{{- $config := deepCopy .Values.topology.otel.config -}}
-{{- $zipkinInjectionEnabled := and .Values.topology.zipkin.exporter.enabled (or .Values.topology.zipkin.enabled .Values.topology.zipkin.exporter.endpoint) -}}
+{{- $otel := .Values.topology.otel | default dict -}}
+{{- if not (kindIs "map" $otel) -}}
+{{- fail "topology.otel must be a map" -}}
+{{- end -}}
+{{- $configValue := get $otel "config" -}}
+{{- if not (kindIs "map" $configValue) -}}
+{{- fail "topology.otel.config must be a map when topology.otel.enabled=true" -}}
+{{- end -}}
+{{- $config := deepCopy $configValue -}}
+{{- $zipkin := .Values.topology.zipkin | default dict -}}
+{{- if not (kindIs "map" $zipkin) -}}
+{{- fail "topology.zipkin must be a map" -}}
+{{- end -}}
+{{- $zipkinExporterConfig := get $zipkin "exporter" | default dict -}}
+{{- if not (kindIs "map" $zipkinExporterConfig) -}}
+{{- fail "topology.zipkin.exporter must be a map" -}}
+{{- end -}}
+{{- $zipkinInjectionEnabled := and (get $zipkinExporterConfig "enabled") (or (get $zipkin "enabled") (get $zipkinExporterConfig "endpoint")) -}}
 {{- if $zipkinInjectionEnabled -}}
 {{- $service := get $config "service" | default dict -}}
 {{- $pipelines := get $service "pipelines" | default dict -}}
@@ -291,10 +316,14 @@ Tracing helpers
 {{- $root := .context -}}
 {{- $role := .role -}}
 {{- $serviceOtel := $root.Values.service.otel | default dict -}}
+{{- $topologyOtel := $root.Values.topology.otel | default dict -}}
 {{- if not (kindIs "map" $serviceOtel) -}}
 {{- fail "service.otel must be a map" -}}
 {{- end -}}
-{{- if and $root.Values.topology.otel.enabled (get $serviceOtel "enabled") -}}
+{{- if not (kindIs "map" $topologyOtel) -}}
+{{- fail "topology.otel must be a map" -}}
+{{- end -}}
+{{- if and (get $topologyOtel "enabled") (get $serviceOtel "enabled") -}}
 {{- $serviceOtelEnv := get $serviceOtel "env" | default dict -}}
 {{- if not (kindIs "map" $serviceOtelEnv) -}}
 {{- fail "service.otel.env must be a map" -}}
@@ -306,7 +335,7 @@ Tracing helpers
 {{- end -}}
 {{- end -}}
 {{- $defaults := dict
-  "OTEL_EXPORTER_OTLP_ENDPOINT" (printf "http://%s:%v" (include "nemo-retriever.otel.fullname" $root) $root.Values.topology.otel.ports.otlpGrpc)
+  "OTEL_EXPORTER_OTLP_ENDPOINT" (printf "http://%s:%v" (include "nemo-retriever.otel.fullname" $root) (get (get $topologyOtel "ports") "otlpGrpc"))
   "OTEL_SERVICE_NAME" (default "nemo-retriever-service" (get $serviceOtel "serviceName"))
   "OTEL_TRACES_EXPORTER" "otlp"
   "OTEL_METRICS_EXPORTER" "otlp"
@@ -332,8 +361,12 @@ Tracing helpers
 {{- $nim := index $root.Values.nimOperator $key -}}
 {{- $chartOtel := $root.Values.nimOperator.otel | default dict -}}
 {{- $nimOtel := $nim.otel | default dict -}}
+{{- $topologyOtel := $root.Values.topology.otel | default dict -}}
 {{- if not (kindIs "map" $chartOtel) -}}
 {{- fail "nimOperator.otel must be a map" -}}
+{{- end -}}
+{{- if not (kindIs "map" $topologyOtel) -}}
+{{- fail "topology.otel must be a map" -}}
 {{- end -}}
 {{- if not (kindIs "map" $nimOtel) -}}
 {{- fail (printf "nimOperator.%s.otel must be a map" $key) -}}
@@ -342,7 +375,7 @@ Tracing helpers
 {{- if and (hasKey $nimOtel "enabled") (not (eq (get $nimOtel "enabled") nil)) -}}
 {{- $enabled = get $nimOtel "enabled" -}}
 {{- end -}}
-{{- if and $root.Values.topology.otel.enabled $enabled -}}
+{{- if and (get $topologyOtel "enabled") $enabled -}}
 {{- $chartNimOtelEnv := get $chartOtel "env" | default dict -}}
 {{- $nimOtelEnv := get $nimOtel "env" | default dict -}}
 {{- if not (kindIs "map" $chartNimOtelEnv) -}}
@@ -361,7 +394,7 @@ Tracing helpers
 {{- end -}}
 {{- end -}}
 {{- end -}}
-{{- $defaultEndpoint := printf "http://%s:%v" (include "nemo-retriever.otel.fullname" $root) $root.Values.topology.otel.ports.otlpHttp -}}
+{{- $defaultEndpoint := printf "http://%s:%v" (include "nemo-retriever.otel.fullname" $root) (get (get $topologyOtel "ports") "otlpHttp") -}}
 {{- $chartEndpoint := default $defaultEndpoint (get $chartOtel "endpoint") -}}
 {{- $endpoint := default $chartEndpoint (get $nimOtel "endpoint") -}}
 {{- $tritonPath := default "/v1/traces" (get $chartOtel "tritonPath") -}}

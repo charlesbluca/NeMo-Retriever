@@ -283,6 +283,43 @@ def test_zipkin_disabled_with_external_endpoint_still_exports_to_zipkin() -> Non
     assert "zipkin" in config["service"]["pipelines"]["traces"]["exporters"]
 
 
+def test_null_otel_config_fails_with_chart_authored_message() -> None:
+    proc = _helm_template_process(extra_args=["--set-json", "topology.otel.config=null"])
+
+    assert proc.returncode != 0
+    assert "topology.otel.config must be a map when topology.otel.enabled=true" in proc.stderr
+    assert "reflect:" not in proc.stderr
+    assert "nil pointer" not in proc.stderr
+
+
+def test_null_zipkin_subtree_omits_zipkin_resources_and_exporter() -> None:
+    docs = _helm_template(extra_args=["--set-json", "topology.zipkin=null"])
+
+    deployment_names = _names_for_kind(docs, "Deployment")
+    service_names = _names_for_kind(docs, "Service")
+    config_text = _find(docs, "ConfigMap", OTEL_CONFIG_NAME)["data"]["config.yaml"]
+    config = yaml.safe_load(config_text)
+
+    assert ZIPKIN_NAME not in deployment_names
+    assert ZIPKIN_NAME not in service_names
+    assert OTEL_NAME in deployment_names
+    assert OTEL_NAME in service_names
+    assert "zipkin" not in config["exporters"]
+    assert "zipkin" not in config["service"]["pipelines"]["traces"]["exporters"]
+    assert ZIPKIN_NAME not in config_text
+
+
+def test_null_zipkin_exporter_omits_exporter_injection() -> None:
+    docs = _helm_template(extra_args=["--set-json", "topology.zipkin.exporter=null"])
+
+    config = yaml.safe_load(_find(docs, "ConfigMap", OTEL_CONFIG_NAME)["data"]["config.yaml"])
+
+    assert ZIPKIN_NAME in _names_for_kind(docs, "Deployment")
+    assert ZIPKIN_NAME in _names_for_kind(docs, "Service")
+    assert "zipkin" not in config["exporters"]
+    assert "zipkin" not in config["service"]["pipelines"]["traces"]["exporters"]
+
+
 def test_zipkin_exporter_injection_preserves_custom_exporter_settings() -> None:
     external_endpoint = "http://external-zipkin:9411/api/v2/spans"
     docs = _helm_template(

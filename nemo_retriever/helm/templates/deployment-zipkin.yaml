@@ -1,5 +1,12 @@
-{{- if and .Values.topology.otel.enabled .Values.topology.zipkin.enabled }}
-{{- $zipkin := .Values.topology.zipkin -}}
+{{- $otel := .Values.topology.otel | default dict -}}
+{{- $zipkin := .Values.topology.zipkin | default dict -}}
+{{- if not (kindIs "map" $otel) -}}
+{{- fail "topology.otel must be a map" -}}
+{{- end -}}
+{{- if not (kindIs "map" $zipkin) -}}
+{{- fail "topology.zipkin must be a map" -}}
+{{- end -}}
+{{- if and (get $otel "enabled") (get $zipkin "enabled") }}
 {{- $startupProbe := $zipkin.startupProbe | default dict -}}
 {{- $livenessProbe := $zipkin.livenessProbe | default dict -}}
 {{- $readinessProbe := $zipkin.readinessProbe | default dict -}}

@@ -1,4 +1,8 @@
-{{- if .Values.topology.otel.enabled }}
+{{- $otel := .Values.topology.otel | default dict -}}
+{{- if not (kindIs "map" $otel) -}}
+{{- fail "topology.otel must be a map" -}}
+{{- end -}}
+{{- if get $otel "enabled" }}
 {{- $otelConfigName := include "nemo-retriever.otel.configMapName" . -}}
 apiVersion: v1
 kind: ConfigMap

@@ -5,6 +5,7 @@
 {{- if get $otel "enabled" }}
 {{- $otelName := include "nemo-retriever.otel.fullname" . -}}
 {{- $otelConfigName := include "nemo-retriever.otel.configMapName" . -}}
+{{- $otelPorts := include "nemo-retriever.otel.ports" . | fromYaml -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -44,13 +45,13 @@ spec:
             - --config=/etc/otelcol/config.yaml
           ports:
             - name: otlp-grpc
-              containerPort: {{ $otel.ports.otlpGrpc }}
+              containerPort: {{ get $otelPorts "otlpGrpc" }}
               protocol: TCP
             - name: otlp-http
-              containerPort: {{ $otel.ports.otlpHttp }}
+              containerPort: {{ get $otelPorts "otlpHttp" }}
               protocol: TCP
             - name: prometheus
-              containerPort: {{ $otel.ports.prometheus }}
+              containerPort: {{ get $otelPorts "prometheus" }}
               protocol: TCP
           resources:
             {{- toYaml $otel.resources | nindent 12 }}

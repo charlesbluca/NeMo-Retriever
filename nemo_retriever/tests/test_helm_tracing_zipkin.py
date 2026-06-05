@@ -292,6 +292,15 @@ def test_null_otel_config_fails_with_chart_authored_message() -> None:
     assert "nil pointer" not in proc.stderr
 
 
+def test_null_otel_ports_fails_with_chart_authored_message() -> None:
+    proc = _helm_template_process(extra_args=["--set-json", "topology.otel.ports=null"])
+
+    assert proc.returncode != 0
+    assert "topology.otel.ports must be a map when topology.otel.enabled=true" in proc.stderr
+    assert "reflect:" not in proc.stderr
+    assert "nil pointer" not in proc.stderr
+
+
 def test_null_zipkin_subtree_omits_zipkin_resources_and_exporter() -> None:
     docs = _helm_template(extra_args=["--set-json", "topology.zipkin=null"])
 
@@ -318,6 +327,26 @@ def test_null_zipkin_exporter_omits_exporter_injection() -> None:
     assert ZIPKIN_NAME in _names_for_kind(docs, "Service")
     assert "zipkin" not in config["exporters"]
     assert "zipkin" not in config["service"]["pipelines"]["traces"]["exporters"]
+
+
+def test_null_zipkin_image_fails_with_chart_authored_message() -> None:
+    proc = _helm_template_process(extra_args=["--set-json", "topology.zipkin.image=null"])
+
+    assert proc.returncode != 0
+    assert "topology.zipkin.image must be a map when topology.zipkin.enabled=true" in proc.stderr
+    assert "reflect:" not in proc.stderr
+    assert "nil pointer" not in proc.stderr
+
+
+def test_null_zipkin_port_fails_with_chart_authored_message() -> None:
+    proc = _helm_template_process(extra_args=["--set-json", "topology.zipkin.port=null"])
+
+    assert proc.returncode != 0
+    assert "topology.zipkin.port is required when topology.zipkin.enabled=true" in proc.stderr
+    assert "reflect:" not in proc.stderr
+    assert "nil pointer" not in proc.stderr
+    assert f"http://{ZIPKIN_NAME}:/api/v2/spans" not in proc.stdout
+    assert "port: null" not in proc.stdout
 
 
 def test_zipkin_exporter_injection_preserves_custom_exporter_settings() -> None:

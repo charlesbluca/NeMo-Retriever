@@ -226,6 +226,52 @@ Tracing helpers
 {{- include "nemo-retriever.suffixedFullname" (dict "context" . "suffix" "-otel-config") -}}
 {{- end -}}
 
+{{- define "nemo-retriever.otel.ports" -}}
+{{- $otel := .Values.topology.otel | default dict -}}
+{{- if not (kindIs "map" $otel) -}}
+{{- fail "topology.otel must be a map" -}}
+{{- end -}}
+{{- $ports := get $otel "ports" -}}
+{{- if not (kindIs "map" $ports) -}}
+{{- fail "topology.otel.ports must be a map when topology.otel.enabled=true" -}}
+{{- end -}}
+{{- range $portName := list "otlpGrpc" "otlpHttp" "prometheus" -}}
+{{- if not (get $ports $portName) -}}
+{{- fail (printf "topology.otel.ports.%s is required when topology.otel.enabled=true" $portName) -}}
+{{- end -}}
+{{- end -}}
+{{- toYaml $ports -}}
+{{- end -}}
+
+{{- define "nemo-retriever.zipkin.image" -}}
+{{- $zipkin := .Values.topology.zipkin | default dict -}}
+{{- if not (kindIs "map" $zipkin) -}}
+{{- fail "topology.zipkin must be a map" -}}
+{{- end -}}
+{{- $image := get $zipkin "image" -}}
+{{- if not (kindIs "map" $image) -}}
+{{- fail "topology.zipkin.image must be a map when topology.zipkin.enabled=true" -}}
+{{- end -}}
+{{- range $fieldName := list "repository" "tag" "pullPolicy" -}}
+{{- if not (get $image $fieldName) -}}
+{{- fail (printf "topology.zipkin.image.%s is required when topology.zipkin.enabled=true" $fieldName) -}}
+{{- end -}}
+{{- end -}}
+{{- toYaml $image -}}
+{{- end -}}
+
+{{- define "nemo-retriever.zipkin.port" -}}
+{{- $zipkin := .Values.topology.zipkin | default dict -}}
+{{- if not (kindIs "map" $zipkin) -}}
+{{- fail "topology.zipkin must be a map" -}}
+{{- end -}}
+{{- $port := get $zipkin "port" -}}
+{{- if not $port -}}
+{{- fail "topology.zipkin.port is required when topology.zipkin.enabled=true" -}}
+{{- end -}}
+{{- $port -}}
+{{- end -}}
+
 
 {{- define "nemo-retriever.zipkin.endpoint" -}}
 {{- $zipkin := .Values.topology.zipkin | default dict -}}
@@ -240,7 +286,7 @@ Tracing helpers
 {{- if $endpoint -}}
 {{- tpl $endpoint . -}}
 {{- else -}}
-{{- printf "http://%s:%v/api/v2/spans" (include "nemo-retriever.zipkin.fullname" .) (get $zipkin "port") -}}
+{{- printf "http://%s:%v/api/v2/spans" (include "nemo-retriever.zipkin.fullname" .) (include "nemo-retriever.zipkin.port" .) -}}
 {{- end -}}
 {{- end -}}
 
@@ -334,8 +380,9 @@ Tracing helpers
 {{- $_ := set $userEnvNames $env.name true -}}
 {{- end -}}
 {{- end -}}
+{{- $otelPorts := include "nemo-retriever.otel.ports" $root | fromYaml -}}
 {{- $defaults := dict
-  "OTEL_EXPORTER_OTLP_ENDPOINT" (printf "http://%s:%v" (include "nemo-retriever.otel.fullname" $root) (get (get $topologyOtel "ports") "otlpGrpc"))
+  "OTEL_EXPORTER_OTLP_ENDPOINT" (printf "http://%s:%v" (include "nemo-retriever.otel.fullname" $root) (get $otelPorts "otlpGrpc"))
   "OTEL_SERVICE_NAME" (default "nemo-retriever-service" (get $serviceOtel "serviceName"))
   "OTEL_TRACES_EXPORTER" "otlp"
   "OTEL_METRICS_EXPORTER" "otlp"
@@ -394,7 +441,8 @@ Tracing helpers
 {{- end -}}
 {{- end -}}
 {{- end -}}
-{{- $defaultEndpoint := printf "http://%s:%v" (include "nemo-retriever.otel.fullname" $root) (get (get $topologyOtel "ports") "otlpHttp") -}}
+{{- $otelPorts := include "nemo-retriever.otel.ports" $root | fromYaml -}}
+{{- $defaultEndpoint := printf "http://%s:%v" (include "nemo-retriever.otel.fullname" $root) (get $otelPorts "otlpHttp") -}}
 {{- $chartEndpoint := default $defaultEndpoint (get $chartOtel "endpoint") -}}
 {{- $endpoint := default $chartEndpoint (get $nimOtel "endpoint") -}}
 {{- $tritonPath := default "/v1/traces" (get $chartOtel "tritonPath") -}}

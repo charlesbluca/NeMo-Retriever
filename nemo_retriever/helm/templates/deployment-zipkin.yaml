@@ -11,6 +11,8 @@
 {{- $livenessProbe := $zipkin.livenessProbe | default dict -}}
 {{- $readinessProbe := $zipkin.readinessProbe | default dict -}}
 {{- $resources := $zipkin.resources | default dict -}}
+{{- $zipkinImage := include "nemo-retriever.zipkin.image" . | fromYaml -}}
+{{- $zipkinPort := include "nemo-retriever.zipkin.port" . -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -46,8 +48,8 @@ spec:
       {{- end }}
       containers:
         - name: zipkin
-          image: "{{ $zipkin.image.repository }}:{{ $zipkin.image.tag }}"
-          imagePullPolicy: {{ $zipkin.image.pullPolicy }}
+          image: "{{ get $zipkinImage "repository" }}:{{ get $zipkinImage "tag" }}"
+          imagePullPolicy: {{ get $zipkinImage "pullPolicy" }}
           {{- with $zipkin.securityContext }}
           securityContext:
             {{- toYaml . | nindent 12 }}
@@ -59,7 +61,7 @@ spec:
           {{- end }}
           ports:
             - name: http
-              containerPort: {{ $zipkin.port }}
+              containerPort: {{ $zipkinPort }}
               protocol: TCP
           {{- if get $startupProbe "enabled" }}
           startupProbe:

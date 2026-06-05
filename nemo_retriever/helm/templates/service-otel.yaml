@@ -4,6 +4,7 @@
 {{- end -}}
 {{- if get $otel "enabled" }}
 {{- $otelName := include "nemo-retriever.otel.fullname" . -}}
+{{- $otelPorts := include "nemo-retriever.otel.ports" . | fromYaml -}}
 apiVersion: v1
 kind: Service
 metadata:
@@ -17,14 +18,14 @@ spec:
   ports:
     - name: otlp-grpc
       protocol: TCP
-      port: {{ $otel.ports.otlpGrpc }}
+      port: {{ get $otelPorts "otlpGrpc" }}
       targetPort: otlp-grpc
     - name: otlp-http
       protocol: TCP
-      port: {{ $otel.ports.otlpHttp }}
+      port: {{ get $otelPorts "otlpHttp" }}
       targetPort: otlp-http
     - name: prometheus
       protocol: TCP
-      port: {{ $otel.ports.prometheus }}
+      port: {{ get $otelPorts "prometheus" }}
       targetPort: prometheus
 {{- end }}

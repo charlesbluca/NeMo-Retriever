@@ -1,5 +1,9 @@
 {{- if and .Values.topology.otel.enabled .Values.topology.zipkin.enabled }}
 {{- $zipkin := .Values.topology.zipkin -}}
+{{- $startupProbe := $zipkin.startupProbe | default dict -}}
+{{- $livenessProbe := $zipkin.livenessProbe | default dict -}}
+{{- $readinessProbe := $zipkin.readinessProbe | default dict -}}
+{{- $resources := $zipkin.resources | default dict -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -16,6 +20,7 @@ spec:
       labels:
         {{- include "nemo-retriever.role.selectorLabels" (dict "context" $ "role" "zipkin") | nindent 8 }}
     spec:
+      {{- include "nemo-retriever.imagePullSecrets" . | nindent 6 }}
       {{- with $zipkin.podSecurityContext }}
       securityContext:
         {{- toYaml . | nindent 8 }}
@@ -49,18 +54,20 @@ spec:
             - name: http
               containerPort: {{ $zipkin.port }}
               protocol: TCP
-          {{- if $zipkin.startupProbe.enabled }}
+          {{- if get $startupProbe "enabled" }}
           startupProbe:
-            {{- omit $zipkin.startupProbe "enabled" | toYaml | nindent 12 }}
+            {{- omit $startupProbe "enabled" | toYaml | nindent 12 }}
           {{- end }}
-          {{- if $zipkin.livenessProbe.enabled }}
+          {{- if get $livenessProbe "enabled" }}
           livenessProbe:
-            {{- omit $zipkin.livenessProbe "enabled" | toYaml | nindent 12 }}
+            {{- omit $livenessProbe "enabled" | toYaml | nindent 12 }}
           {{- end }}
-          {{- if $zipkin.readinessProbe.enabled }}
+          {{- if get $readinessProbe "enabled" }}
           readinessProbe:
-            {{- omit $zipkin.readinessProbe "enabled" | toYaml | nindent 12 }}
+            {{- omit $readinessProbe "enabled" | toYaml | nindent 12 }}
           {{- end }}
+          {{- with $resources }}
           resources:
-            {{- toYaml $zipkin.resources | nindent 12 }}
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
 {{- end }}

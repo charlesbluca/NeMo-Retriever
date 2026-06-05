@@ -89,6 +89,12 @@ def _helm_template(
     return [doc for doc in yaml.safe_load_all(proc.stdout) if doc]
 
 
+def _write_values_file(tmp_path: Path, values: dict) -> Path:
+    values_path = tmp_path / "values.yaml"
+    values_path.write_text(yaml.safe_dump(values), encoding="utf-8")
+    return values_path
+
+
 def _find(docs: list[dict], kind: str, name: str) -> dict:
     for doc in docs:
         if doc.get("kind") == kind and doc.get("metadata", {}).get("name") == name:
@@ -238,6 +244,15 @@ def test_default_renders_zipkin_deployment_and_service() -> None:
     assert service["spec"]["ports"] == [{"name": "http", "protocol": "TCP", "port": 9411, "targetPort": "http"}]
 
 
+def test_tracing_pods_include_image_pull_secrets() -> None:
+    docs = _helm_template(extra_args=["--set", "imagePullSecrets[0].name=trace-registry"])
+
+    for deployment_name in (OTEL_NAME, ZIPKIN_NAME):
+        pod_spec = _find(docs, "Deployment", deployment_name)["spec"]["template"]["spec"]
+
+        assert pod_spec["imagePullSecrets"] == [{"name": "ngc-secret"}, {"name": "trace-registry"}]
+
+
 def test_zipkin_disabled_omits_zipkin_resources_and_exporter() -> None:
     docs = _helm_template(["topology.zipkin.enabled=false"])
 
@@ -331,6 +346,37 @@ def test_zipkin_deployment_omits_disabled_probe() -> None:
     assert "readinessProbe" not in container
     assert "livenessProbe" in container
     assert "startupProbe" in container
+
+
+def test_zipkin_deployment_allows_null_probe_maps_from_values_file(tmp_path: Path) -> None:
+    values_path = _write_values_file(
+        tmp_path,
+        {
+            "topology": {
+                "zipkin": {
+                    "startupProbe": None,
+                    "livenessProbe": None,
+                    "readinessProbe": None,
+                }
+            }
+        },
+    )
+    docs = _helm_template(extra_args=["--values", str(values_path)])
+    deployment = _find(docs, "Deployment", ZIPKIN_NAME)
+    container = deployment["spec"]["template"]["spec"]["containers"][0]
+
+    assert "startupProbe" not in container
+    assert "livenessProbe" not in container
+    assert "readinessProbe" not in container
+
+
+def test_zipkin_deployment_omits_null_resources_from_values_file(tmp_path: Path) -> None:
+    values_path = _write_values_file(tmp_path, {"topology": {"zipkin": {"resources": None}}})
+    docs = _helm_template(extra_args=["--values", str(values_path)])
+    deployment = _find(docs, "Deployment", ZIPKIN_NAME)
+    container = deployment["spec"]["template"]["spec"]["containers"][0]
+
+    assert "resources" not in container
 
 
 def test_zipkin_injection_allows_traces_pipeline_without_processors() -> None:

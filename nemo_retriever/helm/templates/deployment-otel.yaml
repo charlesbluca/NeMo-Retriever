@@ -20,6 +20,7 @@ spec:
       annotations:
         checksum/otel-config: {{ include (print $.Template.BasePath "/configmap-otel.yaml") . | sha256sum }}
     spec:
+      {{- include "nemo-retriever.imagePullSecrets" . | nindent 6 }}
       {{- with $otel.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

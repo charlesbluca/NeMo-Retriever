@@ -123,6 +123,8 @@ def test_span_attributes_drop_sensitive_keys(monkeypatch: pytest.MonkeyPatch, ex
 
     raw_attributes = {
         "Authorization": "Bearer abc",
+        "auth": "abc",
+        "auth.header": "Bearer abc",
         "x-api-key": "abc",
         "apiKey": "abc",
         "access_token": "abc",

@@ -48,6 +48,7 @@ _SENSITIVE_ATTRIBUTE_NAME_PARTS = frozenset(
         "content",
     }
 )
+_SENSITIVE_ATTRIBUTE_NAME_TOKENS = frozenset({"auth"})
 
 
 def tracing_enabled_from_env(env: Mapping[str, str] | None = None) -> bool:
@@ -185,6 +186,9 @@ def _sanitize_span_attributes(attributes: Mapping[str, Any] | None) -> dict[str,
         lowered = key.lower()
         normalized = lowered.replace("-", "_").replace(".", "_").replace(" ", "_")
         compact = normalized.replace("_", "")
+        tokens = set(normalized.split("_"))
+        if tokens & _SENSITIVE_ATTRIBUTE_NAME_TOKENS:
+            continue
         if any(part in lowered or part in normalized or part in compact for part in _SENSITIVE_ATTRIBUTE_NAME_PARTS):
             continue
         sanitized[key] = value

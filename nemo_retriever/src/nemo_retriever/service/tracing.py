@@ -52,7 +52,7 @@ def tracing_enabled_from_env(env: Mapping[str, str] | None = None) -> bool:
 
     traces_exporter = source.get("OTEL_TRACES_EXPORTER", "").strip()
     endpoint = source.get("OTEL_EXPORTER_OTLP_ENDPOINT", "").strip()
-    return bool(traces_exporter and traces_exporter.lower() != "none" and endpoint)
+    return bool(traces_exporter.lower() == "otlp" and endpoint)
 
 
 def configure_tracing(*, service_role: str, service_name: str | None = None) -> bool:
@@ -110,6 +110,10 @@ def get_tracer(name: str = "nemo_retriever.service") -> Any:
     return trace.get_tracer(name)
 
 
+def span_attributes(attributes: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """Return span attributes after removing credentials and raw payload content."""
+    return _sanitize_span_attributes(attributes) or {}
+
 
 def start_span(
     name: str,
@@ -124,8 +128,8 @@ def start_span(
         kwargs["kind"] = kind
     if context is not None:
         kwargs["context"] = context
-    sanitized_attributes = _sanitize_span_attributes(attributes)
-    if sanitized_attributes is not None:
+    sanitized_attributes = span_attributes(attributes)
+    if attributes is not None:
         kwargs["attributes"] = sanitized_attributes
     try:
         return get_tracer().start_as_current_span(name, **kwargs)

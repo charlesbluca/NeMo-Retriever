@@ -32,6 +32,7 @@ from nemo_retriever.service.config import (
     PipelinePoolConfig,
     ServiceConfig,
 )
+from nemo_retriever.service import tracing
 from nemo_retriever.service.services.pipeline_pool import WorkItem
 from .conftest import create_test_job
 
@@ -165,6 +166,14 @@ def traced_gateway_app(monkeypatch: pytest.MonkeyPatch):
 def _make_pdf_bytes() -> bytes:
     """Return a 1-byte non-PDF payload — the worker is stubbed so content doesn't matter."""
     return b"%PDF-1.4\n%stub\n"
+
+
+def _wait_for_items(captured_items: list[WorkItem], count: int) -> None:
+    import time as _time
+
+    deadline = _time.monotonic() + 5.0
+    while len(captured_items) < count and _time.monotonic() < deadline:
+        _time.sleep(0.05)
 
 
 def test_ingest_without_spec_falls_back_to_legacy_pipeline(
@@ -364,6 +373,106 @@ def test_create_job_with_tracing_returns_trace_id_body_header_and_snapshot(
     assert snapshot.json()["trace_id"] == trace_id
     assert exported_spans
 
+
+def test_job_upload_routes_emit_accept_spans(
+    traced_app_with_stub_pool: tuple[TestClient, list[Any]],
+    captured_items: list[WorkItem],
+) -> None:
+    client, exported_spans = traced_app_with_stub_pool
+    job_id = create_test_job(client, expected_documents=3)
+
+    document_resp = client.post(
+        f"/v1/ingest/job/{job_id}/document",
+        files={"file": ("doc.pdf", _make_pdf_bytes(), "application/pdf")},
+        data={"metadata": "{}"},
+    )
+    page_resp = client.post(
+        f"/v1/ingest/job/{job_id}/page",
+        files={"file": ("page.png", b"page", "image/png")},
+        data={"document_id": "source-doc", "page_number": "1", "filename": "source.pdf"},
+    )
+    whole_resp = client.post(
+        f"/v1/ingest/job/{job_id}/whole",
+        files={"file": ("whole.pdf", _make_pdf_bytes(), "application/pdf")},
+        data={"metadata": "{}"},
+    )
+
+    assert document_resp.status_code == 202, document_resp.text
+    assert page_resp.status_code == 202, page_resp.text
+    assert whole_resp.status_code == 202, whole_resp.text
+    _wait_for_items(captured_items, 3)
+
+    names = {span.name for span in exported_spans}
+    assert "ingest.document.accept" in names
+    assert "ingest.page.accept" in names
+    assert "ingest.whole.accept" in names
+
+    accept_spans = {
+        span.name: span
+        for span in exported_spans
+        if span.name in {"ingest.document.accept", "ingest.page.accept", "ingest.whole.accept"}
+    }
+    for span in accept_spans.values():
+        attrs = dict(span.attributes)
+        assert attrs["service.role"] == "standalone"
+        assert attrs["job.id"] == job_id
+        assert attrs["route"].startswith("/v1/ingest/job/")
+
+
+def test_job_upload_accept_span_uses_job_trace_when_request_has_no_traceparent(
+    traced_app_with_stub_pool: tuple[TestClient, list[Any]],
+    captured_items: list[WorkItem],
+) -> None:
+    client, exported_spans = traced_app_with_stub_pool
+    create_resp = client.post("/v1/ingest/job", json={"expected_documents": 1})
+    assert create_resp.status_code == 201, create_resp.text
+    job_id = create_resp.json()["job_id"]
+    job_trace_id = create_resp.json()["trace_id"]
+
+    upload_resp = client.post(
+        f"/v1/ingest/job/{job_id}/document",
+        files={"file": ("doc.pdf", _make_pdf_bytes(), "application/pdf")},
+        data={"metadata": "{}"},
+    )
+
+    assert upload_resp.status_code == 202, upload_resp.text
+    _wait_for_items(captured_items, 1)
+
+    accept_span = next(span for span in exported_spans if span.name == "ingest.document.accept")
+    assert f"{accept_span.context.trace_id:032x}" == job_trace_id
+    assert captured_items[0].trace_context["traceparent"].split("-")[1] == job_trace_id
+
+
+def test_job_upload_accept_span_prefers_inbound_traceparent_over_job_trace(
+    traced_app_with_stub_pool: tuple[TestClient, list[Any]],
+    captured_items: list[WorkItem],
+) -> None:
+    client, exported_spans = traced_app_with_stub_pool
+    create_resp = client.post("/v1/ingest/job", json={"expected_documents": 1})
+    assert create_resp.status_code == 201, create_resp.text
+    job_id = create_resp.json()["job_id"]
+    job_trace_id = create_resp.json()["trace_id"]
+
+    with tracing.start_span("client.parent"):
+        inbound_trace_id = tracing.current_trace_id_hex()
+        carrier = dict(tracing.inject_trace_context())
+    assert inbound_trace_id is not None
+    assert inbound_trace_id != job_trace_id
+
+    upload_resp = client.post(
+        f"/v1/ingest/job/{job_id}/document",
+        headers=carrier,
+        files={"file": ("doc.pdf", _make_pdf_bytes(), "application/pdf")},
+        data={"metadata": "{}"},
+    )
+
+    assert upload_resp.status_code == 202, upload_resp.text
+    _wait_for_items(captured_items, 1)
+
+    accept_span = next(span for span in exported_spans if span.name == "ingest.document.accept")
+    assert f"{accept_span.context.trace_id:032x}" == inbound_trace_id
+    assert f"{accept_span.context.trace_id:032x}" != job_trace_id
+    assert captured_items[0].trace_context["traceparent"].split("-")[1] == inbound_trace_id
 
 
 def test_dashboard_job_views_include_trace_id(traced_gateway_app: tuple[TestClient, list[Any]]) -> None:

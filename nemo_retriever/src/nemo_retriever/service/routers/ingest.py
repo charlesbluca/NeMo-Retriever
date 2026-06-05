@@ -218,6 +218,10 @@ async def _enqueue_or_reject(pool_type: PoolType, item: WorkItem) -> None:
     pool = get_pipeline_pool()
     if pool is None:
         return
+    if not item.trace_context:
+        from nemo_retriever.service import tracing
+
+        item.trace_context = dict(tracing.inject_trace_context())
     if not await pool.submit(pool_type, item):
         raise HTTPException(
             status_code=429,

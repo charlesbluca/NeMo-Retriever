@@ -16,6 +16,7 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor, SpanExportResult
 
 from nemo_retriever.service.config import GatewayConfig
 from nemo_retriever.service.services.pipeline_pool import PoolType
+from nemo_retriever.service.services import proxy as proxy_module
 from nemo_retriever.service.services.proxy import GatewayProxy
 from nemo_retriever.service.tracing import (
     _reset_tracing_for_tests,
@@ -167,6 +168,84 @@ def test_forward_get_injects_traceparent_before_backend_get(configured_tracing: 
     assert "host" not in {key.lower() for key in headers}
     assert "Traceparent" not in headers
     assert headers["traceparent"].split("-")[1] == trace_id
+
+
+def test_forward_sends_backend_request_when_trace_injection_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    backend = _RecordingClient()
+    proxy = _make_proxy(batch=backend)
+    body = b'{"document": "raw payload"}'
+    request = _make_request(
+        method="POST",
+        path="/v1/ingest/document",
+        headers={
+            "host": "gateway.local",
+            "transfer-encoding": "chunked",
+            "content-type": "application/json",
+            "x-request-id": "keep-me",
+        },
+        body=body,
+    )
+
+    def _raise_injection_error(headers: dict[str, str]) -> None:
+        raise RuntimeError("propagator unavailable")
+
+    monkeypatch.setattr(proxy_module.tracing_module, "inject_trace_context", _raise_injection_error)
+
+    async def _forward() -> Any:
+        return await proxy.forward(
+            request,
+            PoolType.BATCH,
+            extra_headers={"x-extra": "extra-value"},
+        )
+
+    response = asyncio.run(_forward())
+
+    assert response.status_code == 202
+    assert response.body == b'{"ok": true}'
+    assert len(backend.calls) == 1
+    call = backend.calls[0]
+    headers = call["headers"]
+    assert call["method"] == "POST"
+    assert call["url"] == "/v1/ingest/document"
+    assert call["content"] == body
+    assert headers["content-type"] == "application/json"
+    assert headers["x-request-id"] == "keep-me"
+    assert headers["x-extra"] == "extra-value"
+    assert "host" not in {key.lower() for key in headers}
+    assert "transfer-encoding" not in {key.lower() for key in headers}
+
+
+def test_forward_get_sends_backend_request_when_trace_injection_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    backend = _RecordingClient()
+    proxy = _make_proxy(realtime=backend)
+    request = _make_request(
+        method="GET",
+        path="/v1/ingest/pipeline-config",
+        headers={
+            "host": "gateway.local",
+            "x-request-id": "keep-me",
+        },
+    )
+
+    def _raise_injection_error(headers: dict[str, str]) -> None:
+        raise RuntimeError("propagator unavailable")
+
+    monkeypatch.setattr(proxy_module.tracing_module, "inject_trace_context", _raise_injection_error)
+
+    async def _forward_get() -> Any:
+        return await proxy.forward_get(request, PoolType.REALTIME, "/v1/ingest/pipeline-config")
+
+    response = asyncio.run(_forward_get())
+
+    assert response.status_code == 200
+    assert response.body == b'{"config": true}'
+    assert len(backend.calls) == 1
+    call = backend.calls[0]
+    headers = call["headers"]
+    assert call["method"] == "GET"
+    assert call["url"] == "/v1/ingest/pipeline-config"
+    assert headers["x-request-id"] == "keep-me"
+    assert "host" not in {key.lower() for key in headers}
 
 
 def _make_proxy(

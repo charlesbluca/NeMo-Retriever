@@ -192,15 +192,19 @@ def test_zipkin_injection_requires_existing_traces_pipeline() -> None:
 
 
 def test_zipkin_injection_requires_non_empty_trace_receivers() -> None:
-    proc = _helm_template_process(
-        extra_args=["--set-json", "topology.otel.config.service.pipelines.traces.receivers=[]"]
-    )
-
-    assert proc.returncode != 0
-    assert (
+    expected = (
         "topology.zipkin.exporter.enabled requires topology.otel.config.service.pipelines.traces "
         "with non-empty receivers; provide that traces pipeline or set topology.zipkin.exporter.enabled=false"
-    ) in proc.stderr
+    )
+
+    for receivers_override in (
+        "topology.otel.config.service.pipelines.traces.receivers=null",
+        "topology.otel.config.service.pipelines.traces.receivers=[]",
+    ):
+        proc = _helm_template_process(extra_args=["--set-json", receivers_override])
+
+        assert proc.returncode != 0
+        assert expected in proc.stderr
 
 
 def test_otel_config_exports_traces_to_rendered_zipkin_endpoint() -> None:

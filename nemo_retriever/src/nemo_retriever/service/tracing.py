@@ -47,9 +47,9 @@ def tracing_enabled_from_env(env: Mapping[str, str] | None = None) -> bool:
     if source.get("OTEL_SDK_DISABLED", "").strip().lower() == "true":
         return False
 
-    traces_exporter = source.get("OTEL_TRACES_EXPORTER", "").strip()
+    traces_exporter = source.get("OTEL_TRACES_EXPORTER", "").strip().lower()
     endpoint = source.get("OTEL_EXPORTER_OTLP_ENDPOINT", "").strip()
-    return bool(traces_exporter and traces_exporter.lower() != "none" and endpoint)
+    return traces_exporter == "otlp" and bool(endpoint)
 
 
 def configure_tracing(*, service_role: str, service_name: str | None = None) -> bool:
@@ -120,8 +120,8 @@ def start_span(
         kwargs["kind"] = kind
     if context is not None:
         kwargs["context"] = context
-    sanitized_attributes = _sanitize_span_attributes(attributes)
-    if sanitized_attributes is not None:
+    sanitized_attributes = span_attributes(attributes)
+    if sanitized_attributes:
         kwargs["attributes"] = sanitized_attributes
     return get_tracer().start_as_current_span(name, **kwargs)
 
@@ -179,9 +179,10 @@ def _reset_tracing_for_tests() -> None:
         logger.debug("OpenTelemetry test reset skipped private provider state reset", exc_info=True)
 
 
-def _sanitize_span_attributes(attributes: Mapping[str, Any] | None) -> dict[str, Any] | None:
+def span_attributes(attributes: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """Return attributes safe to attach to OpenTelemetry spans."""
     if attributes is None:
-        return None
+        return {}
 
     return {key: value for key, value in attributes.items() if not _is_sensitive_span_attribute_name(key)}
 

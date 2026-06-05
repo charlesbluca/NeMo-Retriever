@@ -22,6 +22,7 @@ from nemo_retriever.service.tracing import (
     current_trace_id_hex,
     extract_trace_context,
     inject_trace_context,
+    span_attributes,
     start_span,
     tracing_enabled_from_env,
 )
@@ -72,10 +73,10 @@ def exported_spans(monkeypatch: pytest.MonkeyPatch) -> list[Any]:
         ({"OTEL_TRACES_EXPORTER": "otlp", "OTEL_EXPORTER_OTLP_ENDPOINT": "http://otel:4317", "OTEL_SDK_DISABLED": "true"}, False),
         ({"OTEL_TRACES_EXPORTER": "otlp", "OTEL_EXPORTER_OTLP_ENDPOINT": "http://otel:4317"}, True),
         ({"OTEL_TRACES_EXPORTER": "OTLP", "OTEL_EXPORTER_OTLP_ENDPOINT": "http://otel:4317"}, True),
-        ({"OTEL_TRACES_EXPORTER": "jaeger", "OTEL_EXPORTER_OTLP_ENDPOINT": "http://otel:4317"}, True),
-        ({"OTEL_TRACES_EXPORTER": "zipkin", "OTEL_EXPORTER_OTLP_ENDPOINT": "http://otel:4317"}, True),
-        ({"OTEL_TRACES_EXPORTER": "console", "OTEL_EXPORTER_OTLP_ENDPOINT": "http://otel:4317"}, True),
-        ({"OTEL_TRACES_EXPORTER": "custom", "OTEL_EXPORTER_OTLP_ENDPOINT": "http://otel:4317"}, True),
+        ({"OTEL_TRACES_EXPORTER": "jaeger", "OTEL_EXPORTER_OTLP_ENDPOINT": "http://otel:4317"}, False),
+        ({"OTEL_TRACES_EXPORTER": "zipkin", "OTEL_EXPORTER_OTLP_ENDPOINT": "http://otel:4317"}, False),
+        ({"OTEL_TRACES_EXPORTER": "console", "OTEL_EXPORTER_OTLP_ENDPOINT": "http://otel:4317"}, False),
+        ({"OTEL_TRACES_EXPORTER": "custom", "OTEL_EXPORTER_OTLP_ENDPOINT": "http://otel:4317"}, False),
     ],
 )
 def test_tracing_enabled_from_env_requires_exporter_and_endpoint(env: dict[str, str], expected: bool) -> None:
@@ -256,6 +257,33 @@ def test_start_span_drops_sensitive_keys_and_keeps_benign_metadata(
 
     attrs = dict(exported_spans[-1].attributes)
     assert attrs == {
+        "content_type": "application/json",
+        "content_length": 123,
+        "payload_size": 456,
+        "body_length": 789,
+        "safe.status": "ok",
+        "document_count": 2,
+    }
+
+
+def test_span_attributes_public_helper_drops_sensitive_keys_and_keeps_benign_metadata() -> None:
+    assert span_attributes(None) == {}
+
+    assert span_attributes(
+        {
+            "Authorization": "Bearer abc",
+            "response_payload": b"raw",
+            "document_content": "sensitive",
+            "payload_text": "sensitive",
+            "body_text": "sensitive",
+            "content_type": "application/json",
+            "content_length": 123,
+            "payload_size": 456,
+            "body_length": 789,
+            "safe.status": "ok",
+            "document_count": 2,
+        }
+    ) == {
         "content_type": "application/json",
         "content_length": 123,
         "payload_size": 456,

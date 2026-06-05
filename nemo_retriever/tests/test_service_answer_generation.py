@@ -23,6 +23,15 @@ def test_llm_config_defaults_to_reasoning_enabled_for_external_provider_safety()
     assert LLMConfig().reasoning_enabled is True
 
 
+def test_llm_config_allows_empty_model_when_disabled_for_helm_default() -> None:
+    assert LLMConfig(enabled=False, model="").model == ""
+
+
+def test_llm_config_rejects_empty_model_when_enabled() -> None:
+    with pytest.raises(ValueError, match="llm.model must be set when llm.enabled is true"):
+        LLMConfig(enabled=True, model="", api_base="http://external-llm:8000/v1")
+
+
 @pytest.fixture
 def app_with_answer_config(monkeypatch: pytest.MonkeyPatch, tmp_path):
     """Standalone service app with workers stubbed and LLM answering enabled."""

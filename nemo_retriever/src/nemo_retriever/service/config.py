@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import ConfigDict, Field
+from pydantic import ConfigDict, Field, model_validator
 
 from nemo_retriever.service.models.base import RichModel
 
@@ -96,6 +96,12 @@ class LLMConfig(RichModel):
     rag_system_prompt: str | None = None
     rag_system_prompt_prefix: str | None = None
     reasoning_enabled: bool = True
+
+    @model_validator(mode="after")
+    def _validate_enabled_model(self) -> "LLMConfig":
+        if self.enabled and not self.model.strip():
+            raise ValueError("llm.model must be set when llm.enabled is true")
+        return self
 
 
 class ResourceLimitsConfig(RichModel):

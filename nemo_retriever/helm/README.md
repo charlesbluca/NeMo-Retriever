@@ -937,6 +937,74 @@ sanity check before opening Grafana.
 
 ---
 
+## Tracing and Zipkin
+
+Helm installs tracing on by default:
+
+```yaml
+topology:
+  otel:
+    enabled: true
+  zipkin:
+    enabled: true
+```
+
+With those defaults, retriever service pods and chart-managed NIMs emit OTLP to
+the chart's OpenTelemetry Collector, and the collector exports traces to the
+chart-owned Zipkin service. Open a job and read the Zipkin lookup key from either
+the JSON body or the `x-trace-id` response header:
+
+```bash
+kubectl port-forward svc/tracing-smoke-nemo-retriever 7670:80
+
+curl -s -D headers.txt -o job.json \
+  -X POST http://localhost:7670/v1/ingest/job \
+  -H 'content-type: application/json' \
+  -d '{"expected_documents":1}'
+
+TRACE_ID=$(jq -r .trace_id job.json)
+grep -i x-trace-id headers.txt
+```
+
+Port-forward Zipkin and query the trace directly:
+
+```bash
+kubectl port-forward svc/tracing-smoke-nemo-retriever-zipkin 9411:9411
+curl "http://localhost:9411/api/v2/trace/${TRACE_ID}"
+```
+
+Common opt-out and override knobs:
+
+```yaml
+topology:
+  zipkin:
+    enabled: false                 # do not deploy chart-owned Zipkin
+    exporter:
+      enabled: false               # keep Zipkin deployed, but do not export traces to it
+      endpoint: http://external-zipkin:9411/api/v2/spans
+
+service:
+  otel:
+    enabled: false                 # disable service pod instrumentation env
+
+nimOperator:
+  otel:
+    enabled: false                 # disable inherited NIM OTLP env
+  page_elements:
+    otel:
+      enabled: false               # per-NIM opt-out
+  ocr:
+    otel:
+      env:
+        TRITON_OTEL_RATE: "10"     # per-NIM Triton OTel override
+```
+
+Set `topology.zipkin.exporter.endpoint` when you run your own Zipkin-compatible
+collector. Set `topology.otel.enabled=false` to disable the chart-owned collector
+and all chart-rendered collector wiring.
+
+---
+
 ## OpenShift deployment { #openshift-deployment }
 
 The chart defaults target generic Kubernetes clusters that allow fixed numeric

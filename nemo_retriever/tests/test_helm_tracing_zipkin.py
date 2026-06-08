@@ -40,7 +40,9 @@ def _repo_root() -> Path:
 
 
 def _helm_template_cmd(
-    extra_sets: list[str] | None = None, extra_args: list[str] | None = None, release_name: str = RELEASE
+    extra_sets: list[str] | None = None,
+    extra_args: list[str] | None = None,
+    release_name: str = RELEASE,
 ) -> list[str]:
     helm = shutil.which("helm")
     if helm is None:
@@ -73,7 +75,9 @@ def _helm_template_cmd(
 
 
 def _helm_template_process(
-    extra_sets: list[str] | None = None, extra_args: list[str] | None = None, release_name: str = RELEASE
+    extra_sets: list[str] | None = None,
+    extra_args: list[str] | None = None,
+    release_name: str = RELEASE,
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         _helm_template_cmd(extra_sets=extra_sets, extra_args=extra_args, release_name=release_name),
@@ -84,7 +88,9 @@ def _helm_template_process(
 
 
 def _helm_template(
-    extra_sets: list[str] | None = None, extra_args: list[str] | None = None, release_name: str = RELEASE
+    extra_sets: list[str] | None = None,
+    extra_args: list[str] | None = None,
+    release_name: str = RELEASE,
 ) -> list[dict]:
     proc = _helm_template_process(extra_sets=extra_sets, extra_args=extra_args, release_name=release_name)
     if proc.returncode != 0:
@@ -222,7 +228,7 @@ def test_null_otel_env_maps_render_as_empty_maps() -> None:
             "nimOperator.otel.env=null",
             "--set-json",
             "nimOperator.rerankqa.otel.env=null",
-        ]
+        ],
     )
 
     service_env = _env_values(_deployment_env(_find(docs, "Deployment", FULLNAME)))
@@ -263,7 +269,11 @@ def test_default_omits_managed_service_and_nim_otel_env() -> None:
         "OTEL_RESOURCE_ATTRIBUTES",
         "OTEL_PYTHON_EXCLUDED_URLS",
     }
-    nim_managed_names = {"NIM_ENABLE_OTEL", "NIM_OTEL_EXPORTER_OTLP_ENDPOINT", "TRITON_OTEL_URL"}
+    nim_managed_names = {
+        "NIM_ENABLE_OTEL",
+        "NIM_OTEL_EXPORTER_OTLP_ENDPOINT",
+        "TRITON_OTEL_URL",
+    }
 
     assert service_managed_names.isdisjoint(service_values)
     for doc in [doc for doc in docs if doc.get("kind") == "NIMService"]:
@@ -276,7 +286,10 @@ def test_tracing_pods_include_image_pull_secrets() -> None:
     for deployment_name in (OTEL_NAME, ZIPKIN_NAME):
         pod_spec = _find(docs, "Deployment", deployment_name)["spec"]["template"]["spec"]
 
-        assert pod_spec["imagePullSecrets"] == [{"name": "ngc-secret"}, {"name": "trace-registry"}]
+        assert pod_spec["imagePullSecrets"] == [
+            {"name": "ngc-secret"},
+            {"name": "trace-registry"},
+        ]
 
 
 def test_zipkin_disabled_omits_zipkin_resources_and_exporter() -> None:
@@ -300,7 +313,10 @@ def test_zipkin_disabled_with_external_endpoint_still_exports_to_zipkin() -> Non
     external_endpoint = "http://external-zipkin:9411/api/v2/spans"
     docs = _helm_template(
         ["topology.zipkin.enabled=false"],
-        extra_args=["--set-string", f"topology.zipkin.exporter.endpoint={external_endpoint}"],
+        extra_args=[
+            "--set-string",
+            f"topology.zipkin.exporter.endpoint={external_endpoint}",
+        ],
     )
     config = yaml.safe_load(_find(docs, "ConfigMap", OTEL_CONFIG_NAME)["data"]["config.yaml"])
 
@@ -413,7 +429,10 @@ def test_zipkin_deployment_renders_security_contexts() -> None:
     pod_spec = deployment["spec"]["template"]["spec"]
     container = pod_spec["containers"][0]
 
-    assert pod_spec["securityContext"] == {"runAsNonRoot": True, "seccompProfile": {"type": "RuntimeDefault"}}
+    assert pod_spec["securityContext"] == {
+        "runAsNonRoot": True,
+        "seccompProfile": {"type": "RuntimeDefault"},
+    }
     assert container["securityContext"] == {
         "allowPrivilegeEscalation": False,
         "readOnlyRootFilesystem": True,
@@ -440,7 +459,9 @@ def test_zipkin_deployment_omits_disabled_probe() -> None:
     assert "startupProbe" in container
 
 
-def test_zipkin_deployment_allows_null_probe_maps_from_values_file(tmp_path: Path) -> None:
+def test_zipkin_deployment_allows_null_probe_maps_from_values_file(
+    tmp_path: Path,
+) -> None:
     values_path = _write_values_file(
         tmp_path,
         {
@@ -462,7 +483,9 @@ def test_zipkin_deployment_allows_null_probe_maps_from_values_file(tmp_path: Pat
     assert "readinessProbe" not in container
 
 
-def test_zipkin_deployment_omits_null_resources_from_values_file(tmp_path: Path) -> None:
+def test_zipkin_deployment_omits_null_resources_from_values_file(
+    tmp_path: Path,
+) -> None:
     values_path = _write_values_file(tmp_path, {"topology": {"zipkin": {"resources": None}}})
     docs = _helm_template(extra_args=["--values", str(values_path)])
     deployment = _find(docs, "Deployment", ZIPKIN_NAME)
@@ -645,7 +668,11 @@ def test_all_enabled_nimservices_inherit_otel_env() -> None:
 def test_chart_wide_nim_otel_disable_omits_managed_env() -> None:
     docs = _helm_template(["nimOperator.otel.enabled=false"])
     nimservices = [doc for doc in docs if doc.get("kind") == "NIMService"]
-    chart_managed_names = {"NIM_ENABLE_OTEL", "NIM_OTEL_EXPORTER_OTLP_ENDPOINT", "TRITON_OTEL_URL"}
+    chart_managed_names = {
+        "NIM_ENABLE_OTEL",
+        "NIM_OTEL_EXPORTER_OTLP_ENDPOINT",
+        "TRITON_OTEL_URL",
+    }
 
     assert {doc["metadata"]["name"] for doc in nimservices} == NIMSERVICE_NAMES
     for doc in nimservices:

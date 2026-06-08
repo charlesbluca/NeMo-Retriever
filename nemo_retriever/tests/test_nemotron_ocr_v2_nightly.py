@@ -71,6 +71,7 @@ def test_local_extra_accepts_stable_ocr_2_and_newer_dev_releases() -> None:
     local_deps = pyproject["project"]["optional-dependencies"]["local"]
     uv_tool = pyproject["tool"]["uv"]
     uv_sources = uv_tool["sources"]
+    uv_indexes = uv_tool["index"]
 
     ocr_dep = next(dep for dep in local_deps if dep.startswith("nemotron-ocr"))
     ocr_requirement = Requirement(ocr_dep)
@@ -87,6 +88,8 @@ def test_local_extra_accepts_stable_ocr_2_and_newer_dev_releases() -> None:
     assert "nemotron-ocr-v2" not in uv_tool["no-build-package"]
     assert "nemotron-ocr" not in uv_sources
     assert "nemotron-ocr-v2" not in uv_sources
+    assert "test-pypi" not in {index["name"] for index in uv_indexes}
+    assert all("test.pypi.org" not in index["url"] for index in uv_indexes)
 
 
 def test_local_ocr_v2_wrapper_uses_original_namespace_and_package_lang_selectors() -> None:

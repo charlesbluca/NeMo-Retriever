@@ -113,3 +113,10 @@ def test_huggingface_workflow_has_manual_stable_ocr_release_controls() -> None:
     assert "--release-version" in workflow
     assert 'expected_version="${INPUT_RELEASE_VERSION}"' in workflow
     assert "Built wheel metadata does not declare expected version" in workflow
+
+
+def test_huggingface_nightly_builder_defaults_to_public_pypi() -> None:
+    script = (REPO_ROOT / "ci" / "scripts" / "nightly_build_publish.py").read_text(encoding="utf-8")
+
+    assert 'default="https://upload.pypi.org/legacy/"' in script
+    assert 'default="PYPI_API_TOKEN"' in script

@@ -939,7 +939,8 @@ sanity check before opening Grafana.
 
 ## Tracing and Zipkin
 
-Helm installs tracing on by default:
+Helm installs the chart-owned OpenTelemetry Collector and Zipkin backend on by
+default, but pod trace export is opt-in:
 
 ```yaml
 topology:
@@ -947,12 +948,21 @@ topology:
     enabled: true
   zipkin:
     enabled: true
+
+service:
+  otel:
+    enabled: false
+
+nimOperator:
+  otel:
+    enabled: false
 ```
 
-With those defaults, retriever service pods and chart-managed NIMs emit OTLP to
-the chart's OpenTelemetry Collector, and the collector exports traces to the
-chart-owned Zipkin service. Open a job and read the Zipkin lookup key from either
-the JSON body or the `x-trace-id` response header:
+Set `service.otel.enabled=true` and `nimOperator.otel.enabled=true` to have
+retriever service pods and chart-managed NIMs emit OTLP to the chart's
+OpenTelemetry Collector. The collector exports traces to the chart-owned Zipkin
+service. Open a job and read the Zipkin lookup key from either the JSON body or
+the `x-trace-id` response header:
 
 ```bash
 kubectl port-forward svc/tracing-smoke-nemo-retriever 7670:80
@@ -985,11 +995,11 @@ topology:
 
 service:
   otel:
-    enabled: false                 # disable service pod instrumentation env
+    enabled: true                  # inject service pod instrumentation env
 
 nimOperator:
   otel:
-    enabled: false                 # disable inherited NIM OTLP env
+    enabled: true                  # inject inherited NIM OTLP env
   page_elements:
     otel:
       enabled: false               # per-NIM opt-out

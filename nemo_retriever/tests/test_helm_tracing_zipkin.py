@@ -19,6 +19,9 @@ FULLNAME = f"{RELEASE}-nemo-retriever"
 ZIPKIN_NAME = f"{FULLNAME}-zipkin"
 OTEL_NAME = f"{FULLNAME}-otel"
 OTEL_CONFIG_NAME = f"{OTEL_NAME}-config"
+SERVICE_OTEL_ENABLED = ["service.otel.enabled=true"]
+NIM_OTEL_ENABLED = ["nimOperator.otel.enabled=true"]
+POD_OTEL_ENABLED = SERVICE_OTEL_ENABLED + NIM_OTEL_ENABLED
 
 NIMSERVICE_NAMES = {
     "audio",
@@ -164,7 +167,11 @@ def _find_by_component(docs: list[dict], kind: str, component: str) -> dict:
 def test_long_release_preserves_tracing_name_suffixes_and_references() -> None:
     long_release = "a" * 53
     long_fullname = "b" * 63
-    docs = _helm_template(release_name=long_release, extra_args=["--set-string", f"fullnameOverride={long_fullname}"])
+    docs = _helm_template(
+        SERVICE_OTEL_ENABLED,
+        release_name=long_release,
+        extra_args=["--set-string", f"fullnameOverride={long_fullname}"],
+    )
 
     otel_deployment = _find_deployment_by_container(docs, "otel-collector")
     zipkin_deployment = _find_deployment_by_container(docs, "zipkin")
@@ -205,6 +212,7 @@ def test_long_release_preserves_tracing_name_suffixes_and_references() -> None:
 
 def test_null_otel_env_maps_render_as_empty_maps() -> None:
     docs = _helm_template(
+        POD_OTEL_ENABLED,
         extra_args=[
             "--set-json",
             "service.otel.env=null",
@@ -240,6 +248,26 @@ def test_default_renders_zipkin_deployment_and_service() -> None:
 
     assert service["spec"]["type"] == "ClusterIP"
     assert service["spec"]["ports"] == [{"name": "http", "protocol": "TCP", "port": 9411, "targetPort": "http"}]
+
+
+def test_default_omits_managed_service_and_nim_otel_env() -> None:
+    docs = _helm_template()
+    service_values = _env_values(_deployment_env(_find(docs, "Deployment", FULLNAME)))
+    service_managed_names = {
+        "OTEL_EXPORTER_OTLP_ENDPOINT",
+        "OTEL_SERVICE_NAME",
+        "OTEL_TRACES_EXPORTER",
+        "OTEL_METRICS_EXPORTER",
+        "OTEL_LOGS_EXPORTER",
+        "OTEL_PROPAGATORS",
+        "OTEL_RESOURCE_ATTRIBUTES",
+        "OTEL_PYTHON_EXCLUDED_URLS",
+    }
+    nim_managed_names = {"NIM_ENABLE_OTEL", "NIM_OTEL_EXPORTER_OTLP_ENDPOINT", "TRITON_OTEL_URL"}
+
+    assert service_managed_names.isdisjoint(service_values)
+    for doc in [doc for doc in docs if doc.get("kind") == "NIMService"]:
+        assert nim_managed_names.isdisjoint(_env_values(_nim_env(doc)))
 
 
 def test_tracing_pods_include_image_pull_secrets() -> None:
@@ -561,7 +589,8 @@ def test_otel_config_exports_traces_to_rendered_zipkin_endpoint() -> None:
 
 def test_standalone_service_gets_otel_env_without_duplicate_user_overrides() -> None:
     docs = _helm_template(
-        [
+        SERVICE_OTEL_ENABLED
+        + [
             "service.env[0].name=OTEL_SERVICE_NAME",
             "service.env[0].value=user-service-name",
         ]
@@ -581,7 +610,7 @@ def test_standalone_service_gets_otel_env_without_duplicate_user_overrides() -> 
 
 
 def test_split_roles_get_otel_env() -> None:
-    docs = _helm_template(["topology.mode=split"])
+    docs = _helm_template(SERVICE_OTEL_ENABLED + ["topology.mode=split"])
 
     for role in ("gateway", "realtime", "batch"):
         env = _deployment_env(_find(docs, "Deployment", f"{FULLNAME}-{role}"))
@@ -594,7 +623,7 @@ def test_split_roles_get_otel_env() -> None:
 
 
 def test_all_enabled_nimservices_inherit_otel_env() -> None:
-    docs = _helm_template()
+    docs = _helm_template(NIM_OTEL_ENABLED)
     nimservices = [doc for doc in docs if doc.get("kind") == "NIMService"]
 
     assert {doc["metadata"]["name"] for doc in nimservices} == NIMSERVICE_NAMES
@@ -632,7 +661,8 @@ def test_chart_wide_nim_otel_disable_omits_managed_env() -> None:
 
 def test_per_nim_otel_endpoint_overrides_chart_endpoint() -> None:
     docs = _helm_template(
-        [
+        NIM_OTEL_ENABLED
+        + [
             "nimOperator.otel.endpoint=http://chart-otel:4318",
             "nimOperator.rerankqa.otel.endpoint=http://per-nim-otel:4318",
         ]
@@ -650,7 +680,9 @@ def test_per_nim_otel_endpoint_overrides_chart_endpoint() -> None:
 
 
 def test_chart_nim_otel_env_endpoint_drives_triton_url() -> None:
-    docs = _helm_template(["nimOperator.otel.env.NIM_OTEL_EXPORTER_OTLP_ENDPOINT=http://env-otel:4318"])
+    docs = _helm_template(
+        NIM_OTEL_ENABLED + ["nimOperator.otel.env.NIM_OTEL_EXPORTER_OTLP_ENDPOINT=http://env-otel:4318"]
+    )
 
     page_elements = _find(docs, "NIMService", "nemotron-page-elements-v3")
     page_values = _env_values(_nim_env(page_elements))
@@ -660,7 +692,9 @@ def test_chart_nim_otel_env_endpoint_drives_triton_url() -> None:
 
 
 def test_per_nim_otel_env_endpoint_drives_triton_url() -> None:
-    docs = _helm_template(["nimOperator.rerankqa.otel.env.NIM_OTEL_EXPORTER_OTLP_ENDPOINT=http://per-env-otel:4318"])
+    docs = _helm_template(
+        NIM_OTEL_ENABLED + ["nimOperator.rerankqa.otel.env.NIM_OTEL_EXPORTER_OTLP_ENDPOINT=http://per-env-otel:4318"]
+    )
 
     rerank = _find(docs, "NIMService", "llama-nemotron-rerank-vl-1b-v2")
     rerank_values = _env_values(_nim_env(rerank))
@@ -671,7 +705,8 @@ def test_per_nim_otel_env_endpoint_drives_triton_url() -> None:
 
 def test_nim_otel_env_triton_url_override_is_preserved() -> None:
     docs = _helm_template(
-        [
+        NIM_OTEL_ENABLED
+        + [
             "nimOperator.otel.env.NIM_OTEL_EXPORTER_OTLP_ENDPOINT=http://env-otel:4318",
             "nimOperator.otel.env.TRITON_OTEL_URL=http://explicit-triton/v1/traces",
         ]
@@ -686,7 +721,8 @@ def test_nim_otel_env_triton_url_override_is_preserved() -> None:
 
 def test_existing_nim_env_endpoint_drives_triton_url_without_duplicate_endpoint() -> None:
     docs = _helm_template(
-        [
+        NIM_OTEL_ENABLED
+        + [
             "nimOperator.rerankqa.env[0].name=NIM_OTEL_EXPORTER_OTLP_ENDPOINT",
             "nimOperator.rerankqa.env[0].value=http://manual-otel:4318",
         ]
@@ -703,7 +739,8 @@ def test_existing_nim_env_endpoint_drives_triton_url_without_duplicate_endpoint(
 
 def test_existing_nim_env_endpoint_value_from_omits_chart_managed_triton_url() -> None:
     docs = _helm_template(
-        [
+        NIM_OTEL_ENABLED
+        + [
             "nimOperator.page_elements.env[0].name=NIM_OTEL_EXPORTER_OTLP_ENDPOINT",
             "nimOperator.page_elements.env[0].valueFrom.secretKeyRef.name=otel-endpoint",
             "nimOperator.page_elements.env[0].valueFrom.secretKeyRef.key=endpoint",
@@ -724,7 +761,8 @@ def test_existing_nim_env_endpoint_value_from_omits_chart_managed_triton_url() -
 
 def test_existing_nim_env_triton_url_override_is_preserved() -> None:
     docs = _helm_template(
-        [
+        NIM_OTEL_ENABLED
+        + [
             "nimOperator.rerankqa.env[0].name=NIM_OTEL_EXPORTER_OTLP_ENDPOINT",
             "nimOperator.rerankqa.env[0].value=http://manual-otel:4318",
             "nimOperator.rerankqa.env[1].name=TRITON_OTEL_URL",
@@ -743,7 +781,8 @@ def test_existing_nim_env_triton_url_override_is_preserved() -> None:
 
 def test_per_nim_otel_opt_out_and_override() -> None:
     docs = _helm_template(
-        [
+        NIM_OTEL_ENABLED
+        + [
             "nimOperator.page_elements.otel.enabled=false",
             "nimOperator.otel.endpoint=http://custom-otel:4318",
             "nimOperator.rerankqa.otel.serviceName=custom-rerank",

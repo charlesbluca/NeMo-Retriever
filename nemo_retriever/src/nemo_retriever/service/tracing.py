@@ -37,9 +37,9 @@ logger = logging.getLogger(__name__)
 _DEFAULT_SERVICE_NAME = "nemo-retriever-service"
 _CONFIGURED_PROVIDER: Any | None = None
 _TRACE_CONTEXT_PROPAGATOR = TraceContextTextMapPropagator()
-_SENSITIVE_ATTRIBUTE_TOKENS = frozenset({
-    "authorization", "auth", "token", "password", "secret", "credential", "credentials"
-})
+_SENSITIVE_ATTRIBUTE_TOKENS = frozenset(
+    {"authorization", "auth", "token", "password", "secret", "credential", "credentials"}
+)
 _RAW_CONTENT_TOKENS = frozenset({"body", "payload", "content"})
 _BENIGN_CONTENT_METADATA_TOKENS = frozenset({"count", "encoding", "language", "length", "size", "type"})
 
@@ -100,7 +100,9 @@ def configure_tracing(*, service_role: str, service_name: str | None = None) -> 
         logger.info("OpenTelemetry tracing configured: service=%s role=%s", resolved_service_name, service_role)
         return True
     except Exception as exc:
-        _cleanup_partial_tracing_setup(provider=provider, processor=processor, exporter=exporter, processor_added=processor_added)
+        _cleanup_partial_tracing_setup(
+            provider=provider, processor=processor, exporter=exporter, processor_added=processor_added
+        )
         logger.warning("OpenTelemetry tracing setup failed: %s", exc)
         return False
 

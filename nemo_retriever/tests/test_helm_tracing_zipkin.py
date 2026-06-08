@@ -164,9 +164,7 @@ def _find_by_component(docs: list[dict], kind: str, component: str) -> dict:
 def test_long_release_preserves_tracing_name_suffixes_and_references() -> None:
     long_release = "a" * 53
     long_fullname = "b" * 63
-    docs = _helm_template(
-        release_name=long_release, extra_args=["--set-string", f"fullnameOverride={long_fullname}"]
-    )
+    docs = _helm_template(release_name=long_release, extra_args=["--set-string", f"fullnameOverride={long_fullname}"])
 
     otel_deployment = _find_deployment_by_container(docs, "otel-collector")
     zipkin_deployment = _find_deployment_by_container(docs, "zipkin")
@@ -718,9 +716,9 @@ def test_existing_nim_env_endpoint_value_from_omits_chart_managed_triton_url() -
 
     _assert_unique_env_names(env)
     assert values["NIM_OTEL_EXPORTER_OTLP_ENDPOINT"] is None
-    assert next(
-        item for item in env if item["name"] == "NIM_OTEL_EXPORTER_OTLP_ENDPOINT"
-    )["valueFrom"] == {"secretKeyRef": {"name": "otel-endpoint", "key": "endpoint"}}
+    assert next(item for item in env if item["name"] == "NIM_OTEL_EXPORTER_OTLP_ENDPOINT")["valueFrom"] == {
+        "secretKeyRef": {"name": "otel-endpoint", "key": "endpoint"}
+    }
     assert "TRITON_OTEL_URL" not in values
 
 

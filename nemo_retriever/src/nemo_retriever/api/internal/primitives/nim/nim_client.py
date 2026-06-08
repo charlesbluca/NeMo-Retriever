@@ -250,7 +250,9 @@ class NimClient:
 
             return self._max_batch_sizes[model_name]
 
-    def _process_batch(self, batch_input, *, batch_data, model_name, _trace_context: dict[str, str] | None = None, **kwargs):
+    def _process_batch(
+        self, batch_input, *, batch_data, model_name, _trace_context: dict[str, str] | None = None, **kwargs
+    ):
         """
         Process a single batch input for inference using its corresponding batch_data.
 

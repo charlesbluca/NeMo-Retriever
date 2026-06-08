@@ -143,7 +143,9 @@ def _post_with_retries(
     retries_429 = 0
 
     service_tracing = _service_tracing()
-    span_parent_context = _extract_trace_context(service_tracing, trace_context) if service_tracing is not None else None
+    span_parent_context = (
+        _extract_trace_context(service_tracing, trace_context) if service_tracing is not None else None
+    )
 
     while attempt < int(max_retries):
         request_headers = dict(headers)
@@ -168,7 +170,9 @@ def _post_with_retries(
                     except Exception as exc:
                         logger.warning("OpenTelemetry trace propagation failed for NIM request: %s", exc)
                 try:
-                    response = requests.post(invoke_url, headers=request_headers, json=payload, timeout=float(timeout_s))
+                    response = requests.post(
+                        invoke_url, headers=request_headers, json=payload, timeout=float(timeout_s)
+                    )
                 except (requests.Timeout, requests.RequestException) as exc:
                     _set_span_error(span, exc)
                     raise

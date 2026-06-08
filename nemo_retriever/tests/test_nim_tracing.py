@@ -64,7 +64,7 @@ def test_post_with_retries_injects_trace_context_and_emits_safe_span(
 
     class _Response:
         status_code = 200
-        text = "{\"ok\": true}"
+        text = '{"ok": true}'
 
         def raise_for_status(self) -> None:
             return None
@@ -484,10 +484,7 @@ def test_post_with_retries_marks_final_500_span_as_error_without_secrets(
     span = _span_by_name(exported_spans, "nim.http.post")
     attrs = dict(span.attributes)
     assert attrs["http.status_code"] == 500
-    assert (
-        span.status.status_code == StatusCode.ERROR
-        or attrs.get("error.type") == "HTTP 500"
-    )
+    assert span.status.status_code == StatusCode.ERROR or attrs.get("error.type") == "HTTP 500"
     attr_text = repr(attrs)
     assert "secret-token" not in attr_text
     assert "Bearer" not in attr_text

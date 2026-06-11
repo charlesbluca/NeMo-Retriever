@@ -1,0 +1,164 @@
+# Disposable autoscaling lab config.
+#
+# Run from the repo root:
+#   python -m nemo_retriever.harness.autoscaling_lab \
+#     --config nemo_retriever/harness/autoscaling-lab.yaml \
+#     --dataset bo20 \
+#     --dry-run
+#
+# Then remove --dry-run for a real cluster run.
+
+lab:
+  run_name: autoscaling-lab
+  dataset: bo20
+  artifacts_dir: nemo_retriever/artifacts/autoscaling-lab
+  file_limit: 32
+  concurrency_steps: [8, 16, 32, 64]
+  sample_interval_s: 2.0
+  request_timeout_s: 600
+  job_timeout_s: 1800
+  max_upload_attempts: 5
+  retry_after_s: 5.0
+  keep_up: false
+
+helm:
+  chart: nemo_retriever/helm
+  release: nrl-autoscale-lab
+  namespace: nrl-autoscale-lab
+  timeout_s: 1800
+  readiness_timeout_s: 1800
+  service_local_port: 17670
+  helm_bin: helm
+  kubectl_bin: kubectl
+  helm_sudo: false
+  kubectl_sudo: false
+
+  # Add local secret/image overrides here if the cluster needs them.
+  set: {}
+
+  # The runner writes this map to generated-helm-values.yaml inside the
+  # artifact directory and passes it as the Helm values file.
+  #
+  # Default here uses CPU HPA so the lab can run without prometheus-adapter.
+  # To validate the chart's queue-depth path, switch autoscaling.queueDepth
+  # to prometheus-adapter and flip queueDepthRatio / processingLatencyP95
+  # on while disabling cpu under both realtime and batch.
+  values:
+    service:
+      installFfmpeg: false
+    persistence:
+      enabled: false
+    retrieverResults:
+      enabled: false
+    topology:
+      mode: split
+      gateway:
+        replicas: 1
+        resources:
+          requests:
+            cpu: 500m
+            memory: 1Gi
+          limits:
+            cpu: "4"
+            memory: 8Gi
+      realtime:
+        replicas: 1
+        resources:
+          requests:
+            cpu: 500m
+            memory: 2Gi
+          limits:
+            cpu: "8"
+            memory: 16Gi
+        hpa:
+          enabled: true
+          minReplicas: 1
+          maxReplicas: 4
+          metrics:
+            queueDepthRatio:
+              enabled: true
+              target: 300m
+            processingLatencyP95:
+              enabled: true
+              targetSeconds: "10"
+            cpu:
+              enabled: false
+              targetUtilizationPercentage: 60
+      batch:
+        replicas: 1
+        resources:
+          requests:
+            cpu: 500m
+            memory: 2Gi
+          limits:
+            cpu: "8"
+            memory: 16Gi
+        gpu:
+          enabled: false
+          count: 0
+        hpa:
+          enabled: true
+          minReplicas: 1
+          maxReplicas: 4
+          metrics:
+            queueDepthRatio:
+              enabled: true
+              target: 300m
+            processingLatencyP95:
+              enabled: true
+              targetSeconds: "10"
+            cpu:
+              enabled: false
+              targetUtilizationPercentage: 80
+
+    autoscaling:
+      queueDepth:
+        backend: prometheus-adapter
+
+    serviceConfig:
+      nimEndpoints:
+        pageElementsInvokeUrl: https://ai.api.nvidia.com/v1/cv/nvidia/nemotron-page-elements-v3
+        tableStructureInvokeUrl: https://ai.api.nvidia.com/v1/cv/nvidia/nemotron-table-structure-v1
+        ocrInvokeUrl: https://ai.api.nvidia.com/v1/cv/nvidia/nemotron-ocr-v1
+        embedInvokeUrl: https://integrate.api.nvidia.com/v1/embeddings
+      pipeline:
+        realtimeWorkers: 1
+        realtimeQueueSize: 4
+        batchWorkers: 1
+        batchQueueSize: 4
+      vectordb:
+        enabled: false
+
+    nims:
+      enabled: false
+
+    nimOperator:
+      page_elements:
+        enabled: false
+      table_structure:
+        enabled: false
+      ocr:
+        enabled: false
+      vlm_embed:
+        enabled: false
+      rerankqa:
+        enabled: false
+      nemotron_parse:
+        enabled: false
+      nemotron_3_nano_omni_30b_a3b_reasoning:
+        enabled: false
+      audio:
+        enabled: false
+
+datasets:
+  bo20:
+    path: /localhome/charlesb/datasets/bo20
+    input_type: pdf
+
+  bo767:
+    path: /localhome/charlesb/datasets/bo767
+    input_type: pdf
+
+  bo10k:
+    path: /localhome/charlesb/datasets/bo10k
+    input_type: pdf

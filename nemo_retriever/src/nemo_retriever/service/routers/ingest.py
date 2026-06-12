@@ -52,11 +52,13 @@ from nemo_retriever.service.services.pipeline_pool import (
     get_pipeline_pool,
 )
 from nemo_retriever.service.services.prometheus import (
+    GATEWAY_BACKEND_ATTEMPTS_TOTAL,
     GATEWAY_FORWARD_DURATION,
     INGEST_BYTES_TOTAL,
     INGEST_DOCUMENTS_TOTAL,
     INGEST_PAGES_TOTAL,
     INGEST_REQUESTS_TOTAL,
+    POOL_ENQUEUE_REJECTED_TOTAL,
 )
 from nemo_retriever.service.services.proxy import get_proxy
 from nemo_retriever.service.utils.file_type import (
@@ -217,6 +219,7 @@ async def _enqueue_or_reject(pool_type: PoolType, item: WorkItem) -> None:
     """Submit *item* to the pipeline pool, raising HTTP 429 if full."""
     pool = get_pipeline_pool()
     if pool is None:
+        POOL_ENQUEUE_REJECTED_TOTAL.labels(pool=pool_type.value, reason="unavailable").inc()
         return
     if not await pool.submit(pool_type, item):
         raise HTTPException(
@@ -299,6 +302,11 @@ async def _gateway_forward(
             role="gateway",
             endpoint=request.url.path,
             status="5xx",
+        ).inc()
+        GATEWAY_BACKEND_ATTEMPTS_TOTAL.labels(
+            pool=pool_type.value,
+            status="502",
+            reason="proxy_exception",
         ).inc()
         raise HTTPException(
             status_code=502,

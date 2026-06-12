@@ -1170,3 +1170,50 @@ def test_load_harness_config_supports_earnings_beir_defaults(monkeypatch: pytest
     assert cfg.evaluation_mode == "beir"
     assert cfg.beir_loader == "earnings_csv"
     assert cfg.beir_doc_id_field == "pdf_page"
+
+
+def test_load_harness_config_supports_autoscaling_pressure_run_type(tmp_path: Path) -> None:
+    dataset_dir = tmp_path / "dataset"
+    dataset_dir.mkdir()
+    values_file = tmp_path / "autoscaling-values.yaml"
+    values_file.write_text("topology:\n  mode: split\n", encoding="utf-8")
+    cfg_path = tmp_path / "test_configs.yaml"
+    cfg_path.write_text(
+        "\n".join(
+            [
+                "active:",
+                "  dataset: tiny",
+                "  preset: base",
+                "  run_mode: service",
+                "  run_type: autoscaling_pressure",
+                "  manage_service: true",
+                "  helm_values_file: autoscaling-values.yaml",
+                "  autoscaling_file_limit: 2",
+                "  autoscaling_sample_interval_s: 0.5",
+                "  autoscaling_workloads:",
+                "    - name: tiny_burst",
+                "      kind: mixed",
+                "      count: 4",
+                "      concurrency: 2",
+                "presets:",
+                "  base: {}",
+                "datasets:",
+                "  tiny:",
+                f"    path: {dataset_dir}",
+                "    input_type: pdf",
+                "    recall_required: false",
+                "    evaluation_mode: none",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    cfg = load_harness_config(config_file=str(cfg_path))
+
+    assert cfg.run_type == "autoscaling_pressure"
+    assert cfg.run_mode == "service"
+    assert cfg.manage_service is True
+    assert cfg.autoscaling_file_limit == 2
+    assert cfg.autoscaling_sample_interval_s == 0.5
+    assert cfg.autoscaling_workloads == [{"name": "tiny_burst", "kind": "mixed", "count": 4, "concurrency": 2}]
+    assert cfg.helm_values_file == str(values_file.resolve())

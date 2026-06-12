@@ -79,6 +79,12 @@ GATEWAY_FORWARD_DURATION = Histogram(
     buckets=(0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 120.0),
 )
 
+GATEWAY_BACKEND_ATTEMPTS_TOTAL = Counter(
+    "nemo_retriever_gateway_backend_attempts_total",
+    "Total gateway attempts to forward work to backend pools.",
+    ["pool", "status", "reason"],
+)
+
 # ── Worker-specific ──────────────────────────────────────────────────
 
 POOL_QUEUE_DEPTH = Gauge(
@@ -107,6 +113,31 @@ POOL_WORKERS = Gauge(
     "nemo_retriever_pool_workers",
     "Number of worker tasks configured for the pool.",
     ["pool"],
+)
+
+POOL_ACTIVE_WORKERS = Gauge(
+    "nemo_retriever_pool_active_workers",
+    "Current worker tasks actively processing work items.",
+    ["pool"],
+)
+
+POOL_INFLIGHT_WORK_ITEMS = Gauge(
+    "nemo_retriever_pool_inflight_work_items",
+    "Accepted work items currently queued or actively processing.",
+    ["pool"],
+)
+
+POOL_QUEUE_WAIT_DURATION = Histogram(
+    "nemo_retriever_pool_queue_wait_duration_seconds",
+    "Time a work item spends waiting in a pool queue before a worker starts it.",
+    ["pool"],
+    buckets=(0.001, 0.005, 0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 300.0),
+)
+
+POOL_ENQUEUE_REJECTED_TOTAL = Counter(
+    "nemo_retriever_pool_enqueue_rejected_total",
+    "Total work items rejected before entering a worker pool queue.",
+    ["pool", "reason"],
 )
 
 POOL_PROCESSED_TOTAL = Counter(

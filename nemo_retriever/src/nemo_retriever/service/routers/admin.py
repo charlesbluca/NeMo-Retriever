@@ -40,6 +40,8 @@ async def pool_stats(request: Request) -> dict[str, Any]:
             "realtime": {
               "queue_depth": int,
               "queue_depth_ratio": float,
+              "active_workers": int,
+              "inflight_work_items": int,
               "max_queue_size": int,
               "num_workers": int,
               "processed": int,
@@ -73,6 +75,8 @@ async def pool_stats(request: Request) -> dict[str, Any]:
             pools[pt.value] = {
                 "queue_depth": depth,
                 "queue_depth_ratio": round(depth / max_qs, 4),
+                "active_workers": p.active_workers,
+                "inflight_work_items": p.inflight_work_items,
                 "max_queue_size": p.max_queue_size,
                 "num_workers": p.num_workers,
                 "processed": p.processed,

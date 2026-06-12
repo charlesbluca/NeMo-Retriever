@@ -17,7 +17,9 @@ CHART_DIR = REPO_ROOT / "nemo_retriever" / "helm"
 PROFILE_DIR = REPO_ROOT / "nemo_retriever" / "harness" / "helm-profiles"
 
 
-@pytest.mark.parametrize("profile", ["core", "no-nims-external", "all-optional", "audio-video", "split"])
+@pytest.mark.parametrize(
+    "profile", ["core", "no-nims-external", "all-optional", "audio-video", "split", "autoscaling-pressure"]
+)
 def test_managed_helm_profiles_are_named_values_files(profile: str) -> None:
     path = PROFILE_DIR / f"{profile}.yaml"
 
@@ -61,7 +63,7 @@ def _helm_template(profile: str) -> str:
     return result.stdout
 
 
-@pytest.mark.parametrize("profile", ["core", "all-optional", "audio-video", "split"])
+@pytest.mark.parametrize("profile", ["core", "all-optional", "audio-video", "split", "autoscaling-pressure"])
 def test_managed_helm_profiles_render(profile: str) -> None:
     manifest = _helm_template(profile)
 
@@ -79,9 +81,13 @@ def test_managed_helm_profiles_render(profile: str) -> None:
         assert "name: INSTALL_FFMPEG" in manifest
         assert 'value: "true"' in manifest
         assert "name: audio" in manifest
-    elif profile == "split":
+    elif profile in {"split", "autoscaling-pressure"}:
         assert "app.kubernetes.io/component: gateway" in manifest
         assert "app.kubernetes.io/component: realtime" in manifest
         assert "app.kubernetes.io/component: batch" in manifest
         assert "kind: HorizontalPodAutoscaler" in manifest
-        assert "kind: ServiceMonitor" in manifest
+        if profile == "split":
+            assert "kind: ServiceMonitor" in manifest
+        else:
+            assert "nemo_retriever_pool_queue_depth_ratio_avg" in manifest
+            assert "name: nemotron-page-elements-v3" not in manifest

@@ -29,16 +29,20 @@ import time
 from enum import Enum
 from typing import Any, Callable
 
-from pydantic import ConfigDict
+from pydantic import ConfigDict, Field
 
 from nemo_retriever.service.config import PipelinePoolConfig
 from nemo_retriever.service.models.base import RichModel
 from nemo_retriever.service.services.prometheus import (
+    POOL_ACTIVE_WORKERS,
+    POOL_ENQUEUE_REJECTED_TOTAL,
+    POOL_INFLIGHT_WORK_ITEMS,
     POOL_MAX_QUEUE_SIZE,
     POOL_PROCESSED_TOTAL,
     POOL_PROCESSING_DURATION,
     POOL_QUEUE_DEPTH,
     POOL_QUEUE_DEPTH_RATIO,
+    POOL_QUEUE_WAIT_DURATION,
     POOL_WORKERS,
 )
 
@@ -72,6 +76,7 @@ class WorkItem(RichModel):
     # Validated per-request pipeline overrides (PipelineSpec serialised
     # to a dict). ``None`` means: run the legacy startup-baked pipeline.
     pipeline_spec: dict[str, Any] | None = None
+    enqueued_at: float = Field(default_factory=time.monotonic)
 
 
 async def _fire_gateway_callback(
@@ -136,6 +141,7 @@ class _Pool:
         self._reporter_task: asyncio.Task[None] | None = None
         self._running = False
         self._processed: int = 0
+        self._active_workers: int = 0
 
     @property
     def name(self) -> str:
@@ -163,6 +169,25 @@ class _Pool:
     def processed(self) -> int:
         return self._processed
 
+    @property
+    def active_workers(self) -> int:
+        return self._active_workers
+
+    @property
+    def inflight_work_items(self) -> int:
+        return self._active_workers + self.queue_depth
+
+    def _publish_runtime_gauges(self) -> None:
+        depth = self.queue_depth
+        max_qs = max(1, self._max_queue_size)
+        POOL_QUEUE_DEPTH.labels(pool=self._name).set(depth)
+        POOL_QUEUE_DEPTH_RATIO.labels(pool=self._name).set(depth / max_qs)
+        POOL_ACTIVE_WORKERS.labels(pool=self._name).set(self._active_workers)
+        POOL_INFLIGHT_WORK_ITEMS.labels(pool=self._name).set(self.inflight_work_items)
+
+    def _record_enqueue_rejected(self, reason: str) -> None:
+        POOL_ENQUEUE_REJECTED_TOTAL.labels(pool=self._name, reason=reason).inc()
+
     def start(self) -> None:
         if self._running:
             return
@@ -174,8 +199,7 @@ class _Pool:
         # depth (Gauge) with capacity (Gauge) at query time.
         POOL_MAX_QUEUE_SIZE.labels(pool=self._name).set(self._max_queue_size)
         POOL_WORKERS.labels(pool=self._name).set(self._num_workers)
-        POOL_QUEUE_DEPTH.labels(pool=self._name).set(0)
-        POOL_QUEUE_DEPTH_RATIO.labels(pool=self._name).set(0.0)
+        self._publish_runtime_gauges()
 
         # Periodic gauge reporter — keeps the queue-depth series live so
         # HPA decisions don't lag behind reality between submissions. We
@@ -212,15 +236,10 @@ class _Pool:
         and swallowed so a transient error in prometheus_client (e.g.
         a re-registration race in tests) never tears down the pool.
         """
-        depth_g = POOL_QUEUE_DEPTH.labels(pool=self._name)
-        ratio_g = POOL_QUEUE_DEPTH_RATIO.labels(pool=self._name)
-        max_qs = max(1, self._max_queue_size)
         try:
             while self._running:
                 try:
-                    depth = self.queue_depth
-                    depth_g.set(depth)
-                    ratio_g.set(depth / max_qs)
+                    self._publish_runtime_gauges()
                 except Exception:
                     logger.exception(
                         "Pool '%s' metrics reporter raised; continuing",
@@ -242,6 +261,7 @@ class _Pool:
 
         assert self._queue is not None
         duration_h = POOL_PROCESSING_DURATION.labels(pool=self._name)
+        queue_wait_h = POOL_QUEUE_WAIT_DURATION.labels(pool=self._name)
         processed_ok = POOL_PROCESSED_TOTAL.labels(pool=self._name, outcome="completed")
         processed_err = POOL_PROCESSED_TOTAL.labels(pool=self._name, outcome="failed")
         while True:
@@ -249,6 +269,9 @@ class _Pool:
             if item is None:
                 self._queue.task_done()
                 return
+            queue_wait_h.observe(max(time.monotonic() - item.enqueued_at, 0.0))
+            self._active_workers += 1
+            self._publish_runtime_gauges()
             # Per-item timer covers the *useful* work — tracker bookkeeping
             # is excluded so the histogram reflects pipeline cost only.
             t0 = time.monotonic()
@@ -315,16 +338,21 @@ class _Pool:
                     processed_ok.inc()
                 else:
                     processed_err.inc()
+                self._active_workers = max(0, self._active_workers - 1)
                 self._queue.task_done()
+                self._publish_runtime_gauges()
 
     async def submit(self, item: WorkItem) -> bool:
         """Enqueue a work item.  Returns ``False`` if the queue is full."""
         if not self._running or self._queue is None:
+            self._record_enqueue_rejected("not_running")
             return False
         try:
             self._queue.put_nowait(item)
+            self._publish_runtime_gauges()
             return True
         except asyncio.QueueFull:
+            self._record_enqueue_rejected("full")
             return False
 
     def has_capacity(self) -> bool:
@@ -372,12 +400,12 @@ class _Pool:
 
         self._workers.clear()
         self._queue = None
-        # Reset depth gauges so a terminating pod doesn't keep its last
-        # high-water mark live on the scraper. We deliberately leave the
+        self._active_workers = 0
+        # Reset runtime gauges so a terminating pod doesn't keep stale
+        # demand signals live on the scraper. We deliberately leave the
         # *configuration* gauges (max_queue_size, workers) untouched —
         # those are pod identity, not runtime state.
-        POOL_QUEUE_DEPTH.labels(pool=self._name).set(0)
-        POOL_QUEUE_DEPTH_RATIO.labels(pool=self._name).set(0.0)
+        self._publish_runtime_gauges()
         logger.info("Pool '%s' shut down (processed=%d)", self._name, self._processed)
 
     def stats(self) -> dict[str, Any]:
@@ -386,6 +414,8 @@ class _Pool:
             "num_workers": self._num_workers,
             "max_queue_size": self._max_queue_size,
             "queue_depth": self.queue_depth,
+            "active_workers": self._active_workers,
+            "inflight_work_items": self.inflight_work_items,
             "processed": self._processed,
             "running": self._running,
         }
@@ -451,6 +481,7 @@ class PipelinePool:
     async def submit(self, pool_type: PoolType, item: WorkItem) -> bool:
         pool = self.pool_for(pool_type)
         if pool is None:
+            POOL_ENQUEUE_REJECTED_TOTAL.labels(pool=pool_type.value, reason="unavailable").inc()
             return False
         return await pool.submit(item)
 

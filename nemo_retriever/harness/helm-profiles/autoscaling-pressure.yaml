@@ -1,0 +1,85 @@
+# Split-topology pressure profile for autoscaling observability runs.
+# Intentionally undersized so the harness can expose queue wait,
+# enqueue rejection, backend attempts, HPA events, and per-pod demand skew.
+service:
+  installFfmpeg: false
+
+persistence:
+  enabled: false
+
+retrieverResults:
+  enabled: false
+
+topology:
+  mode: split
+  gateway:
+    replicas: 1
+  realtime:
+    replicas: 1
+    hpa:
+      enabled: true
+      minReplicas: 1
+      maxReplicas: 4
+      metrics:
+        queueDepthRatio:
+          enabled: true
+          target: 300m
+        processingLatencyP95:
+          enabled: true
+          targetSeconds: "10"
+        cpu:
+          enabled: false
+          targetUtilizationPercentage: 60
+  batch:
+    replicas: 1
+    gpu:
+      enabled: false
+      count: 0
+    hpa:
+      enabled: true
+      minReplicas: 1
+      maxReplicas: 4
+      metrics:
+        queueDepthRatio:
+          enabled: true
+          target: 300m
+        processingLatencyP95:
+          enabled: true
+          targetSeconds: "10"
+        cpu:
+          enabled: false
+          targetUtilizationPercentage: 80
+
+autoscaling:
+  queueDepth:
+    backend: prometheus-adapter
+
+serviceConfig:
+  pipeline:
+    realtimeWorkers: 1
+    realtimeQueueSize: 4
+    batchWorkers: 1
+    batchQueueSize: 4
+  vectordb:
+    enabled: false
+
+nims:
+  enabled: false
+
+nimOperator:
+  page_elements:
+    enabled: false
+  table_structure:
+    enabled: false
+  ocr:
+    enabled: false
+  vlm_embed:
+    enabled: false
+  rerankqa:
+    enabled: false
+  nemotron_parse:
+    enabled: false
+  nemotron_3_nano_omni_30b_a3b_reasoning:
+    enabled: false
+  audio:
+    enabled: false

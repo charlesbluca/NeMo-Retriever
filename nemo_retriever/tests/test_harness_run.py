@@ -1767,3 +1767,54 @@ def test_managed_service_mode_does_not_mutate_source_config(monkeypatch, tmp_pat
     assert captured["manager_cfg"] is cfg
     assert captured["service_cfg"] is not cfg
     assert captured["service_cfg"].service_url == "http://localhost:17670"
+
+
+def test_run_entry_dispatches_autoscaling_pressure_run_type(monkeypatch, tmp_path: Path) -> None:
+    dataset_dir = tmp_path / "dataset"
+    dataset_dir.mkdir()
+    cfg = HarnessConfig(
+        dataset_dir=str(dataset_dir),
+        dataset_label="tiny",
+        preset="base",
+        run_mode="service",
+        run_type="autoscaling_pressure",
+        manage_service=True,
+    )
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(harness_run, "load_harness_config", lambda **_kwargs: cfg)
+
+    import nemo_retriever.harness.autoscaling_pressure as autoscaling_pressure
+
+    def _fake_autoscaling_pressure(_cfg, _artifact_dir, *, run_id, tags=None, skip_local_history=False):
+        captured["cfg"] = _cfg
+        captured["artifact_dir"] = _artifact_dir
+        captured["run_id"] = run_id
+        captured["tags"] = tags
+        captured["skip_local_history"] = skip_local_history
+        return {
+            "success": True,
+            "return_code": 0,
+            "failure_reason": None,
+            "artifacts": {"attempts": str((_artifact_dir / "autoscaling_attempts.jsonl").resolve())},
+        }
+
+    monkeypatch.setattr(autoscaling_pressure, "run_autoscaling_pressure", _fake_autoscaling_pressure)
+
+    result = harness_run._run_entry(
+        run_name="autoscale",
+        config_file=None,
+        session_dir=tmp_path,
+        dataset=None,
+        preset=None,
+        tags=["pressure"],
+        skip_local_history=True,
+    )
+
+    assert captured["cfg"] is cfg
+    assert captured["artifact_dir"] == tmp_path / "autoscale"
+    assert captured["run_id"] == "autoscale"
+    assert captured["tags"] == ["pressure"]
+    assert captured["skip_local_history"] is True
+    assert result["run_name"] == "autoscale"
+    assert result["artifact_dir"] == str((tmp_path / "autoscale").resolve())

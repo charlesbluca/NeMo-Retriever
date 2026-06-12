@@ -30,8 +30,29 @@ from fastapi.responses import Response
 
 from nemo_retriever.service.config import GatewayConfig
 from nemo_retriever.service.services.pipeline_pool import PoolType
+from nemo_retriever.service.services.prometheus import GATEWAY_BACKEND_ATTEMPTS_TOTAL
 
 logger = logging.getLogger(__name__)
+
+
+def _backend_attempt_reason(status_code: int) -> str:
+    if status_code < 400:
+        return "success"
+    if status_code == 429:
+        return "backend_429"
+    if 400 <= status_code < 500:
+        return "backend_4xx"
+    if 500 <= status_code < 600:
+        return "backend_5xx"
+    return "backend_other"
+
+
+def _record_backend_attempt(pool_type: PoolType, status_code: int, reason: str) -> None:
+    GATEWAY_BACKEND_ATTEMPTS_TOTAL.labels(
+        pool=pool_type.value,
+        status=str(status_code),
+        reason=reason,
+    ).inc()
 
 
 def _error_response(status_code: int, detail: str) -> Response:
@@ -129,6 +150,7 @@ class GatewayProxy:
         except httpx.ConnectError as exc:
             detail = f"Gateway failed to connect to {backend_label} backend " f"at {backend_url}{target_path}: {exc}"
             logger.error(detail)
+            _record_backend_attempt(pool_type, 502, "connect_error")
             return _error_response(502, detail)
         except httpx.TimeoutException as exc:
             detail = (
@@ -136,6 +158,7 @@ class GatewayProxy:
                 f"at {backend_url}{target_path} after {self._config.timeout_s}s: {exc}"
             )
             logger.error(detail)
+            _record_backend_attempt(pool_type, 504, "timeout")
             return _error_response(504, detail)
         except httpx.HTTPError as exc:
             detail = (
@@ -143,8 +166,10 @@ class GatewayProxy:
                 f"at {backend_url}{target_path}: {type(exc).__name__}: {exc}"
             )
             logger.error(detail)
+            _record_backend_attempt(pool_type, 502, "transport_error")
             return _error_response(502, detail)
 
+        _record_backend_attempt(pool_type, backend_resp.status_code, _backend_attempt_reason(backend_resp.status_code))
         if backend_resp.status_code >= 400:
             body_preview = backend_resp.text[:500]
             logger.warning(
@@ -180,12 +205,16 @@ class GatewayProxy:
         try:
             backend_resp = await client.get(path, headers=fwd_headers)
         except httpx.ConnectError as exc:
+            _record_backend_attempt(pool_type, 502, "connect_error")
             return _error_response(502, f"Gateway failed to connect to {backend_label}: {exc}")
         except httpx.TimeoutException as exc:
+            _record_backend_attempt(pool_type, 504, "timeout")
             return _error_response(504, f"Gateway timed out on {backend_label}: {exc}")
         except httpx.HTTPError as exc:
+            _record_backend_attempt(pool_type, 502, "transport_error")
             return _error_response(502, f"Gateway transport error on {backend_label}: {type(exc).__name__}: {exc}")
 
+        _record_backend_attempt(pool_type, backend_resp.status_code, _backend_attempt_reason(backend_resp.status_code))
         excluded = {"transfer-encoding", "content-encoding", "content-length"}
         resp_headers = {k: v for k, v in backend_resp.headers.items() if k.lower() not in excluded}
         return Response(

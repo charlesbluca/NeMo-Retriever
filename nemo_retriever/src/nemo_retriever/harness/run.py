@@ -1507,7 +1507,17 @@ def _run_entry(
 
     resolved_run_name = run_name or cfg.dataset_label
     normalized_tags = _normalize_tags(tags)
-    if graph_code is not None:
+    if cfg.run_type == "autoscaling_pressure":
+        from nemo_retriever.harness.autoscaling_pressure import run_autoscaling_pressure
+
+        result = run_autoscaling_pressure(
+            cfg,
+            artifact_dir,
+            run_id=resolved_run_name,
+            tags=normalized_tags,
+            skip_local_history=skip_local_history,
+        )
+    elif graph_code is not None:
         result = _run_graph_pipeline(
             cfg,
             graph_code,

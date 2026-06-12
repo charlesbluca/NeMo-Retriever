@@ -16,6 +16,7 @@ REPO_ROOT = NEMO_RETRIEVER_ROOT.parent
 DEFAULT_TEST_CONFIG_PATH = NEMO_RETRIEVER_ROOT / "harness" / "test_configs.yaml"
 DEFAULT_NIGHTLY_CONFIG_PATH = NEMO_RETRIEVER_ROOT / "harness" / "nightly_config.yaml"
 VALID_RUN_MODES = {"batch", "inprocess", "service"}
+VALID_RUN_TYPES = {"standard", "autoscaling_pressure"}
 VALID_EVALUATION_MODES = {"none", "audio_recall", "beir"}
 VALID_RECALL_ADAPTERS = {"none"}
 VALID_BEIR_LOADERS = {"bo10k_csv", "bo767_csv", "earnings_csv", "financebench_json", "jp20_csv", "vidore_hf"}
@@ -74,6 +75,7 @@ class HarnessConfig:
     dataset_label: str
     preset: str
     run_mode: str = "inprocess"
+    run_type: str = "standard"
 
     query_csv: str | None = None
     input_type: str = "pdf"
@@ -117,6 +119,14 @@ class HarnessConfig:
 
     service_url: str | None = None
     service_max_concurrency: int = 8
+
+    autoscaling_workloads: list[dict[str, Any]] = field(default_factory=list)
+    autoscaling_file_limit: int = 64
+    autoscaling_sample_interval_s: float = 2.0
+    autoscaling_request_timeout_s: float = 600.0
+    autoscaling_job_timeout_s: float = 1800.0
+    autoscaling_max_upload_attempts: int = 5
+    autoscaling_retry_after_s: float = 5.0
 
     manage_service: bool = False
     keep_up: bool = False
@@ -171,6 +181,43 @@ class HarnessConfig:
 
         if self.run_mode not in VALID_RUN_MODES:
             errors.append(f"run_mode must be one of {sorted(VALID_RUN_MODES)}")
+
+        if self.run_type not in VALID_RUN_TYPES:
+            errors.append(f"run_type must be one of {sorted(VALID_RUN_TYPES)}")
+
+        if self.run_type == "autoscaling_pressure":
+            if self.run_mode != "service":
+                errors.append("run_type='autoscaling_pressure' requires run_mode='service'")
+            if not self.manage_service:
+                errors.append("run_type='autoscaling_pressure' requires manage_service=true")
+            if self.input_type != "pdf":
+                errors.append("run_type='autoscaling_pressure' currently supports input_type='pdf' only")
+            if int(self.autoscaling_file_limit) < 1:
+                errors.append("autoscaling_file_limit must be >= 1")
+            if float(self.autoscaling_sample_interval_s) <= 0:
+                errors.append("autoscaling_sample_interval_s must be > 0")
+            if float(self.autoscaling_request_timeout_s) <= 0:
+                errors.append("autoscaling_request_timeout_s must be > 0")
+            if float(self.autoscaling_job_timeout_s) <= 0:
+                errors.append("autoscaling_job_timeout_s must be > 0")
+            if int(self.autoscaling_max_upload_attempts) < 1:
+                errors.append("autoscaling_max_upload_attempts must be >= 1")
+            for idx, workload in enumerate(self.autoscaling_workloads):
+                if not isinstance(workload, dict):
+                    errors.append(f"autoscaling_workloads[{idx}] must be a mapping")
+                    continue
+                try:
+                    concurrency = int(workload.get("concurrency", 0))
+                except (TypeError, ValueError):
+                    concurrency = 0
+                try:
+                    count = int(workload.get("count", 0))
+                except (TypeError, ValueError):
+                    count = 0
+                if concurrency < 1:
+                    errors.append(f"autoscaling_workloads[{idx}].concurrency must be >= 1")
+                if count < 1:
+                    errors.append(f"autoscaling_workloads[{idx}].count must be >= 1")
 
         if self.run_mode == "service":
             if not self.manage_service and not self.service_url:
@@ -394,6 +441,7 @@ def _apply_env_overrides(config_dict: dict[str, Any]) -> None:
         "HARNESS_DATASET_DIR": ("dataset_dir", str),
         "HARNESS_PRESET": ("preset", str),
         "HARNESS_RUN_MODE": ("run_mode", str),
+        "HARNESS_RUN_TYPE": ("run_type", str),
         "HARNESS_QUERY_CSV": ("query_csv", str),
         "HARNESS_INPUT_TYPE": ("input_type", str),
         "HARNESS_RECALL_REQUIRED": ("recall_required", _parse_bool),
@@ -435,6 +483,12 @@ def _apply_env_overrides(config_dict: dict[str, Any]) -> None:
         "HARNESS_USE_HEURISTICS": ("use_heuristics", _parse_bool),
         "HARNESS_SERVICE_URL": ("service_url", str),
         "HARNESS_SERVICE_MAX_CONCURRENCY": ("service_max_concurrency", _parse_number),
+        "HARNESS_AUTOSCALING_FILE_LIMIT": ("autoscaling_file_limit", _parse_number),
+        "HARNESS_AUTOSCALING_SAMPLE_INTERVAL_S": ("autoscaling_sample_interval_s", _parse_number),
+        "HARNESS_AUTOSCALING_REQUEST_TIMEOUT_S": ("autoscaling_request_timeout_s", _parse_number),
+        "HARNESS_AUTOSCALING_JOB_TIMEOUT_S": ("autoscaling_job_timeout_s", _parse_number),
+        "HARNESS_AUTOSCALING_MAX_UPLOAD_ATTEMPTS": ("autoscaling_max_upload_attempts", _parse_number),
+        "HARNESS_AUTOSCALING_RETRY_AFTER_S": ("autoscaling_retry_after_s", _parse_number),
         "HARNESS_MANAGE_SERVICE": ("manage_service", _parse_bool),
         "HARNESS_KEEP_UP": ("keep_up", _parse_bool),
         "HARNESS_HELM_CHART": ("helm_chart", str),

@@ -14,7 +14,7 @@ from unittest.mock import patch
 import pytest
 from fastapi.testclient import TestClient
 
-from nemo_retriever.llm.types import GenerationResult
+from nemo_retriever.models.llm.types import GenerationResult
 from nemo_retriever.service.app import create_app
 from nemo_retriever.service.config import LLMConfig, LoggingConfig, PipelinePoolConfig, ServiceConfig, VectorDbConfig
 
@@ -116,7 +116,7 @@ def test_answer_retrieves_from_vectordb_and_generates_with_configured_llm(
         )
     )
 
-    with patch("nemo_retriever.llm.clients.LiteLLMClient.from_kwargs", return_value=fake_llm) as from_kwargs:
+    with patch("nemo_retriever.models.llm.clients.LiteLLMClient.from_kwargs", return_value=fake_llm) as from_kwargs:
         resp = app_with_answer_config.post(
             "/v1/answer",
             json={"query": "What generates answers?", "top_k": 2, "include_chunks": True, "include_metadata": True},
@@ -179,7 +179,7 @@ def test_answer_preserves_vectordb_error_content_type(
 
     monkeypatch.setattr("httpx.AsyncClient", _FakeAsyncClient)
 
-    with patch("nemo_retriever.llm.clients.LiteLLMClient.from_kwargs") as from_kwargs:
+    with patch("nemo_retriever.models.llm.clients.LiteLLMClient.from_kwargs") as from_kwargs:
         resp = app_with_answer_config.post("/v1/answer", json={"query": "q"})
 
     assert resp.status_code == 429
@@ -235,7 +235,7 @@ def test_answer_response_fields_respect_chunk_and_metadata_flags(
 
     fake_llm = SimpleNamespace(generate=_generate)
 
-    with patch("nemo_retriever.llm.clients.LiteLLMClient.from_kwargs", return_value=fake_llm):
+    with patch("nemo_retriever.models.llm.clients.LiteLLMClient.from_kwargs", return_value=fake_llm):
         resp = app_with_answer_config.post("/v1/answer", json={"query": "q", "include_metadata": True})
 
     assert resp.status_code == 200, resp.text
@@ -287,7 +287,7 @@ def test_answer_preserves_present_empty_text_hit_before_fallbacks(
 
     fake_llm = SimpleNamespace(generate=_generate)
 
-    with patch("nemo_retriever.llm.clients.LiteLLMClient.from_kwargs", return_value=fake_llm):
+    with patch("nemo_retriever.models.llm.clients.LiteLLMClient.from_kwargs", return_value=fake_llm):
         resp = app_with_answer_config.post("/v1/answer", json={"query": "q", "include_chunks": True})
 
     assert resp.status_code == 200, resp.text
@@ -388,7 +388,7 @@ def test_answer_forwards_request_reasoning_override(
 
     fake_llm = SimpleNamespace(generate=_generate)
 
-    with patch("nemo_retriever.llm.clients.LiteLLMClient.from_kwargs", return_value=fake_llm):
+    with patch("nemo_retriever.models.llm.clients.LiteLLMClient.from_kwargs", return_value=fake_llm):
         resp = app_with_answer_config.post("/v1/answer", json={"query": "q", "reasoning_enabled": True})
 
     assert resp.status_code == 200, resp.text
@@ -429,7 +429,7 @@ def test_answer_returns_502_when_llm_generation_fails(
         )
     )
 
-    with patch("nemo_retriever.llm.clients.LiteLLMClient.from_kwargs", return_value=fake_llm):
+    with patch("nemo_retriever.models.llm.clients.LiteLLMClient.from_kwargs", return_value=fake_llm):
         resp = app_with_answer_config.post("/v1/answer", json={"query": "q"})
 
     assert resp.status_code == 502

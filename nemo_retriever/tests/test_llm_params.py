@@ -149,7 +149,7 @@ class TestLiteLLMClientConstruction:
         assert client.sampling.top_p is None
 
     def test_from_kwargs_preserves_provider_reasoning_by_default(self):
-        from nemo_retriever.llm.clients import LiteLLMClient
+        from nemo_retriever.models.llm.clients import LiteLLMClient
 
         client = LiteLLMClient.from_kwargs(model="m")
         assert client.transport.reasoning_enabled is True
@@ -234,7 +234,7 @@ class TestLiteLLMRAGPrompt:
 
     @patch("litellm.completion")
     def test_generate_disables_reasoning_with_portable_request_controls(self, mock_completion):
-        from nemo_retriever.llm.clients import LiteLLMClient
+        from nemo_retriever.models.llm.clients import LiteLLMClient
 
         mock_completion.return_value = _fake_litellm_response("answer")
         client = LiteLLMClient.from_kwargs(
@@ -254,7 +254,7 @@ class TestLiteLLMRAGPrompt:
 
     @patch("litellm.completion")
     def test_generate_leaves_reasoning_request_defaults_when_enabled(self, mock_completion):
-        from nemo_retriever.llm.clients import LiteLLMClient
+        from nemo_retriever.models.llm.clients import LiteLLMClient
 
         mock_completion.return_value = _fake_litellm_response("answer")
         client = LiteLLMClient.from_kwargs(model="m", reasoning_enabled=True)
@@ -267,7 +267,7 @@ class TestLiteLLMRAGPrompt:
 
     @patch("litellm.completion")
     def test_generate_can_override_reasoning_per_call(self, mock_completion):
-        from nemo_retriever.llm.clients import LiteLLMClient
+        from nemo_retriever.models.llm.clients import LiteLLMClient
 
         mock_completion.return_value = _fake_litellm_response("answer")
         client = LiteLLMClient.from_kwargs(model="m", reasoning_enabled=True)
@@ -279,7 +279,7 @@ class TestLiteLLMRAGPrompt:
 
     @patch("litellm.completion")
     def test_generate_uses_custom_rag_system_prompt(self, mock_completion):
-        from nemo_retriever.llm.clients import LiteLLMClient
+        from nemo_retriever.models.llm.clients import LiteLLMClient
 
         mock_completion.return_value = _fake_litellm_response("answer")
         client = LiteLLMClient.from_kwargs(
@@ -427,7 +427,7 @@ class TestBackCompatCallSites:
         assert op._client.sampling.max_tokens == 128
 
     def test_qa_generation_operator_forwards_reasoning_enabled(self):
-        from nemo_retriever.evaluation.generation import QAGenerationOperator
+        from nemo_retriever.tools.evaluation.generation import QAGenerationOperator
 
         op = QAGenerationOperator(model="m", reasoning_enabled=True)
         assert op._client.transport.reasoning_enabled is True
@@ -435,9 +435,9 @@ class TestBackCompatCallSites:
     def test_pipeline_builder_generate_forwards_reasoning_enabled(self):
         from unittest.mock import MagicMock
 
-        from nemo_retriever.evaluation.generation import QAGenerationOperator
-        from nemo_retriever.llm.clients import LiteLLMClient
-        from nemo_retriever.retriever import RetrieverPipelineBuilder
+        from nemo_retriever.tools.evaluation.generation import QAGenerationOperator
+        from nemo_retriever.models.llm.clients import LiteLLMClient
+        from nemo_retriever.graph.retriever import RetrieverPipelineBuilder
 
         retriever = MagicMock()
         retriever.top_k = 5
@@ -454,8 +454,8 @@ class TestBackCompatCallSites:
         from types import SimpleNamespace
         from unittest.mock import MagicMock
 
-        from nemo_retriever.evaluation.generation import QAGenerationOperator
-        from nemo_retriever.retriever import RetrieverPipelineBuilder
+        from nemo_retriever.tools.evaluation.generation import QAGenerationOperator
+        from nemo_retriever.graph.retriever import RetrieverPipelineBuilder
 
         retriever = MagicMock()
         retriever.top_k = 5

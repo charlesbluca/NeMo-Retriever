@@ -1433,7 +1433,7 @@ async def answer(req: AnswerRequest, request: Request) -> Response | AnswerRespo
     chunks = [_text_from_hit(hit) for hit in hits]
     metadata = [_metadata_from_hit(hit) for hit in hits]
 
-    from nemo_retriever.llm.clients import LiteLLMClient
+    from nemo_retriever.models.llm.clients import LiteLLMClient
 
     llm_cfg = config.llm
     llm = getattr(request.app.state, "answer_llm_client", None)

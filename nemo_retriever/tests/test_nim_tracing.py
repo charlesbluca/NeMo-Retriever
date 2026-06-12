@@ -14,9 +14,9 @@ import requests
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor, SpanExportResult
 from opentelemetry.trace import StatusCode
 
-from nemo_retriever.api.internal.primitives.nim.nim_client import NimClient as InternalNimClient
-from nemo_retriever.nim.nim import NIMClient as HttpNIMClient
-from nemo_retriever.nim.nim import _post_with_retries
+from nemo_retriever.models.nim.primitives.nim_client import NimClient as InternalNimClient
+from nemo_retriever.models.nim.nim import NIMClient as HttpNIMClient
+from nemo_retriever.models.nim.nim import _post_with_retries
 from nemo_retriever.service import tracing
 
 
@@ -76,7 +76,7 @@ def test_post_with_retries_injects_trace_context_and_emits_safe_span(
         captured_headers.append(dict(headers))
         return _Response()
 
-    monkeypatch.setattr("nemo_retriever.nim.nim.requests.post", _post)
+    monkeypatch.setattr("nemo_retriever.models.nim.nim.requests.post", _post)
     original_headers = {
         "Accept": "application/json",
         "Authorization": "Bearer secret-token",
@@ -157,7 +157,7 @@ def test_internal_nim_client_http_injects_trace_context_and_emits_infer_span(
         captured_headers.append(dict(headers))
         return _Response()
 
-    monkeypatch.setattr("nemo_retriever.api.internal.primitives.nim.nim_client.requests.post", _post)
+    monkeypatch.setattr("nemo_retriever.models.nim.primitives.nim_client.requests.post", _post)
 
     client = InternalNimClient(
         model_interface=_PrimitiveModelInterface(),
@@ -249,7 +249,7 @@ def test_internal_nim_client_grpc_passes_trace_context_headers_when_supported(
             def close(self) -> None:
                 return None
 
-    monkeypatch.setattr("nemo_retriever.api.internal.primitives.nim.nim_client._triton_grpc", lambda: _GrpcModule)
+    monkeypatch.setattr("nemo_retriever.models.nim.primitives.nim_client._triton_grpc", lambda: _GrpcModule)
 
     client = InternalNimClient(
         model_interface=_PrimitiveModelInterface(),
@@ -300,7 +300,7 @@ def test_public_nim_client_executor_path_preserves_parent_trace_context(
         captured_headers.append(dict(headers))
         return _Response()
 
-    monkeypatch.setattr("nemo_retriever.nim.nim.requests.post", _post)
+    monkeypatch.setattr("nemo_retriever.models.nim.nim.requests.post", _post)
     client = HttpNIMClient(max_pool_workers=1)
     try:
         with tracing.start_span("test.parent"):
@@ -344,7 +344,7 @@ def test_internal_nim_client_infer_executor_path_preserves_parent_trace_context(
         captured_headers.append(dict(headers))
         return _Response()
 
-    monkeypatch.setattr("nemo_retriever.api.internal.primitives.nim.nim_client.requests.post", _post)
+    monkeypatch.setattr("nemo_retriever.models.nim.primitives.nim_client.requests.post", _post)
     client = InternalNimClient(
         model_interface=_PrimitiveModelInterface(),
         protocol="http",
@@ -386,7 +386,7 @@ def test_public_nim_client_chat_executor_path_preserves_parent_trace_context(
         captured_headers.append(dict(headers))
         return _Response()
 
-    monkeypatch.setattr("nemo_retriever.nim.nim.requests.post", _post)
+    monkeypatch.setattr("nemo_retriever.models.nim.nim.requests.post", _post)
     client = HttpNIMClient(max_pool_workers=1)
     try:
         with tracing.start_span("test.parent"):
@@ -465,7 +465,7 @@ def test_post_with_retries_marks_final_500_span_as_error_without_secrets(
     def _post(*args: Any, **kwargs: Any) -> _Response:
         return _Response()
 
-    monkeypatch.setattr("nemo_retriever.nim.nim.requests.post", _post)
+    monkeypatch.setattr("nemo_retriever.models.nim.nim.requests.post", _post)
 
     with pytest.raises(requests.HTTPError):
         _post_with_retries(

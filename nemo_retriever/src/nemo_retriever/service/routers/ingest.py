@@ -27,7 +27,7 @@ from typing import Any
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from starlette.responses import StreamingResponse
 
 from nemo_retriever.common.schemas.pipeline_spec import PipelineSpec
@@ -44,6 +44,12 @@ from nemo_retriever.common.schemas.responses import (
     SidecarUploadResponse,
 )
 from nemo_retriever.common.policy import PolicyError, validate_pipeline_spec
+from nemo_retriever.models.llm.types import (
+    AnswerRequest as CoreAnswerRequest,
+    AnswerResult,
+    RetrievalResult,
+    build_answer_result,
+)
 from nemo_retriever.service.services.event_bus import get_event_bus
 from nemo_retriever.service.services.job_tracker import MarkOutcome, get_job_tracker
 from nemo_retriever.service.services.metrics import get_metrics
@@ -81,22 +87,20 @@ _PAGE_THRESHOLD_FOR_BATCH = 5
 SSE_KEEPALIVE_TIMEOUT_S = 30.0
 
 
-class AnswerRequest(BaseModel):
+class ServiceAnswerRequest(BaseModel):
     query: str
     top_k: int = Field(default=5, ge=1, le=1000)
     include_chunks: bool = False
     include_metadata: bool = False
     reasoning_enabled: bool | None = None
+    reference: str | None = None
+    judge: bool = False
 
-
-class AnswerResponse(BaseModel):
-    query: str
-    answer: str
-    model: str
-    latency_s: float
-    chunk_count: int
-    chunks: list[str] | None = None
-    metadata: list[dict[str, Any]] | None = None
+    @model_validator(mode="after")
+    def _validate_judge_reference(self) -> "ServiceAnswerRequest":
+        if self.judge and self.reference is None:
+            raise ValueError("judge requires reference")
+        return self
 
 
 logger = logging.getLogger(__name__)
@@ -641,7 +645,7 @@ async def get_job_documents(
     else:
         filtered = docs
 
-    page = filtered[offset : offset + limit]
+    page = filtered[offset: offset + limit]
     return JobDocumentsPage(
         job_id=agg.job_id,
         total=len(docs),
@@ -1379,10 +1383,10 @@ def _metadata_from_hit(hit: dict[str, Any]) -> dict[str, Any]:
 
 @router.post(
     "/answer",
-    response_model=AnswerResponse,
+    response_model=AnswerResult,
     summary="Search ingested documents and generate an answer",
 )
-async def answer(req: AnswerRequest, request: Request) -> Response | AnswerResponse:
+async def answer(req: ServiceAnswerRequest, request: Request) -> Response | AnswerResult:
     """Retrieve context from VectorDB and answer with the configured LLM."""
     import httpx
 
@@ -1407,12 +1411,20 @@ async def answer(req: AnswerRequest, request: Request) -> Response | AnswerRespo
             detail="Answer endpoint is not available on worker pods. Use the gateway.",
         )
 
+    answer_req = CoreAnswerRequest(
+        query=req.query,
+        top_k=req.top_k,
+        reasoning_enabled=req.reasoning_enabled,
+        reference=req.reference,
+        judge_enabled=req.judge,
+    )
+
     vectordb_url = config.vectordb.vectordb_url.rstrip("/")
     target = f"{vectordb_url}/v1/query"
 
     try:
         async with httpx.AsyncClient(timeout=60.0) as client:
-            resp = await client.post(target, json={"query": req.query, "top_k": req.top_k})
+            resp = await client.post(target, json={"query": answer_req.query, "top_k": answer_req.top_k})
     except Exception as exc:
         logger.exception("Failed to query vectordb at %s for answer generation", target)
         raise HTTPException(
@@ -1430,10 +1442,12 @@ async def answer(req: AnswerRequest, request: Request) -> Response | AnswerRespo
     payload = resp.json()
     result_sets = payload.get("results") or []
     hits = result_sets[0].get("hits", []) if result_sets else []
-    chunks = [_text_from_hit(hit) for hit in hits]
-    metadata = [_metadata_from_hit(hit) for hit in hits]
+    retrieval = RetrievalResult(
+        chunks=[_text_from_hit(hit) for hit in hits],
+        metadata=[_metadata_from_hit(hit) for hit in hits],
+    )
 
-    from nemo_retriever.models.llm.clients import LiteLLMClient
+    from nemo_retriever.models.llm.clients import LLMJudge, LiteLLMClient
 
     llm_cfg = config.llm
     llm = getattr(request.app.state, "answer_llm_client", None)
@@ -1453,11 +1467,15 @@ async def answer(req: AnswerRequest, request: Request) -> Response | AnswerRespo
             reasoning_enabled=llm_cfg.reasoning_enabled,
         )
         request.app.state.answer_llm_client = llm
+
+    generate_kwargs: dict[str, Any] = {}
+    if answer_req.reasoning_enabled is not None:
+        generate_kwargs["reasoning_enabled"] = answer_req.reasoning_enabled
     gen = await asyncio.to_thread(
         llm.generate,
-        req.query,
-        chunks,
-        reasoning_enabled=req.reasoning_enabled,
+        answer_req.query,
+        retrieval.chunks,
+        **generate_kwargs,
     )
     if gen.error:
         logger.error("LLM answer generation failed for model %s: %s", gen.model, gen.error)
@@ -1466,14 +1484,34 @@ async def answer(req: AnswerRequest, request: Request) -> Response | AnswerRespo
             detail=f"LLM answer generation failed: {gen.error}",
         )
 
-    return AnswerResponse(
-        query=req.query,
-        answer=gen.answer,
-        model=gen.model,
-        latency_s=gen.latency_s,
-        chunk_count=len(chunks),
-        chunks=chunks if req.include_chunks else None,
-        metadata=metadata if req.include_metadata else None,
+    judge = None
+    if answer_req.judge_enabled:
+        judge = getattr(request.app.state, "answer_judge_client", None)
+        if judge is None:
+            judge = LLMJudge.from_kwargs(
+                model=llm_cfg.model,
+                api_base=llm_cfg.api_base,
+                api_key=llm_cfg.api_key,
+                extra_params=dict(llm_cfg.extra_params),
+                num_retries=llm_cfg.num_retries,
+                timeout=llm_cfg.timeout,
+            )
+            request.app.state.answer_judge_client = judge
+
+    result = await asyncio.to_thread(
+        build_answer_result,
+        query=answer_req.query,
+        retrieval=retrieval,
+        generation=gen,
+        reference=answer_req.reference,
+        judge=judge,
+    )
+
+    return result.model_copy(
+        update={
+            "chunks": result.chunks if req.include_chunks else None,
+            "metadata": result.metadata if req.include_metadata else None,
+        }
     )
 
 

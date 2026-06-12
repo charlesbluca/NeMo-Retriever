@@ -14,7 +14,7 @@ from unittest.mock import patch
 import pytest
 from fastapi.testclient import TestClient
 
-from nemo_retriever.models.llm.types import GenerationResult
+from nemo_retriever.models.llm.types import GenerationResult, JudgeResult
 from nemo_retriever.service.app import create_app
 from nemo_retriever.service.config import LLMConfig, LoggingConfig, PipelinePoolConfig, ServiceConfig, VectorDbConfig
 
@@ -393,6 +393,142 @@ def test_answer_forwards_request_reasoning_override(
 
     assert resp.status_code == 200, resp.text
     assert seen["reasoning_enabled"] is True
+
+
+def test_answer_scores_reference_without_judge(
+    app_with_answer_config: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _FakeResponse:
+        status_code = 200
+        content = json.dumps(
+            {
+                "results": [
+                    {
+                        "hits": [
+                            {
+                                "text": "RAG retrieves passages and feeds them to a generator.",
+                                "source": "doc.pdf",
+                            }
+                        ]
+                    }
+                ]
+            }
+        ).encode()
+
+        def json(self) -> dict[str, Any]:
+            return json.loads(self.content.decode())
+
+    class _FakeAsyncClient:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        async def post(self, url: str, **kwargs) -> _FakeResponse:
+            return _FakeResponse()
+
+    monkeypatch.setattr("httpx.AsyncClient", _FakeAsyncClient)
+    fake_llm = SimpleNamespace(
+        generate=lambda query, chunks: GenerationResult(
+            answer="RAG retrieves passages and feeds them to a generator.",
+            latency_s=0.1,
+            model="m",
+        )
+    )
+
+    with (
+        patch("nemo_retriever.models.llm.clients.LiteLLMClient.from_kwargs", return_value=fake_llm),
+        patch("nemo_retriever.models.llm.clients.LLMJudge.from_kwargs") as judge_from_kwargs,
+    ):
+        resp = app_with_answer_config.post(
+            "/v1/answer",
+            json={
+                "query": "What is RAG?",
+                "reference": "RAG retrieves passages and feeds them to a generator.",
+                "include_chunks": True,
+            },
+        )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["chunk_count"] == 1
+    assert body["chunks"] == ["RAG retrieves passages and feeds them to a generator."]
+    assert body["metadata"] is None
+    assert body["answer_in_context"] is True
+    assert body["token_f1"] == pytest.approx(1.0, abs=1e-6)
+    assert body["exact_match"] is True
+    assert body["judge_score"] is None
+    judge_from_kwargs.assert_not_called()
+
+
+def test_answer_scores_with_opt_in_judge(
+    app_with_answer_config: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _FakeResponse:
+        status_code = 200
+        content = json.dumps({"results": [{"hits": [{"text": "context"}]}]}).encode()
+
+        def json(self) -> dict[str, Any]:
+            return json.loads(self.content.decode())
+
+    class _FakeAsyncClient:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        async def post(self, url: str, **kwargs) -> _FakeResponse:
+            return _FakeResponse()
+
+    monkeypatch.setattr("httpx.AsyncClient", _FakeAsyncClient)
+    fake_llm = SimpleNamespace(
+        generate=lambda query, chunks: GenerationResult(answer="expected answer", latency_s=0.1, model="m")
+    )
+    fake_judge = SimpleNamespace(
+        judge=lambda query, reference, candidate: JudgeResult(score=1.0, reasoning="", error=None)
+    )
+
+    with (
+        patch("nemo_retriever.models.llm.clients.LiteLLMClient.from_kwargs", return_value=fake_llm),
+        patch("nemo_retriever.models.llm.clients.LLMJudge.from_kwargs", return_value=fake_judge) as judge_from_kwargs,
+    ):
+        resp = app_with_answer_config.post(
+            "/v1/answer",
+            json={"query": "q", "reference": "expected answer", "judge": True},
+        )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["judge_score"] == 1.0
+    assert body["judge_error"] is None
+    assert body["failure_mode"] == "correct"
+    assert body["chunks"] is None
+    assert body["metadata"] is None
+    judge_from_kwargs.assert_called_once_with(
+        model="openai/nvidia/llama-3.3-nemotron-super-49b-v1.5",
+        api_base="http://llama-3-3-nemotron-super-49b-v1-5:8000/v1",
+        api_key="not-needed",
+        extra_params={},
+        num_retries=3,
+        timeout=180.0,
+    )
+
+
+def test_answer_judge_requires_reference(app_with_answer_config: TestClient) -> None:
+    resp = app_with_answer_config.post("/v1/answer", json={"query": "q", "judge": True})
+
+    assert resp.status_code == 422
+    assert "judge requires reference" in resp.text
 
 
 def test_answer_returns_502_when_llm_generation_fails(

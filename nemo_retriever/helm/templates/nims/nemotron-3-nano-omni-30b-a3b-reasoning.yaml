@@ -1,4 +1,6 @@
 {{- if and (and (.Capabilities.APIVersions.Has "apps.nvidia.com/v1alpha1") .Values.nims.enabled) (eq .Values.nimOperator.nemotron_3_nano_omni_30b_a3b_reasoning.enabled true) -}}
+{{- $cacheEnabled := eq (include "nemo-retriever.nimcache.enabled" (dict "context" $ "key" "nemotron_3_nano_omni_30b_a3b_reasoning")) "true" -}}
+{{- if $cacheEnabled -}}
 apiVersion: apps.nvidia.com/v1alpha1
 kind: NIMCache
 metadata:
@@ -7,16 +9,17 @@ metadata:
 spec:
   source:
     ngc:
-      modelPuller: "{{ .Values.nimOperator.nemotron_3_nano_omni_30b_a3b_reasoning.image.repository }}:{{ .Values.nimOperator.nemotron_3_nano_omni_30b_a3b_reasoning.image.tag }}"
+      modelPuller: "{{ include "nemo-retriever.nimcache.modelPuller" (dict "context" $ "key" "nemotron_3_nano_omni_30b_a3b_reasoning") }}"
       pullSecret: "{{ index .Values.nimOperator.nemotron_3_nano_omni_30b_a3b_reasoning.image.pullSecrets 0 }}"
       authSecret: {{ .Values.nimOperator.nemotron_3_nano_omni_30b_a3b_reasoning.authSecret }}
-      {{- include "nemo-retriever.nimcache.modelBlock" (dict "context" $ "key" "nemotron_3_nano_omni_30b_a3b_reasoning") | nindent 6 }}
+      {{- include "nemo-retriever.nimcache.ngcExtras" (dict "context" $ "key" "nemotron_3_nano_omni_30b_a3b_reasoning") | nindent 6 }}
   storage:
     pvc:
       create: {{ .Values.nimOperator.nemotron_3_nano_omni_30b_a3b_reasoning.storage.pvc.create }}
       storageClass: {{ .Values.nimOperator.nemotron_3_nano_omni_30b_a3b_reasoning.storage.pvc.storageClass | quote }}
       size: {{ .Values.nimOperator.nemotron_3_nano_omni_30b_a3b_reasoning.storage.pvc.size }}
       volumeAccessMode: {{ .Values.nimOperator.nemotron_3_nano_omni_30b_a3b_reasoning.storage.pvc.volumeAccessMode }}
+{{- end }}
 ---
 apiVersion: apps.nvidia.com/v1alpha1
 kind: NIMService
@@ -30,9 +33,7 @@ spec:
     pullSecrets:
 {{ toYaml .Values.nimOperator.nemotron_3_nano_omni_30b_a3b_reasoning.image.pullSecrets | indent 6 }}
   authSecret: {{ .Values.nimOperator.nemotron_3_nano_omni_30b_a3b_reasoning.authSecret }}
-  storage:
-    nimCache:
-      name: nemotron-3-nano-omni-30b-a3b-reasoning
+  {{- include "nemo-retriever.nimServiceStorage" (dict "context" $ "key" "nemotron_3_nano_omni_30b_a3b_reasoning" "name" "nemotron-3-nano-omni-30b-a3b-reasoning") | nindent 2 }}
   replicas: {{ .Values.nimOperator.nemotron_3_nano_omni_30b_a3b_reasoning.replicas }}
   nodeSelector:
 {{ toYaml .Values.nimOperator.nemotron_3_nano_omni_30b_a3b_reasoning.nodeSelector | indent 4 }}

@@ -381,12 +381,17 @@ pair gated on three conditions ALL holding:
 | `nimOperator.<key>.image.repository`   | `nvcr.io/nim/nvidia/...` | Per-NIM image. |
 | `nimOperator.<key>.image.pullSecrets`  | `[ngc-secret]` | Referenced by the NIMService CR. |
 | `nimOperator.<key>.authSecret`         | `ngc-api`      | NIM auth Secret name. |
-| `nimOperator.<key>.storage.pvc.size`   | `25Gi` (50Gi for vlm_embed/rerankqa, 100Gi parse, 300Gi VL) | NIMCache PVC size. |
+| `nimOperator.<key>.invokePath`         | `/v1/infer` for page/table/OCR | HTTP path used when the chart auto-wires an operator-managed NIM URL into `serviceConfig`. Override for runtimes with different routes, such as `/v1/page-elements` or `/v1/table-structure`. |
+| `nimOperator.<key>.storage.nimCache.enabled` | `true` | Render a NIMCache and point the matching NIMService at `storage.nimCache`. Set `false` for image-bundled NIMs that should run directly from NIMService storage. |
+| `nimOperator.<key>.storage.service`    | `{}`    | NIMService `spec.storage` rendered only when `storage.nimCache.enabled=false`. Empty defaults to `emptyDir: {}`; set `emptyDir.sizeLimit`, `pvc`, or `hostPath` as needed. |
+| `nimOperator.<key>.storage.pvc.size`   | `25Gi` (50Gi for vlm_embed/rerankqa, 100Gi parse, 300Gi VL) | NIMCache PVC size; ignored when `storage.nimCache.enabled=false`. |
 | `nimOperator.<key>.replicas`           | `1`     | Per-NIMService replica count. |
 | `nimOperator.nimServiceGpuLimit`       | `1`     | Default `nvidia.com/gpu` limit on every NIMService when per-NIM `resources` is `{}`. Set to `null` for operator-only reconciliation (not reliable on all NIM Operator versions — see [GPU limits and `helm upgrade`](#gpu-limits-and-helm-upgrade)). |
 | `nimOperator.<key>.resources`          | `{}`    | Per-NIM override of the whole `resources` block. Empty uses `nimServiceGpuLimit`; non-empty replaces the chart default (may require `--force-conflicts` on later `helm upgrade`). |
 | `nimOperator.modelProfile`             | `{}`    | Chart-wide NIMCache GPU/profile filter. Applied to every NIMCache that does not have its own override. See [Filtering cached GPU profiles](#filtering-cached-gpu-profiles). |
 | `nimOperator.<key>.modelProfile`       | `{}`    | Per-NIM NIMCache GPU/profile filter. Non-empty values REPLACE the chart-wide default (no merge). See [Filtering cached GPU profiles](#filtering-cached-gpu-profiles). |
+| `nimOperator.<key>.modelPuller`        | `""`  | Optional NIMCache `spec.source.ngc.modelPuller` override. Empty uses the runtime image. Set when a Universal/image-bundled runtime needs a separate cache puller image. |
+| `nimOperator.<key>.modelEndpoint`      | `""`  | Optional NIMCache `spec.source.ngc.modelEndpoint` for Universal NIM cache flows. Empty omits the field. |
 | `nimOperator.<key>.expose.service.port` | `8000` (9000 for audio) | HTTP port. |
 | `nimOperator.<key>.expose.service.grpcPort` | `8001` (50051 for audio) | gRPC port. |
 
@@ -395,6 +400,37 @@ pair gated on three conditions ALL holding:
 > when `nimOperator.<key>.enabled` is `true` in `values.yaml`, but the
 > retriever-service won't call them unless you wire your pipeline to use them.
 > For 26.05, prefer the [minimal install](#recommended-minimal-install-2605) overrides.
+
+#### Direct NIMService storage { #direct-nimservice-storage }
+
+By default each enabled NIM renders a `NIMCache` plus a `NIMService` that mounts
+that cache. Some image-bundled or Universal NIM builds do not publish the
+manifest shape the NIMCache controller expects. Those builds can bypass
+NIMCache per NIM and let the NIMService mount its own writable model-store
+volume instead:
+
+```bash
+helm upgrade --install retriever ./nemo_retriever/helm \
+  --set nimOperator.page_elements.storage.nimCache.enabled=false \
+  --set nimOperator.page_elements.storage.service.emptyDir.sizeLimit=25Gi \
+  --set nimOperator.page_elements.invokePath=/v1/page-elements \
+  --set nimOperator.table_structure.storage.nimCache.enabled=false \
+  --set nimOperator.table_structure.storage.service.emptyDir.sizeLimit=25Gi \
+  --set nimOperator.table_structure.invokePath=/v1/table-structure
+```
+
+When `storage.nimCache.enabled=false`, the chart omits that NIM's `NIMCache`
+resource and renders `nimOperator.<key>.storage.service` directly under
+`NIMService.spec.storage`. If `storage.service` is empty, the chart renders
+`emptyDir: {}` so the operator still gets an explicit model-store volume. Use
+this path for validated image-bundled NIMs; cache-backed NIMs should keep the
+default `storage.nimCache.enabled=true` path.
+
+For Universal NIM cache flows that still use NIMCache, set
+`nimOperator.<key>.modelEndpoint`. If the runtime image does not include the
+operator's cache entrypoint (`create-model-store`), also set
+`nimOperator.<key>.modelPuller` to a compatible puller image; otherwise it
+inherits the runtime image.
 
 #### Filtering cached GPU profiles { #filtering-cached-gpu-profiles }
 

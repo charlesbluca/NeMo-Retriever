@@ -833,10 +833,28 @@ nimOperator:
       pullSecrets:
         - ngc-secret
     authSecret: ngc-api
+    # In-cluster HTTP path used when this NIM is auto-wired into serviceConfig.
+    invokePath: "/v1/infer"
     # Per-NIM NIMCache GPU/profile filter. See `nimOperator.modelProfile`
     # above for the shape; non-empty REPLACES the chart-wide default.
     modelProfile: {}
+    # Optional override for NIMCache `spec.source.ngc.modelPuller`. Empty uses
+    # this NIM's runtime image (`image.repository:image.tag`). Set this when a
+    # Universal/image-bundled runtime needs a separate cache puller image.
+    modelPuller: ""
+    # Optional `spec.source.ngc.modelEndpoint` for Universal NIM cache flows.
+    # Leave empty for normal model-puller based NIMCache reconciliation.
+    modelEndpoint: ""
     storage:
+      # Default NIM Operator flow: render a NIMCache and point the NIMService
+      # at `storage.nimCache`. Set `enabled: false` for image-bundled NIMs
+      # that should run directly from the NIMService with `storage.service`.
+      nimCache:
+        enabled: true
+      # Rendered under NIMService `spec.storage` only when nimCache.enabled=false.
+      # Example: `{emptyDir: {sizeLimit: "25Gi"}}`.
+      service: {}
+      # NIMCache PVC settings; ignored by the NIMService direct-storage path.
       pvc:
         create: true
         storageClass: ""
@@ -877,10 +895,28 @@ nimOperator:
       pullSecrets:
         - ngc-secret
     authSecret: ngc-api
+    # In-cluster HTTP path used when this NIM is auto-wired into serviceConfig.
+    invokePath: "/v1/infer"
     # Per-NIM NIMCache GPU/profile filter. See `nimOperator.modelProfile`
     # above for the shape; non-empty REPLACES the chart-wide default.
     modelProfile: {}
+    # Optional override for NIMCache `spec.source.ngc.modelPuller`. Empty uses
+    # this NIM's runtime image (`image.repository:image.tag`). Set this when a
+    # Universal/image-bundled runtime needs a separate cache puller image.
+    modelPuller: ""
+    # Optional `spec.source.ngc.modelEndpoint` for Universal NIM cache flows.
+    # Leave empty for normal model-puller based NIMCache reconciliation.
+    modelEndpoint: ""
     storage:
+      # Default NIM Operator flow: render a NIMCache and point the NIMService
+      # at `storage.nimCache`. Set `enabled: false` for image-bundled NIMs
+      # that should run directly from the NIMService with `storage.service`.
+      nimCache:
+        enabled: true
+      # Rendered under NIMService `spec.storage` only when nimCache.enabled=false.
+      # Example: `{emptyDir: {sizeLimit: "25Gi"}}`.
+      service: {}
+      # NIMCache PVC settings; ignored by the NIMService direct-storage path.
       pvc:
         create: true
         storageClass: ""
@@ -923,10 +959,28 @@ nimOperator:
       pullSecrets:
         - ngc-secret
     authSecret: ngc-api
+    # In-cluster HTTP path used when this NIM is auto-wired into serviceConfig.
+    invokePath: "/v1/infer"
     # Per-NIM NIMCache GPU/profile filter. See `nimOperator.modelProfile`
     # above for the shape; non-empty REPLACES the chart-wide default.
     modelProfile: {}
+    # Optional override for NIMCache `spec.source.ngc.modelPuller`. Empty uses
+    # this NIM's runtime image (`image.repository:image.tag`). Set this when a
+    # Universal/image-bundled runtime needs a separate cache puller image.
+    modelPuller: ""
+    # Optional `spec.source.ngc.modelEndpoint` for Universal NIM cache flows.
+    # Leave empty for normal model-puller based NIMCache reconciliation.
+    modelEndpoint: ""
     storage:
+      # Default NIM Operator flow: render a NIMCache and point the NIMService
+      # at `storage.nimCache`. Set `enabled: false` for image-bundled NIMs
+      # that should run directly from the NIMService with `storage.service`.
+      nimCache:
+        enabled: true
+      # Rendered under NIMService `spec.storage` only when nimCache.enabled=false.
+      # Example: `{emptyDir: {sizeLimit: "25Gi"}}`.
+      service: {}
+      # NIMCache PVC settings; ignored by the NIMService direct-storage path.
       pvc:
         create: true
         storageClass: ""
@@ -966,10 +1020,28 @@ nimOperator:
       pullSecrets:
         - ngc-secret
     authSecret: ngc-api
+    # In-cluster HTTP path used when this NIM is auto-wired into serviceConfig.
+    invokePath: "/v1/embeddings"
     # Per-NIM NIMCache GPU/profile filter. See `nimOperator.modelProfile`
     # above for the shape; non-empty REPLACES the chart-wide default.
     modelProfile: {}
+    # Optional override for NIMCache `spec.source.ngc.modelPuller`. Empty uses
+    # this NIM's runtime image (`image.repository:image.tag`). Set this when a
+    # Universal/image-bundled runtime needs a separate cache puller image.
+    modelPuller: ""
+    # Optional `spec.source.ngc.modelEndpoint` for Universal NIM cache flows.
+    # Leave empty for normal model-puller based NIMCache reconciliation.
+    modelEndpoint: ""
     storage:
+      # Default NIM Operator flow: render a NIMCache and point the NIMService
+      # at `storage.nimCache`. Set `enabled: false` for image-bundled NIMs
+      # that should run directly from the NIMService with `storage.service`.
+      nimCache:
+        enabled: true
+      # Rendered under NIMService `spec.storage` only when nimCache.enabled=false.
+      # Example: `{emptyDir: {sizeLimit: "25Gi"}}`.
+      service: {}
+      # NIMCache PVC settings; ignored by the NIMService direct-storage path.
       pvc:
         create: true
         storageClass: ""
@@ -1029,10 +1101,28 @@ nimOperator:
       pullSecrets:
         - ngc-secret
     authSecret: ngc-api
+    # In-cluster HTTP path used when this NIM is auto-wired into serviceConfig.
+    invokePath: "/v1/ranking"
     # Per-NIM NIMCache GPU/profile filter. See `nimOperator.modelProfile`
     # above for the shape; non-empty REPLACES the chart-wide default.
     modelProfile: {}
+    # Optional override for NIMCache `spec.source.ngc.modelPuller`. Empty uses
+    # this NIM's runtime image (`image.repository:image.tag`). Set this when a
+    # Universal/image-bundled runtime needs a separate cache puller image.
+    modelPuller: ""
+    # Optional `spec.source.ngc.modelEndpoint` for Universal NIM cache flows.
+    # Leave empty for normal model-puller based NIMCache reconciliation.
+    modelEndpoint: ""
     storage:
+      # Default NIM Operator flow: render a NIMCache and point the NIMService
+      # at `storage.nimCache`. Set `enabled: false` for image-bundled NIMs
+      # that should run directly from the NIMService with `storage.service`.
+      nimCache:
+        enabled: true
+      # Rendered under NIMService `spec.storage` only when nimCache.enabled=false.
+      # Example: `{emptyDir: {sizeLimit: "25Gi"}}`.
+      service: {}
+      # NIMCache PVC settings; ignored by the NIMService direct-storage path.
       pvc:
         create: true
         storageClass: ""
@@ -1081,10 +1171,28 @@ nimOperator:
       pullSecrets:
         - ngc-secret
     authSecret: ngc-api
+    # In-cluster HTTP path used when this NIM is auto-wired into serviceConfig.
+    invokePath: "/v1/infer"
     # Per-NIM NIMCache GPU/profile filter. See `nimOperator.modelProfile`
     # above for the shape; non-empty REPLACES the chart-wide default.
     modelProfile: {}
+    # Optional override for NIMCache `spec.source.ngc.modelPuller`. Empty uses
+    # this NIM's runtime image (`image.repository:image.tag`). Set this when a
+    # Universal/image-bundled runtime needs a separate cache puller image.
+    modelPuller: ""
+    # Optional `spec.source.ngc.modelEndpoint` for Universal NIM cache flows.
+    # Leave empty for normal model-puller based NIMCache reconciliation.
+    modelEndpoint: ""
     storage:
+      # Default NIM Operator flow: render a NIMCache and point the NIMService
+      # at `storage.nimCache`. Set `enabled: false` for image-bundled NIMs
+      # that should run directly from the NIMService with `storage.service`.
+      nimCache:
+        enabled: true
+      # Rendered under NIMService `spec.storage` only when nimCache.enabled=false.
+      # Example: `{emptyDir: {sizeLimit: "25Gi"}}`.
+      service: {}
+      # NIMCache PVC settings; ignored by the NIMService direct-storage path.
       pvc:
         create: true
         storageClass: ""
@@ -1139,10 +1247,28 @@ nimOperator:
       pullSecrets:
         - ngc-secret
     authSecret: ngc-api
+    # In-cluster HTTP path used when this NIM is auto-wired into serviceConfig.
+    invokePath: "/v1/chat/completions"
     # Per-NIM NIMCache GPU/profile filter. See `nimOperator.modelProfile`
     # above for the shape; non-empty REPLACES the chart-wide default.
     modelProfile: {}
+    # Optional override for NIMCache `spec.source.ngc.modelPuller`. Empty uses
+    # this NIM's runtime image (`image.repository:image.tag`). Set this when a
+    # Universal/image-bundled runtime needs a separate cache puller image.
+    modelPuller: ""
+    # Optional `spec.source.ngc.modelEndpoint` for Universal NIM cache flows.
+    # Leave empty for normal model-puller based NIMCache reconciliation.
+    modelEndpoint: ""
     storage:
+      # Default NIM Operator flow: render a NIMCache and point the NIMService
+      # at `storage.nimCache`. Set `enabled: false` for image-bundled NIMs
+      # that should run directly from the NIMService with `storage.service`.
+      nimCache:
+        enabled: true
+      # Rendered under NIMService `spec.storage` only when nimCache.enabled=false.
+      # Example: `{emptyDir: {sizeLimit: "25Gi"}}`.
+      service: {}
+      # NIMCache PVC settings; ignored by the NIMService direct-storage path.
       pvc:
         create: true
         storageClass: ""
@@ -1178,7 +1304,23 @@ nimOperator:
     # Per-NIM NIMCache GPU/profile filter. See `nimOperator.modelProfile`
     # above for the shape; non-empty REPLACES the chart-wide default.
     modelProfile: {}
+    # Optional override for NIMCache `spec.source.ngc.modelPuller`. Empty uses
+    # this NIM's runtime image (`image.repository:image.tag`). Set this when a
+    # Universal/image-bundled runtime needs a separate cache puller image.
+    modelPuller: ""
+    # Optional `spec.source.ngc.modelEndpoint` for Universal NIM cache flows.
+    # Leave empty for normal model-puller based NIMCache reconciliation.
+    modelEndpoint: ""
     storage:
+      # Default NIM Operator flow: render a NIMCache and point the NIMService
+      # at `storage.nimCache`. Set `enabled: false` for image-bundled NIMs
+      # that should run directly from the NIMService with `storage.service`.
+      nimCache:
+        enabled: true
+      # Rendered under NIMService `spec.storage` only when nimCache.enabled=false.
+      # Example: `{emptyDir: {sizeLimit: "25Gi"}}`.
+      service: {}
+      # NIMCache PVC settings; ignored by the NIMService direct-storage path.
       pvc:
         create: true
         storageClass: ""

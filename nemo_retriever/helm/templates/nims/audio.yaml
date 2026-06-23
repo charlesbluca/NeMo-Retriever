@@ -1,4 +1,6 @@
 {{- if and (and (.Capabilities.APIVersions.Has "apps.nvidia.com/v1alpha1") .Values.nims.enabled) (eq .Values.nimOperator.audio.enabled true) -}}
+{{- $cacheEnabled := eq (include "nemo-retriever.nimcache.enabled" (dict "context" $ "key" "audio")) "true" -}}
+{{- if $cacheEnabled -}}
 apiVersion: apps.nvidia.com/v1alpha1
 kind: NIMCache
 metadata:
@@ -7,16 +9,17 @@ metadata:
 spec:
   source:
     ngc:
-      modelPuller: "{{ .Values.nimOperator.audio.image.repository }}:{{ .Values.nimOperator.audio.image.tag }}"
+      modelPuller: "{{ include "nemo-retriever.nimcache.modelPuller" (dict "context" $ "key" "audio") }}"
       pullSecret: "{{ index .Values.nimOperator.audio.image.pullSecrets 0 }}"
       authSecret: {{ .Values.nimOperator.audio.authSecret }}
-      {{- include "nemo-retriever.nimcache.modelBlock" (dict "context" $ "key" "audio") | nindent 6 }}
+      {{- include "nemo-retriever.nimcache.ngcExtras" (dict "context" $ "key" "audio") | nindent 6 }}
   storage:
     pvc:
       create: {{ .Values.nimOperator.audio.storage.pvc.create }}
       storageClass: {{ .Values.nimOperator.audio.storage.pvc.storageClass | quote }}
       size: {{ .Values.nimOperator.audio.storage.pvc.size }}
       volumeAccessMode: {{ .Values.nimOperator.audio.storage.pvc.volumeAccessMode }}
+{{- end }}
 ---
 apiVersion: apps.nvidia.com/v1alpha1
 kind: NIMService
@@ -30,9 +33,7 @@ spec:
     pullSecrets:
 {{ toYaml .Values.nimOperator.audio.image.pullSecrets | indent 6 }}
   authSecret: {{ .Values.nimOperator.audio.authSecret }}
-  storage:
-    nimCache:
-      name: audio
+  {{- include "nemo-retriever.nimServiceStorage" (dict "context" $ "key" "audio" "name" "audio") | nindent 2 }}
   replicas: {{ .Values.nimOperator.audio.replicas }}
   nodeSelector:
 {{ toYaml .Values.nimOperator.audio.nodeSelector | indent 4 }}

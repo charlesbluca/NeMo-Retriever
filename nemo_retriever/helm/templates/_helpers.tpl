@@ -237,13 +237,96 @@ resources:
 
 {{/*
 =============================================================================
+NIM Operator storage mode helpers
+=============================================================================
+
+Most NIMs use the NIM Operator's NIMCache controller: the chart renders one
+NIMCache and points the matching NIMService at ``storage.nimCache``. Some newer
+image-bundled / universal NIM builds do not expose the manifest expected by
+NIMCache and need the NIMService to run directly with its own writable storage
+instead.
+
+Per-NIM ``nimOperator.<key>.storage.nimCache.enabled`` controls that split:
+
+  true  (default) — render NIMCache and NIMService ``storage.nimCache``.
+  false           — omit NIMCache and render ``storage.service`` under
+                    NIMService ``spec.storage``. If no service storage is
+                    supplied, use ``emptyDir: {}`` so the operator has an
+                    explicit model-store volume.
+*/}}
+{{- define "nemo-retriever.nimcache.enabled" -}}
+{{- $ctx := .context -}}
+{{- $key := .key -}}
+{{- $cfg := index $ctx.Values.nimOperator $key -}}
+{{- $enabled := true -}}
+{{- if and $cfg $cfg.storage $cfg.storage.nimCache (hasKey $cfg.storage.nimCache "enabled") -}}
+{{- $enabled = $cfg.storage.nimCache.enabled -}}
+{{- end -}}
+{{- if $enabled -}}true{{- else -}}false{{- end -}}
+{{- end -}}
+
+{{- define "nemo-retriever.nimServiceStorage" -}}
+{{- $ctx := .context -}}
+{{- $key := .key -}}
+{{- $name := .name -}}
+{{- $cfg := index $ctx.Values.nimOperator $key -}}
+{{- $cacheEnabled := eq (include "nemo-retriever.nimcache.enabled" (dict "context" $ctx "key" $key)) "true" -}}
+storage:
+{{- if $cacheEnabled }}
+  nimCache:
+    name: {{ $name }}
+{{- if hasKey . "profile" }}
+    profile: {{ .profile | quote }}
+{{- end }}
+{{- else }}
+{{- $serviceStorage := dict -}}
+{{- if and $cfg $cfg.storage (hasKey $cfg.storage "service") -}}
+{{- $serviceStorage = ($cfg.storage.service | default dict) -}}
+{{- end -}}
+{{- if $serviceStorage }}
+{{ toYaml $serviceStorage | indent 2 }}
+{{- else }}
+  emptyDir: {}
+{{- end }}
+{{- end }}
+{{- end -}}
+
+{{- define "nemo-retriever.nimcache.modelPuller" -}}
+{{- $ctx := .context -}}
+{{- $key := .key -}}
+{{- $cfg := index $ctx.Values.nimOperator $key -}}
+{{- if and $cfg (hasKey $cfg "modelPuller") $cfg.modelPuller -}}
+{{- $cfg.modelPuller -}}
+{{- else -}}
+{{- printf "%s:%s" $cfg.image.repository ($cfg.image.tag | toString) -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+NIMCache NGC source extras
+
+``modelEndpoint`` is optional in the v1alpha1 CRD and is used by universal NIM
+cache flows. ``modelBlock`` remains the existing GPU/profile filter.
+*/}}
+{{- define "nemo-retriever.nimcache.ngcExtras" -}}
+{{- $ctx := .context -}}
+{{- $key := .key -}}
+{{- $cfg := index $ctx.Values.nimOperator $key -}}
+{{- if and $cfg (hasKey $cfg "modelEndpoint") $cfg.modelEndpoint }}
+modelEndpoint: {{ $cfg.modelEndpoint | quote }}
+{{- end }}
+{{- include "nemo-retriever.nimcache.modelBlock" (dict "context" $ctx "key" $key) -}}
+{{- end -}}
+
+{{/*
+=============================================================================
 NIM Operator endpoint resolution
 =============================================================================
 
 The NIM Operator creates a Kubernetes Service with the same name as the
 NIMService resource. The chart hardcodes that name per-NIM (matching the
 file name under templates/nims/<model>.yaml) so the retriever-service
-config can address each NIM as `http://<service-name>:<port><invokePath>`.
+config can address each NIM as `http://<service-name>:<port><invokePath>`. Per-NIM `invokePath` values override the default path passed by the caller.
 
 Mapping (key -> Service name, default invokePath):
   page_elements                          -> nemotron-page-elements-v3                /v1/infer
@@ -358,7 +441,11 @@ nemo-retriever.nimOperator.url
 {{- if and $cfg.expose $cfg.expose.service $cfg.expose.service.port -}}
 {{- $port = int $cfg.expose.service.port -}}
 {{- end -}}
-{{- printf "http://%s:%d%s" .serviceName $port .invokePath -}}
+{{- $invokePath := .invokePath -}}
+{{- if and $cfg (hasKey $cfg "invokePath") $cfg.invokePath -}}
+{{- $invokePath = $cfg.invokePath -}}
+{{- end -}}
+{{- printf "http://%s:%d%s" .serviceName $port $invokePath -}}
 {{- end -}}
 {{- end -}}
 

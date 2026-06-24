@@ -331,8 +331,7 @@ def test_graph_ingestor_return_failures_returns_service_tuples_from_path(monkeyp
     assert failures == [
         (
             "doc-a.pdf",
-            "row 0, column page_elements_v3, path error: "
-            "remote_inference: ConnectionError: connection refused",
+            "row 0, column page_elements_v3, path error: " "remote_inference: ConnectionError: connection refused",
         )
     ]
 

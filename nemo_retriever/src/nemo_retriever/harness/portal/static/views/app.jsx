@@ -15,6 +15,9 @@ function App() {
   const [filterDataset, setFilterDataset] = useState("");
   const [filterCommit, setFilterCommit] = useState("");
   const [loading, setLoading] = useState(true);
+  const [recentSuccessData, setRecentSuccessData] = useState({ runs: [] });
+  const [recentSuccessesLoading, setRecentSuccessesLoading] = useState(true);
+  const [recentSuccessesError, setRecentSuccessesError] = useState(null);
   const [selectedRun, setSelectedRun] = useState(null);
   const [showTrigger, setShowTrigger] = useState(false);
   const [logViewerJobId, setLogViewerJobId] = useState(null);
@@ -47,6 +50,22 @@ function App() {
       setRuns(await res.json());
     } finally { setLoading(false); }
   }, [filterDataset, filterCommit, runs.length]);
+
+  const fetchRecentSuccesses = useCallback(async () => {
+    setRecentSuccessesLoading(true);
+    setRecentSuccessesError(null);
+    try {
+      const res = await fetch("/api/runs/recent-successes");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const payload = await res.json();
+      if (!Array.isArray(payload.runs)) throw new Error("Invalid response from server");
+      setRecentSuccessData(payload);
+    } catch (err) {
+      setRecentSuccessesError(err?.message || "Request failed");
+    } finally {
+      setRecentSuccessesLoading(false);
+    }
+  }, []);
 
   const fetchDatasets = useCallback(async () => {
     const res = await fetch("/api/datasets");
@@ -120,7 +139,7 @@ function App() {
     finally { setAlertEventsLoading(false); }
   }, [alertEvents.length]);
 
-  useEffect(() => { fetchRuns(); fetchDatasets(); fetchJobs(); fetchRunners(); fetchSchedules(); fetchManagedDatasets(); fetchManagedPresets(); fetchPresetMatrices(); fetchAlertRules(); fetchAlertEvents(); }, [fetchRuns, fetchDatasets, fetchJobs, fetchRunners, fetchSchedules, fetchManagedDatasets, fetchManagedPresets, fetchPresetMatrices, fetchAlertRules, fetchAlertEvents]);
+  useEffect(() => { fetchRuns(); fetchRecentSuccesses(); fetchDatasets(); fetchJobs(); fetchRunners(); fetchSchedules(); fetchManagedDatasets(); fetchManagedPresets(); fetchPresetMatrices(); fetchAlertRules(); fetchAlertEvents(); }, [fetchRuns, fetchRecentSuccesses, fetchDatasets, fetchJobs, fetchRunners, fetchSchedules, fetchManagedDatasets, fetchManagedPresets, fetchPresetMatrices, fetchAlertRules, fetchAlertEvents]);
 
   // Sync URL hash <-> activeView & deep-link run modal
   useEffect(() => {
@@ -161,6 +180,7 @@ function App() {
       fetchJobs();
       fetchAlertEvents();
       if (activeView === "runs")       { fetchRuns(); }
+      if (activeView === "recent-successes") { fetchRecentSuccesses(); }
       if (activeView === "datasets")   { fetchManagedDatasets(); }
       if (activeView === "presets")    { fetchManagedPresets(); fetchPresetMatrices(); }
       if (activeView === "runners")    { fetchRunners(); }
@@ -168,7 +188,7 @@ function App() {
       if (activeView === "alerts")     { fetchAlertRules(); fetchAlertEvents(); }
     }, 10000);
     return () => clearInterval(interval);
-  }, [activeView, fetchRuns, fetchJobs, fetchRunners, fetchSchedules, fetchManagedDatasets, fetchManagedPresets, fetchPresetMatrices, fetchAlertRules, fetchAlertEvents]);
+  }, [activeView, fetchRuns, fetchRecentSuccesses, fetchJobs, fetchRunners, fetchSchedules, fetchManagedDatasets, fetchManagedPresets, fetchPresetMatrices, fetchAlertRules, fetchAlertEvents]);
 
   // Fast polling (3s) when jobs are actively running
   useEffect(() => {
@@ -203,7 +223,7 @@ function App() {
     } catch {}
   }
 
-  const viewTitles = { runs: "Runs", analytics: "Analytics", reporting: "Reporting", datasets: "Datasets", presets: "Presets", runners: "Runners", scheduling: "Scheduling", alerts: "Alerts", ingestion: "Ingestion", retrieval: "Retrieval", models: "Models", designer: "Pipeline Designer", settings: "Settings", database: "Database", mcp: "MCP" };
+  const viewTitles = { runs: "Runs", "recent-successes": "Recent Successes", analytics: "Analytics", reporting: "Reporting", datasets: "Datasets", presets: "Presets", runners: "Runners", scheduling: "Scheduling", alerts: "Alerts", ingestion: "Ingestion", retrieval: "Retrieval", models: "Models", designer: "Pipeline Designer", settings: "Settings", database: "Database", mcp: "MCP" };
 
   const activeJobCount = jobs.filter(j => j.status==="running" || j.status==="pending" || j.status==="cancelling").length;
 
@@ -211,6 +231,11 @@ function App() {
     if (activeView === "runs") {
       const base = loading ? "Loading\u2026" : `${runs.length} run${runs.length!==1?'s':''} found`;
       return activeJobCount > 0 ? `${base} \u00B7 ${activeJobCount} job${activeJobCount!==1?'s':''} active` : base;
+    }
+    if (activeView === "recent-successes") {
+      if (recentSuccessesLoading) return "Loading\u2026";
+      const count = recentSuccessData.runs.length;
+      return `${count} successful run${count!==1?'s':''} in the last 24 hours`;
     }
     if (activeView === "analytics") {
       return loading ? "Loading\u2026" : `${runs.length} run${runs.length!==1?'s':''} available for analysis`;
@@ -256,7 +281,7 @@ function App() {
       return loading ? "Loading\u2026" : `${runs.length} run${runs.length!==1?'s':''} available for reporting`;
     }
     return "";
-  }, [activeView, runs.length, activeJobCount, managedDatasets.length, managedPresets.length, presetMatrices.length, yamlPresets.length, runners.length, schedules.length, alertRules.length, alertEvents.length, alertEvents, loading, managedDatasetsLoading, managedPresetsLoading, runnersLoading, schedulesLoading, alertRulesLoading, alertEventsLoading]);
+  }, [activeView, runs.length, recentSuccessData.runs.length, activeJobCount, managedDatasets.length, managedPresets.length, presetMatrices.length, yamlPresets.length, runners.length, schedules.length, alertRules.length, alertEvents.length, alertEvents, loading, recentSuccessesLoading, managedDatasetsLoading, managedPresetsLoading, runnersLoading, schedulesLoading, alertRulesLoading, alertEventsLoading]);
 
   return (
     <div className="app-layout">
@@ -265,6 +290,9 @@ function App() {
         <Header title={viewTitles[activeView] || "Portal"}>
           {activeView==="runs" && (
             <button className="btn btn-ghost btn-icon" onClick={()=>{fetchRuns();fetchJobs();}} title="Refresh"><IconRefresh /></button>
+          )}
+          {activeView==="recent-successes" && (
+            <button className="btn btn-ghost btn-icon" onClick={fetchRecentSuccesses} title="Refresh"><IconRefresh /></button>
           )}
           {activeView==="analytics" && (
             <button className="btn btn-ghost btn-icon" onClick={fetchRuns} title="Refresh"><IconRefresh /></button>
@@ -294,6 +322,11 @@ function App() {
               onDeleteRun={deleteRun}
               onTrigger={()=>setShowTrigger(true)} jobs={jobs} runners={runners} githubRepoUrl={githubRepoUrl}
               onViewLogs={setLogViewerJobId} />
+          )}
+          {activeView==="recent-successes" && (
+            <RecentSuccessesView data={recentSuccessData} loading={recentSuccessesLoading}
+              error={recentSuccessesError} onRefresh={fetchRecentSuccesses}
+              onSelectRun={openDetail} githubRepoUrl={githubRepoUrl} />
           )}
           {activeView==="analytics" && (
             <AnalyticsView runs={runs} datasets={datasets} loading={loading} onRefresh={fetchRuns} />

@@ -369,6 +369,10 @@ CREATE_INDEX_SQL = """
 CREATE INDEX IF NOT EXISTS idx_runs_dataset_ts ON runs(dataset, timestamp);
 """
 
+CREATE_SUCCESS_INDEX_SQL = """
+CREATE INDEX IF NOT EXISTS idx_runs_success_ts ON runs(success, timestamp);
+"""
+
 
 def _db_path() -> str:
     return os.environ.get("RETRIEVER_HARNESS_HISTORY_DB") or str(DEFAULT_DB_PATH)
@@ -402,6 +406,7 @@ def _connect(db_path: str | None = None) -> sqlite3.Connection:
     conn.execute(CREATE_MCP_AUDIT_LOG_TABLE_SQL)
     conn.execute(CREATE_BACKUPS_TABLE_SQL)
     conn.execute(CREATE_INDEX_SQL)
+    conn.execute(CREATE_SUCCESS_INDEX_SQL)
     for stmt in _MIGRATIONS:
         try:
             conn.execute(stmt)
@@ -545,6 +550,43 @@ def get_runs(
             else:
                 d["tags"] = []
             results.append(d)
+        return results
+    finally:
+        conn.close()
+
+
+def get_successful_runs_since(
+    since_timestamp: str,
+    *,
+    db_path: str | None = None,
+) -> list[dict[str, Any]]:
+    """Return every successful run at or after *since_timestamp*, newest first."""
+    conn = _connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(
+            "SELECT id, timestamp, git_commit, dataset, preset, success, return_code,"
+            " failure_reason, pages, ingest_secs, pages_per_sec, recall_1, recall_5,"
+            " recall_10, files, tags,"
+            " artifact_dir, hostname, gpu_type, trigger_source, schedule_id,"
+            " ray_cluster_mode, ray_dashboard_url, execution_commit, num_gpus,"
+            " nsys_profile"
+            " FROM runs"
+            " WHERE success = 1 AND timestamp >= ?"
+            " ORDER BY timestamp DESC",
+            (since_timestamp,),
+        ).fetchall()
+        results = []
+        for row in rows:
+            result = dict(row)
+            if result.get("tags"):
+                try:
+                    result["tags"] = json.loads(result["tags"])
+                except (json.JSONDecodeError, TypeError):
+                    result["tags"] = []
+            else:
+                result["tags"] = []
+            results.append(result)
         return results
     finally:
         conn.close()

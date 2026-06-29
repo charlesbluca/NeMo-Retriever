@@ -7,9 +7,9 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-  <script src="https://cdn.jsdelivr.net/npm/react@18/umd/react.production.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/react-dom@18/umd/react-dom.production.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/react@18.3.1/umd/react.production.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@babel/standalone@7.26.10/babel.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/luxon@3/build/global/luxon.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-luxon@1/dist/chartjs-adapter-luxon.umd.min.js"></script>
@@ -240,13 +240,43 @@
 <body>
 <div id="root"></div>
 <script>
+function showPortalStartupError(message) {
+  const root = document.getElementById("root");
+  root.innerHTML = `<div style="padding:32px;color:#ff7070;font:14px/1.5 monospace;white-space:pre-wrap">Harness Portal failed to start\n\n${message}</div>`;
+}
+
+function loadExternalScript(src) {
+  return new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = src;
+    script.onload = resolve;
+    script.onerror = () => reject(new Error(`Failed to load ${src}`));
+    document.head.appendChild(script);
+  });
+}
+
 (async function loadViews() {
+  try {
+    if (typeof ReactDOM === "undefined") {
+      console.warn("ReactDOM did not load from jsDelivr; trying unpkg fallback");
+      await loadExternalScript("https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js");
+    }
+    if (typeof ReactDOM === "undefined") {
+      throw new Error("ReactDOM is unavailable after loading both CDN sources. Check browser content blockers or network policy.");
+    }
+  } catch (err) {
+    console.error(err);
+    showPortalStartupError(err.stack || err.message || String(err));
+    return;
+  }
+
   const cacheBust = "v=" + Date.now();
   const files = [
     "/static/views/icons.jsx",
     "/static/views/utils.jsx",
     "/static/views/layout.jsx",
     "/static/views/runs.jsx",
+    "/static/views/recent-successes.jsx",
     "/static/views/datasets.jsx",
     "/static/views/presets.jsx",
     "/static/views/run-detail.jsx",
@@ -271,12 +301,13 @@
       const res = await fetch(file + "?" + cacheBust);
       if (!res.ok) { console.error("Failed to load", file, res.status); continue; }
       const jsx = await res.text();
-      const js = Babel.transform(jsx, { presets: ["react"] }).code;
+      const js = Babel.transform(jsx, { presets: [["react", { runtime: "classic" }]] }).code;
       const el = document.createElement("script");
       el.textContent = js;
       document.head.appendChild(el);
     } catch (err) {
       console.error("Failed to load/transform", file, err);
+      showPortalStartupError(`${file}\n\n${err.stack || err.message || String(err)}`);
     }
   }
 })();

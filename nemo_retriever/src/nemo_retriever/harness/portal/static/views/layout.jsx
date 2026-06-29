@@ -14,6 +14,9 @@ function Sidebar({ activeView, onNavigate, alertBadgeCount, githubRepoUrl }) {
         <div className={`nav-item ${activeView==='runs'?'active':''}`} onClick={()=>onNavigate('runs')}>
           <IconDatabase /><span>Runs</span>
         </div>
+        <div className={`nav-item ${activeView==='recent-successes'?'active':''}`} onClick={()=>onNavigate('recent-successes')}>
+          <IconCheck /><span>Recent Successes</span>
+        </div>
         <div className={`nav-item ${activeView==='analytics'?'active':''}`} onClick={()=>onNavigate('analytics')}>
           <IconChart /><span>Analytics</span>
         </div>

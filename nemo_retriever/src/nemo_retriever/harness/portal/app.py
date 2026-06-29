@@ -508,6 +508,20 @@ async def list_runs(
     return history.get_runs(dataset=dataset, commit=commit, limit=limit, offset=offset)
 
 
+@app.get("/api/runs/recent-successes")
+async def list_recent_successful_runs():
+    """Return all successful runs in the rolling 24-hour UTC window."""
+    window_end = datetime.now(timezone.utc)
+    window_start = window_end - timedelta(hours=24)
+    since_timestamp = window_start.strftime("%Y%m%d_%H%M%S_UTC")
+    return {
+        "window_start": window_start.isoformat(),
+        "window_end": window_end.isoformat(),
+        "window_hours": 24,
+        "runs": history.get_successful_runs_since(since_timestamp),
+    }
+
+
 @app.get("/api/runs/{run_id}")
 async def get_run(run_id: int):
     row = history.get_run_by_id(run_id)

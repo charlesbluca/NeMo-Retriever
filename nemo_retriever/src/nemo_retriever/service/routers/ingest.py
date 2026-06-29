@@ -253,7 +253,13 @@ async def _enqueue_or_reject(pool_type: PoolType, item: WorkItem) -> None:
 
 
 async def _fetch_result_data_from_workers(document_id: str) -> list[dict[str, Any]] | None:
-    """Pull cached rows from the batch/realtime pod that processed *document_id*."""
+    """Consume shared rows, falling back to legacy worker Service lookup."""
+    from nemo_retriever.service.services.worker_result_store import consume_result_data
+
+    rows = consume_result_data(document_id)
+    if rows is not None:
+        return rows
+
     proxy = get_proxy()
     if proxy is None:
         return None
@@ -776,6 +782,8 @@ async def get_job_document(
         )
     is_terminal = rec.status in (DocumentStatus.COMPLETED, DocumentStatus.FAILED)
     result_data = tracker.consume_result_data(document_id) if is_terminal else None
+    if is_terminal and result_data is None and rec.result_rows and _is_gateway(request):
+        result_data = await _fetch_result_data_from_workers(document_id)
     body = _document_to_response(rec, result_data=result_data).model_dump()
     return JSONResponse(content=body, status_code=200 if is_terminal else 202)
 

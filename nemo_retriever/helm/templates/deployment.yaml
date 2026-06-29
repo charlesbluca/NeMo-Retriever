@@ -104,6 +104,10 @@ spec:
           env:
             - name: NEMO_RETRIEVER_SERVICE_CONFIG
               value: /etc/nemo-retriever/retriever-service.yaml
+            {{- if .Values.retrieverResults.enabled }}
+            - name: NEMO_RETRIEVER_RESULTS_DIR
+              value: {{ .Values.retrieverResults.mountPath | quote }}
+            {{- end }}
             - name: NGC_API_KEY
               valueFrom:
                 secretKeyRef:
@@ -269,6 +273,10 @@ spec:
           env:
             - name: NEMO_RETRIEVER_SERVICE_CONFIG
               value: /etc/nemo-retriever/retriever-service.yaml
+            {{- if $.Values.retrieverResults.enabled }}
+            - name: NEMO_RETRIEVER_RESULTS_DIR
+              value: {{ $.Values.retrieverResults.mountPath | quote }}
+            {{- end }}
             - name: POD_IP
               valueFrom:
                 fieldRef:
@@ -307,6 +315,10 @@ spec:
             - name: config
               mountPath: /etc/nemo-retriever
               readOnly: true
+            {{- if $.Values.retrieverResults.enabled }}
+            - name: retriever-results
+              mountPath: {{ $.Values.retrieverResults.mountPath }}
+            {{- end }}
             - name: tmp
               mountPath: /tmp
           {{- if $svc.startupProbe.enabled }}
@@ -327,5 +339,10 @@ spec:
             name: {{ include "nemo-retriever.role.configMapName" (dict "context" $ "role" $role) }}
         - name: tmp
           emptyDir: {}
+        {{- if $.Values.retrieverResults.enabled }}
+        - name: retriever-results
+          persistentVolumeClaim:
+            claimName: {{ include "nemo-retriever.retrieverResultsPvcName" $ }}
+        {{- end }}
 {{- end }}
 {{- end }}

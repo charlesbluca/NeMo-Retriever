@@ -88,9 +88,7 @@ def test_worker_document_result_endpoint() -> None:
         assert client.get("/v1/internal/document-result/doc-x").status_code == 404
 
 
-def test_shared_result_store_is_visible_across_memory_stores(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_shared_result_store_is_visible_across_memory_stores(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("NEMO_RETRIEVER_RESULTS_DIR", str(tmp_path))
     rows = [{"page": 1, "text": "shared"}]
 
@@ -102,9 +100,7 @@ def test_shared_result_store_is_visible_across_memory_stores(
     assert not list(tmp_path.iterdir())
 
 
-def test_shared_result_store_has_single_consumer(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_shared_result_store_has_single_consumer(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("NEMO_RETRIEVER_RESULTS_DIR", str(tmp_path))
     rows = [{"text": "consume once"}]
     store_result_data("doc-concurrent", rows)
@@ -116,9 +112,7 @@ def test_shared_result_store_has_single_consumer(
     assert consumed.count(None) == 7
 
 
-def test_gateway_fetches_shared_result_before_proxy(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_gateway_fetches_shared_result_before_proxy(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     from nemo_retriever.service.routers.ingest import _fetch_result_data_from_workers
 
     monkeypatch.setenv("NEMO_RETRIEVER_RESULTS_DIR", str(tmp_path))
@@ -128,9 +122,7 @@ def test_gateway_fetches_shared_result_before_proxy(
     assert asyncio.run(_fetch_result_data_from_workers("doc-gateway")) == rows
 
 
-def test_gateway_status_routes_consume_shared_results(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_gateway_status_routes_consume_shared_results(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     from fastapi.testclient import TestClient
 
     from nemo_retriever.service.app import create_app

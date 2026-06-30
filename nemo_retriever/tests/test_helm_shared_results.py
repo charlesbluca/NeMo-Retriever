@@ -66,6 +66,7 @@ def test_split_deployments_mount_and_configure_shared_results() -> None:
         volumes = {item["name"]: item for item in pod_spec["volumes"]}
 
         assert env["NEMO_RETRIEVER_RESULTS_DIR"] == "/retriever_results"
+        assert env["NEMO_RETRIEVER_RESULTS_TTL_SECONDS"] == "28800"
         assert mounts["retriever-results"] == "/retriever_results"
         assert "persistentVolumeClaim" in volumes["retriever-results"]
 
@@ -77,5 +78,6 @@ def test_disabled_shared_results_are_not_wired() -> None:
     container = next(item for item in pod_spec["containers"] if item["name"] == "nemo-retriever")
 
     assert all(item["name"] != "NEMO_RETRIEVER_RESULTS_DIR" for item in container["env"])
+    assert all(item["name"] != "NEMO_RETRIEVER_RESULTS_TTL_SECONDS" for item in container["env"])
     assert all(item["name"] != "retriever-results" for item in container["volumeMounts"])
     assert all(item["name"] != "retriever-results" for item in pod_spec["volumes"])

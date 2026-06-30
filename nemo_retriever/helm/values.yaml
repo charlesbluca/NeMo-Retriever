@@ -638,6 +638,9 @@ serviceConfig:
 # RWX-capable storage class when split roles can schedule across multiple nodes.
 retrieverResults:
   enabled: true
+  # Unconsumed results and interrupted temporary/claim files are removed
+  # opportunistically after this age. Covers the job tracker stale and terminal retention windows.
+  ttlSeconds: 28800
   existingClaim: ""
   storageClass: ""
   accessModes:

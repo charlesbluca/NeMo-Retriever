@@ -107,6 +107,8 @@ spec:
             {{- if .Values.retrieverResults.enabled }}
             - name: NEMO_RETRIEVER_RESULTS_DIR
               value: {{ .Values.retrieverResults.mountPath | quote }}
+            - name: NEMO_RETRIEVER_RESULTS_TTL_SECONDS
+              value: {{ .Values.retrieverResults.ttlSeconds | quote }}
             {{- end }}
             - name: NGC_API_KEY
               valueFrom:
@@ -276,6 +278,8 @@ spec:
             {{- if $.Values.retrieverResults.enabled }}
             - name: NEMO_RETRIEVER_RESULTS_DIR
               value: {{ $.Values.retrieverResults.mountPath | quote }}
+            - name: NEMO_RETRIEVER_RESULTS_TTL_SECONDS
+              value: {{ $.Values.retrieverResults.ttlSeconds | quote }}
             {{- end }}
             - name: POD_IP
               valueFrom:

@@ -6,6 +6,9 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import os
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
@@ -13,6 +16,8 @@ from unittest.mock import patch
 
 import pytest
 
+from nemo_retriever.service.services import worker_result_store
+from nemo_retriever.service.services.job_tracker import DEFAULT_STALE_JOB_TTL_S, DEFAULT_TTL_S
 from nemo_retriever.service.services.pipeline_pool import _fire_gateway_callback
 from nemo_retriever.service.services.worker_result_store import (
     clear_for_tests,
@@ -24,6 +29,7 @@ from nemo_retriever.service.services.worker_result_store import (
 @pytest.fixture(autouse=True)
 def _clear_worker_store(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("NEMO_RETRIEVER_RESULTS_DIR", raising=False)
+    monkeypatch.delenv("NEMO_RETRIEVER_RESULTS_TTL_SECONDS", raising=False)
     clear_for_tests()
     yield
     clear_for_tests()
@@ -110,6 +116,67 @@ def test_shared_result_store_has_single_consumer(monkeypatch: pytest.MonkeyPatch
 
     assert consumed.count(rows) == 1
     assert consumed.count(None) == 7
+
+
+def test_shared_result_store_default_ttl_covers_full_job_lifecycle() -> None:
+    assert worker_result_store._results_ttl_s() == DEFAULT_STALE_JOB_TTL_S + DEFAULT_TTL_S
+
+
+def test_shared_result_store_removes_expired_owned_files(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("NEMO_RETRIEVER_RESULTS_DIR", str(tmp_path))
+    monkeypatch.setenv("NEMO_RETRIEVER_RESULTS_TTL_SECONDS", "60")
+    digest = hashlib.sha256(b"abandoned").hexdigest()
+    stale_files = [
+        tmp_path / f"{digest}.json",
+        tmp_path / f".{digest}.json.{("a" * 32)}.tmp",
+        tmp_path / f".{digest}.json.{("b" * 32)}.claim",
+    ]
+    for path in stale_files:
+        path.write_text("[]", encoding="utf-8")
+        os.utime(path, (time.time() - 61, time.time() - 61))
+    unrelated = tmp_path / "keep-me.json"
+    unrelated.write_text("[]", encoding="utf-8")
+
+    store_result_data("fresh", [{"text": "available"}])
+
+    assert all(not path.exists() for path in stale_files)
+    assert unrelated.exists()
+    assert consume_result_data("fresh") == [{"text": "available"}]
+
+
+def test_expiry_sweep_does_not_delete_concurrently_replaced_result(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    target = worker_result_store._result_path(tmp_path, "replaced")
+    target.write_text("[1]", encoding="utf-8")
+    os.utime(target, (time.time() - 61, time.time() - 61))
+    replacement = tmp_path / "replacement"
+    replacement.write_text("[2]", encoding="utf-8")
+    original_replace = os.replace
+
+    def replace_during_claim(source: Path, destination: Path) -> None:
+        if source == target and str(destination).endswith(".cleanup"):
+            original_replace(replacement, target)
+        original_replace(source, destination)
+
+    with monkeypatch.context() as context:
+        context.setattr(worker_result_store.os, "replace", replace_during_claim)
+        removed = worker_result_store._remove_expired_result(target, cutoff=time.time() - 60)
+
+    assert not removed
+    assert target.read_text(encoding="utf-8") == "[2]"
+
+
+def test_shared_result_store_keeps_unexpired_results(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("NEMO_RETRIEVER_RESULTS_DIR", str(tmp_path))
+    monkeypatch.setenv("NEMO_RETRIEVER_RESULTS_TTL_SECONDS", "3600")
+    store_result_data("existing", [{"text": "existing"}])
+    clear_for_tests()  # Make the next operation run an immediate sweep.
+
+    store_result_data("new", [{"text": "new"}])
+
+    assert consume_result_data("existing") == [{"text": "existing"}]
+    assert consume_result_data("new") == [{"text": "new"}]
 
 
 def test_gateway_fetches_shared_result_before_proxy(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

@@ -89,6 +89,13 @@ def _remove_expired_result(path: Path, *, cutoff: float) -> bool:
             return True
 
         claimed = path.with_name(f".{path.name}.{uuid.uuid4().hex}.cleanup")
+        # Restoring a concurrently replaced result requires an atomic,
+        # no-overwrite hard link. Verify that operation is supported before
+        # moving the canonical result out of the way; some RWX filesystems do
+        # not support hard links, so expiry is best-effort there.
+        os.link(path, claimed)
+        claimed.unlink(missing_ok=True)
+
         os.replace(path, claimed)
         if claimed.stat().st_mtime <= cutoff:
             claimed.unlink(missing_ok=True)

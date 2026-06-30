@@ -66,6 +66,7 @@ from nemo_retriever.service.services.prometheus import (
     INGEST_REQUESTS_TOTAL,
 )
 from nemo_retriever.service.services.proxy import get_proxy
+from nemo_retriever.service.services.worker_result_store import consume_result_data
 from nemo_retriever.service.utils.file_type import (
     FileCategory,
     FileClassifier,
@@ -254,8 +255,6 @@ async def _enqueue_or_reject(pool_type: PoolType, item: WorkItem) -> None:
 
 async def _fetch_result_data_from_workers(document_id: str) -> list[dict[str, Any]] | None:
     """Consume shared rows, falling back to legacy worker Service lookup."""
-    from nemo_retriever.service.services.worker_result_store import consume_result_data
-
     rows = consume_result_data(document_id)
     if rows is not None:
         return rows
@@ -1680,8 +1679,6 @@ async def query(request: Request) -> Response:
 )
 async def worker_document_result(document_id: str) -> JSONResponse:
     """Return rows stored by the worker pool after pipeline completion."""
-    from nemo_retriever.service.services.worker_result_store import consume_result_data
-
     rows = consume_result_data(document_id)
     if rows is None:
         raise HTTPException(

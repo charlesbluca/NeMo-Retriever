@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import hashlib
 import os
 import time
@@ -165,6 +166,28 @@ def test_expiry_sweep_does_not_delete_concurrently_replaced_result(
 
     assert not removed
     assert target.read_text(encoding="utf-8") == "[2]"
+
+
+def test_expiry_sweep_leaves_result_when_hard_links_are_unsupported(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    target = worker_result_store._result_path(tmp_path, "unsupported-hard-links")
+    target.write_text("[1]", encoding="utf-8")
+    os.utime(target, (time.time() - 61, time.time() - 61))
+
+    def unsupported_link(*_: object) -> None:
+        raise OSError(errno.EOPNOTSUPP, "Hard links are not supported")
+
+    def unexpected_replace(*_: object) -> None:
+        raise AssertionError("A result must not be claimed when hard links are unsupported")
+
+    with monkeypatch.context() as context:
+        context.setattr(worker_result_store.os, "link", unsupported_link)
+        context.setattr(worker_result_store.os, "replace", unexpected_replace)
+        removed = worker_result_store._remove_expired_result(target, cutoff=time.time() - 60)
+
+    assert not removed
+    assert target.read_text(encoding="utf-8") == "[1]"
 
 
 def test_shared_result_store_keeps_unexpired_results(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

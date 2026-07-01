@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import errno
 import hashlib
+import logging
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -119,6 +120,21 @@ def test_shared_result_store_has_single_consumer(monkeypatch: pytest.MonkeyPatch
     assert consumed.count(None) == 7
 
 
+@pytest.mark.parametrize("payload", ["{", '{"unexpected":true}'])
+def test_shared_result_store_discards_invalid_payload(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture, payload: str
+) -> None:
+    monkeypatch.setenv("NEMO_RETRIEVER_RESULTS_DIR", str(tmp_path))
+    target = worker_result_store._result_path(tmp_path, "invalid")
+    target.write_text(payload, encoding="utf-8")
+
+    with caplog.at_level(logging.WARNING, logger=worker_result_store.__name__):
+        assert consume_result_data("invalid") is None
+
+    assert "Unable to decode shared result payload for 'invalid'" in caplog.text
+    assert not list(tmp_path.iterdir())
+
+
 def test_shared_result_store_default_ttl_covers_full_job_lifecycle() -> None:
     assert worker_result_store._results_ttl_s() == DEFAULT_STALE_JOB_TTL_S + DEFAULT_TTL_S
 
@@ -210,6 +226,33 @@ def test_gateway_fetches_shared_result_before_proxy(monkeypatch: pytest.MonkeyPa
     store_result_data("doc-gateway", rows)
 
     assert asyncio.run(_fetch_result_data_from_workers("doc-gateway")) == rows
+
+
+def test_gateway_falls_back_to_proxy_for_invalid_shared_result(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from nemo_retriever.service.routers import ingest
+
+    monkeypatch.setenv("NEMO_RETRIEVER_RESULTS_DIR", str(tmp_path))
+    target = worker_result_store._result_path(tmp_path, "doc-invalid")
+    target.write_text("{", encoding="utf-8")
+    rows = [{"text": "worker fallback"}]
+
+    class _Response:
+        status_code = 200
+
+        def json(self) -> dict[str, list[dict[str, str]]]:
+            return {"result_data": rows}
+
+    class _Client:
+        async def get(self, _: str) -> _Response:
+            return _Response()
+
+    class _Proxy:
+        def _client_for(self, _: object) -> _Client:
+            return _Client()
+
+    monkeypatch.setattr(ingest, "get_proxy", lambda: _Proxy())
+
+    assert asyncio.run(ingest._fetch_result_data_from_workers("doc-invalid")) == rows
 
 
 def test_gateway_status_routes_consume_shared_results(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

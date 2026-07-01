@@ -22,6 +22,7 @@ from nemo_retriever.service.services.pipeline_pool import _fire_gateway_callback
 from nemo_retriever.service.services.worker_result_store import (
     ResultStoreTemporarilyUnavailable,
     clear_for_tests,
+    discard_local_result_data,
     get_result_data,
     store_result_data,
     validate_result_store,
@@ -397,3 +398,211 @@ def test_gateway_status_routes_read_shared_results_idempotently(
             response = client.get("/v1/ingest/status/doc-status-route")
             assert response.status_code == 200
             assert response.json()["result_data"] == rows
+
+
+def test_fire_gateway_callback_retries_and_advertises_worker_ip(monkeypatch: pytest.MonkeyPatch) -> None:
+    from nemo_retriever.service.services import pipeline_pool
+
+    attempts: list[dict[str, Any]] = []
+
+    class _Resp:
+        def __init__(self, status_code: int) -> None:
+            self.status_code = status_code
+
+    class _Client:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        async def __aenter__(self) -> "_Client":
+            return self
+
+        async def __aexit__(self, *exc: Any) -> None:
+            return None
+
+        async def post(self, url: str, json: dict[str, Any]) -> _Resp:
+            attempts.append({"url": url, "json": json})
+            return _Resp(503 if len(attempts) == 1 else 200)
+
+    monkeypatch.setattr(pipeline_pool, "_CALLBACK_RETRY_DELAYS_S", (0.0,))
+    with patch("httpx.AsyncClient", _Client):
+        succeeded = asyncio.run(
+            _fire_gateway_callback(
+                "http://gateway/v1/internal/job-callback",
+                "doc-retry",
+                "completed",
+                result_rows=2,
+                result_worker_ip="10.1.2.3",
+            )
+        )
+
+    assert succeeded is True
+    assert len(attempts) == 2
+    assert attempts[-1]["json"]["result_worker_ip"] == "10.1.2.3"
+    assert "result_data" not in attempts[-1]["json"]
+
+
+def test_discard_local_result_data_removes_acknowledged_worker_rows() -> None:
+    store_result_data("acknowledged", [{"text": "copied"}])
+
+    discard_local_result_data("acknowledged")
+
+    assert get_result_data("acknowledged") is None
+
+
+def test_gateway_callback_copies_result_before_completing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from fastapi.testclient import TestClient
+
+    from nemo_retriever.service.app import create_app
+    from nemo_retriever.service.config import ServiceConfig
+    from nemo_retriever.service.routers import ingest
+    from nemo_retriever.service.services.job_tracker import DocumentStatus, get_job_tracker
+
+    rows = [{"text": "owned by worker 10.1.2.3"}]
+    requested_urls: list[str] = []
+
+    class _Resp:
+        status_code = 200
+
+        def json(self) -> dict[str, Any]:
+            return {"result_data": rows}
+
+    class _Client:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        async def __aenter__(self) -> "_Client":
+            return self
+
+        async def __aexit__(self, *exc: Any) -> None:
+            return None
+
+        async def get(self, url: str) -> _Resp:
+            requested_urls.append(url)
+            return _Resp()
+
+    monkeypatch.setenv("NEMO_RETRIEVER_RESULTS_DIR", str(tmp_path))
+    with TestClient(create_app(ServiceConfig(mode="gateway"))) as client:
+        tracker = get_job_tracker()
+        assert tracker is not None
+        tracker.register_job("handoff-job", expected_documents=1, retain_results=True)
+        tracker.register_document("handoff-doc", job_id="handoff-job")
+        tracker.mark_processing("handoff-doc")
+
+        monkeypatch.setattr(ingest.httpx, "AsyncClient", _Client)
+        response = client.post(
+            "/v1/internal/job-callback",
+            json={
+                "id": "handoff-doc",
+                "status": "completed",
+                "result_rows": 1,
+                "result_worker_ip": "10.1.2.3",
+            },
+        )
+
+        assert response.status_code == 200
+        assert requested_urls == ["http://10.1.2.3:7670/v1/internal/document-result/handoff-doc"]
+        record = tracker.get_document("handoff-doc")
+        assert record is not None
+        assert record.status == DocumentStatus.COMPLETED
+        assert get_result_data("handoff-doc") == rows
+
+        status_response = client.get("/v1/ingest/status/handoff-doc")
+        assert status_response.status_code == 200
+        assert status_response.json()["result_data"] == rows
+
+
+def test_gateway_callback_does_not_complete_when_result_handoff_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from fastapi.testclient import TestClient
+
+    from nemo_retriever.service.app import create_app
+    from nemo_retriever.service.config import ServiceConfig
+    from nemo_retriever.service.routers import ingest
+    from nemo_retriever.service.services.job_tracker import DocumentStatus, get_job_tracker
+
+    class _Resp:
+        status_code = 404
+
+    class _Client:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        async def __aenter__(self) -> "_Client":
+            return self
+
+        async def __aexit__(self, *exc: Any) -> None:
+            return None
+
+        async def get(self, url: str) -> _Resp:
+            return _Resp()
+
+    monkeypatch.setenv("NEMO_RETRIEVER_RESULTS_DIR", str(tmp_path))
+    with TestClient(create_app(ServiceConfig(mode="gateway"))) as client:
+        tracker = get_job_tracker()
+        assert tracker is not None
+        tracker.register_job("failed-handoff-job", expected_documents=1, retain_results=True)
+        tracker.register_document("failed-handoff-doc", job_id="failed-handoff-job")
+        tracker.mark_processing("failed-handoff-doc")
+
+        monkeypatch.setattr(ingest.httpx, "AsyncClient", _Client)
+        response = client.post(
+            "/v1/internal/job-callback",
+            json={
+                "id": "failed-handoff-doc",
+                "status": "completed",
+                "result_rows": 1,
+                "result_worker_ip": "10.1.2.3",
+            },
+        )
+
+        assert response.status_code == 503
+        assert response.headers["retry-after"] == "1"
+        record = tracker.get_document("failed-handoff-doc")
+        assert record is not None
+        assert record.status == DocumentStatus.PROCESSING
+        assert get_result_data("failed-handoff-doc") is None
+
+
+def test_worker_result_url_supports_ipv6_and_rejects_spoofed_peer() -> None:
+    from types import SimpleNamespace
+
+    from fastapi import HTTPException
+    from starlette.requests import Request
+
+    from nemo_retriever.service.config import ServiceConfig
+    from nemo_retriever.service.routers.ingest import _worker_result_url
+
+    app = SimpleNamespace(state=SimpleNamespace(config=ServiceConfig(mode="gateway")))
+
+    def make_request(peer: str) -> Request:
+        return Request(
+            {
+                "type": "http",
+                "app": app,
+                "client": (peer, 12345),
+                "headers": [],
+                "method": "POST",
+                "path": "/v1/internal/job-callback",
+                "query_string": b"",
+                "scheme": "http",
+                "server": ("gateway", 7670),
+            }
+        )
+
+    assert (
+        _worker_result_url(make_request("fd00::1"), "ipv6-doc", "fd00::1")
+        == "http://[fd00::1]:7670/v1/internal/document-result/ipv6-doc"
+    )
+
+    with pytest.raises(HTTPException) as mismatch:
+        _worker_result_url(make_request("10.1.2.4"), "spoofed-doc", "10.1.2.3")
+    assert mismatch.value.status_code == 400
+
+    with pytest.raises(HTTPException) as missing:
+        _worker_result_url(make_request("testclient"), "missing-doc", None)
+    assert missing.value.status_code == 503

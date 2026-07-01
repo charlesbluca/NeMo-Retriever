@@ -4,10 +4,11 @@
 """Retained per-document result rows for split-topology workers.
 
 Worker → gateway completion callbacks intentionally omit ``result_data``
-to keep POST bodies small. When ``NEMO_RETRIEVER_RESULTS_DIR`` is set, each
-write publishes a uniquely named immutable generation beneath that shared
-directory. Reads are idempotent: every gateway can read the same generation
-until TTL cleanup removes it.
+to keep POST bodies small. Workers retain rows in memory until the owning
+gateway copies and acknowledges them. When ``NEMO_RETRIEVER_RESULTS_DIR`` is
+set on the gateway, each handoff publishes a uniquely named immutable
+generation beneath that directory. Reads remain idempotent until TTL cleanup
+removes it.
 
 The storage protocol intentionally has no claims or reader leases:
 
@@ -301,6 +302,20 @@ def get_result_data(document_id: str) -> list[dict[str, Any]] | None:
         _sweep_memory_locked(now=time.monotonic())
         entry = _store.get(document_id)
         return copy.deepcopy(entry[1]) if entry is not None else None
+
+
+def discard_local_result_data(document_id: str) -> None:
+    """Discard an acknowledged worker-local result payload.
+
+    Split workers use the in-memory store and call this only after the gateway
+    confirms that it copied the rows. A configured filesystem is a
+    gateway-owned retained store, so this helper deliberately never removes
+    shared generations.
+    """
+    if _results_dir() is not None:
+        return
+    with _lock:
+        _store.pop(document_id, None)
 
 
 def clear_for_tests() -> None:

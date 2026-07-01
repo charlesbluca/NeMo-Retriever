@@ -48,7 +48,7 @@ def _service_deployments(documents: list[dict]) -> list[dict]:
     ]
 
 
-def test_split_deployments_mount_and_configure_shared_results() -> None:
+def test_split_gateway_alone_mounts_and_configures_result_claim() -> None:
     documents = _render(
         "--set",
         "topology.mode=split",
@@ -58,17 +58,34 @@ def test_split_deployments_mount_and_configure_shared_results() -> None:
     deployments = _service_deployments(documents)
 
     assert len(deployments) == 3
+    components: set[str] = set()
     for deployment in deployments:
+        component = deployment["metadata"]["labels"]["app.kubernetes.io/component"]
+        components.add(component)
         pod_spec = deployment["spec"]["template"]["spec"]
         container = next(item for item in pod_spec["containers"] if item["name"] == "nemo-retriever")
         env = {item["name"]: item.get("value") for item in container["env"]}
         mounts = {item["name"]: item["mountPath"] for item in container["volumeMounts"]}
         volumes = {item["name"]: item for item in pod_spec["volumes"]}
 
-        assert env["NEMO_RETRIEVER_RESULTS_DIR"] == "/retriever_results"
         assert env["NEMO_RETRIEVER_RESULTS_TTL_SECONDS"] == "28800"
-        assert mounts["retriever-results"] == "/retriever_results"
-        assert "persistentVolumeClaim" in volumes["retriever-results"]
+        if component == "gateway":
+            assert env["NEMO_RETRIEVER_RESULTS_DIR"] == "/retriever_results"
+            assert mounts["retriever-results"] == "/retriever_results"
+            assert "persistentVolumeClaim" in volumes["retriever-results"]
+        else:
+            assert "NEMO_RETRIEVER_RESULTS_DIR" not in env
+            assert "retriever-results" not in mounts
+            assert "retriever-results" not in volumes
+
+    assert components == {"gateway", "realtime", "batch"}
+    result_claim = next(
+        document
+        for document in documents
+        if document.get("kind") == "PersistentVolumeClaim"
+        and document["metadata"]["name"].endswith("-retriever-results")
+    )
+    assert result_claim["spec"]["accessModes"] == ["ReadWriteOnce"]
 
 
 def test_disabled_shared_results_are_not_wired() -> None:

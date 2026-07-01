@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from enum import Enum
 from typing import Any, Callable, Mapping
@@ -48,6 +49,7 @@ logger = logging.getLogger(__name__)
 # enough resolution for an HPA that polls every 15s; faster than that and
 # we just generate redundant samples for prometheus_client to overwrite.
 _QUEUE_DEPTH_REPORT_INTERVAL_S = 1.0
+_CALLBACK_RETRY_DELAYS_S = (0.5, 1.0, 2.0, 4.0, 8.0)
 
 
 class PoolType(str, Enum):
@@ -99,12 +101,13 @@ async def _fire_gateway_callback(
     *,
     result_rows: int = 0,
     error: str | None = None,
-) -> None:
+    result_worker_ip: str | None = None,
+) -> bool:
     """POST a lightweight completion notification to the gateway pod.
 
-    ``result_data`` is never included — large row payloads are stored on
-    the worker via :mod:`worker_result_store` and fetched later through
-    ``GET /v1/internal/document-result/{id}`` when a client polls status.
+    ``result_data`` is never included. For retained results, the worker
+    advertises its pod IP so the gateway can copy rows from the exact owner
+    before acknowledging completion.
     """
     import httpx
 
@@ -115,18 +118,34 @@ async def _fire_gateway_callback(
     }
     if error:
         payload["error"] = error
+    if result_worker_ip:
+        payload["result_worker_ip"] = result_worker_ip
 
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.post(callback_url, json=payload)
-            if resp.status_code != 200:
-                logger.warning(
-                    "Gateway callback returned HTTP %d for item %s",
-                    resp.status_code,
-                    item_id,
-                )
+            for attempt in range(len(_CALLBACK_RETRY_DELAYS_S) + 1):
+                try:
+                    resp = await client.post(callback_url, json=payload)
+                    if resp.status_code == 200:
+                        return True
+                    logger.warning(
+                        "Gateway callback returned HTTP %d for item %s (attempt %d)",
+                        resp.status_code,
+                        item_id,
+                        attempt + 1,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to fire gateway callback for item %s (attempt %d): %s",
+                        item_id,
+                        attempt + 1,
+                        exc,
+                    )
+                if attempt < len(_CALLBACK_RETRY_DELAYS_S):
+                    await asyncio.sleep(_CALLBACK_RETRY_DELAYS_S[attempt])
     except Exception as exc:
-        logger.warning("Failed to fire gateway callback for item %s: %s", item_id, exc)
+        logger.warning("Unable to initialize gateway callback client for item %s: %s", item_id, exc)
+    return False
 
 
 class _Pool:
@@ -313,12 +332,17 @@ class _Pool:
                             from nemo_retriever.service.services.worker_result_store import store_result_data
 
                             store_result_data(item.id, result_data)
-                        await _fire_gateway_callback(
+                        callback_succeeded = await _fire_gateway_callback(
                             item.callback_url,
                             item.id,
                             "completed",
                             result_rows=result_rows,
+                            result_worker_ip=(os.environ.get("POD_IP") if retain_results and result_rows > 0 else None),
                         )
+                        if callback_succeeded and retain_results:
+                            from nemo_retriever.service.services.worker_result_store import discard_local_result_data
+
+                            discard_local_result_data(item.id)
                     elif tracker is not None:
                         tracker.mark_completed(
                             item.id,

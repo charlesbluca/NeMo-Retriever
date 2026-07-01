@@ -18,13 +18,16 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import ipaddress
 import json
 import logging
 import os
 import uuid
 from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import quote
 
+import httpx
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field, model_validator
@@ -69,7 +72,7 @@ from nemo_retriever.service.services.proxy import get_proxy
 from nemo_retriever.service.services.worker_result_store import (
     ResultStoreTemporarilyUnavailable,
     get_result_data,
-    is_shared_result_store_configured,
+    store_result_data,
 )
 from nemo_retriever.service.utils.file_type import (
     FileCategory,
@@ -259,7 +262,7 @@ async def _enqueue_or_reject(pool_type: PoolType, item: WorkItem) -> None:
 
 
 async def _fetch_result_data_from_workers(document_id: str) -> list[dict[str, Any]] | None:
-    """Read shared rows, falling back to legacy worker Service lookup."""
+    """Read rows already handed off to this gateway's retained store."""
     try:
         rows = get_result_data(document_id)
     except ResultStoreTemporarilyUnavailable as exc:
@@ -270,48 +273,70 @@ async def _fetch_result_data_from_workers(document_id: str) -> list[dict[str, An
         ) from exc
     if rows is not None:
         return rows
+    raise HTTPException(
+        status_code=503,
+        detail=f"Retained result data for {document_id!r} is temporarily unavailable",
+        headers={"Retry-After": str(_RESULT_RETRY_AFTER_SECONDS)},
+    )
 
-    proxy = get_proxy()
-    if proxy is None:
-        if is_shared_result_store_configured():
-            raise HTTPException(
-                status_code=503,
-                detail=f"Retained result data for {document_id!r} is temporarily unavailable",
-                headers={"Retry-After": str(_RESULT_RETRY_AFTER_SECONDS)},
-            )
-        return None
-    for pool_type in (PoolType.BATCH, PoolType.REALTIME):
-        client = proxy._client_for(pool_type)
-        try:
-            resp = await client.get(f"/v1/internal/document-result/{document_id}")
-        except Exception as exc:
-            logger.debug(
-                "Worker result fetch from %s failed for %s: %s",
-                pool_type.value,
-                document_id,
-                exc,
-            )
-            continue
-        if resp.status_code == 404:
-            continue
-        if resp.status_code != 200:
-            logger.warning(
-                "Worker result fetch from %s returned HTTP %d for %s",
-                pool_type.value,
-                resp.status_code,
-                document_id,
-            )
-            continue
-        rows = resp.json().get("result_data")
-        if rows is not None:
-            return rows
-    if is_shared_result_store_configured():
+
+def _worker_result_url(request: Request, document_id: str, worker_ip_value: Any) -> str:
+    """Build a fixed-path owner URL from a validated worker pod IP."""
+    if not isinstance(worker_ip_value, str):
+        raise HTTPException(status_code=503, detail="Completion callback is missing result worker identity")
+    try:
+        worker_ip = ipaddress.ip_address(worker_ip_value)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Completion callback has an invalid result worker IP") from exc
+    if worker_ip.is_unspecified or worker_ip.is_multicast or worker_ip.is_loopback or worker_ip.is_link_local:
+        raise HTTPException(status_code=400, detail="Completion callback has an unroutable result worker IP")
+
+    peer_value = request.client.host if request.client is not None else ""
+    try:
+        peer_ip = ipaddress.ip_address(peer_value)
+    except ValueError:
+        peer_ip = None
+    if peer_ip is not None and not peer_ip.is_loopback and peer_ip != worker_ip:
+        raise HTTPException(status_code=400, detail="Result worker IP does not match callback peer")
+
+    host = f"[{worker_ip}]" if worker_ip.version == 6 else str(worker_ip)
+    port = request.app.state.config.server.port
+    return f"http://{host}:{port}/v1/internal/document-result/{quote(document_id, safe='')}"
+
+
+async def _pull_and_store_worker_result(request: Request, document_id: str, worker_ip: Any) -> None:
+    """Copy rows from the exact completing worker into the gateway store."""
+    url = _worker_result_url(request, document_id, worker_ip)
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(url)
+    except httpx.HTTPError as exc:
         raise HTTPException(
             status_code=503,
-            detail=f"Retained result data for {document_id!r} is temporarily unavailable",
-            headers={"Retry-After": str(_RESULT_RETRY_AFTER_SECONDS)},
+            detail=f"Unable to fetch retained result for {document_id!r} from its worker",
+            headers={"Retry-After": "1"},
+        ) from exc
+    if response.status_code != 200:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Worker returned HTTP {response.status_code} for retained result {document_id!r}",
+            headers={"Retry-After": "1"},
         )
-    return None
+    try:
+        payload = response.json()
+        rows = payload.get("result_data") if isinstance(payload, dict) else None
+    except ValueError as exc:
+        raise HTTPException(status_code=503, detail=f"Worker returned invalid result data for {document_id!r}") from exc
+    if not rows or not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
+        raise HTTPException(status_code=503, detail=f"Worker returned invalid result data for {document_id!r}")
+    try:
+        await asyncio.to_thread(store_result_data, document_id, rows)
+    except (OSError, ValueError, TypeError) as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Unable to retain result data for {document_id!r} on the gateway",
+            headers={"Retry-After": "1"},
+        ) from exc
 
 
 def _build_callback_url(request: Request) -> str:
@@ -1778,9 +1803,27 @@ async def job_callback(request: Request) -> JSONResponse:
             elapsed_s=body.get("elapsed_s"),
         )
     else:
+        result_rows = body.get("result_rows", 0)
+        if pre_rec is None and result_rows and body.get("result_worker_ip"):
+            raise HTTPException(
+                status_code=503,
+                detail=f"Gateway has no tracked document {item_id!r} for retained result handoff",
+                headers={"Retry-After": "1"},
+            )
+        if pre_rec is not None and result_rows and tracker.should_retain_results(pre_rec.job_id):
+            try:
+                retained_rows = get_result_data(item_id)
+            except ResultStoreTemporarilyUnavailable as exc:
+                raise HTTPException(
+                    status_code=503,
+                    detail=str(exc),
+                    headers={"Retry-After": "1"},
+                ) from exc
+            if retained_rows is None:
+                await _pull_and_store_worker_result(request, item_id, body.get("result_worker_ip"))
         outcome = tracker.mark_completed(
             item_id,
-            result_rows=body.get("result_rows", 0),
+            result_rows=result_rows,
             elapsed_s=body.get("elapsed_s"),
         )
 

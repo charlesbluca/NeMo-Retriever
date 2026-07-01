@@ -120,6 +120,24 @@ def test_shared_result_store_has_single_consumer(monkeypatch: pytest.MonkeyPatch
     assert consumed.count(None) == 7
 
 
+def test_shared_result_store_tolerates_concurrently_swept_claim(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("NEMO_RETRIEVER_RESULTS_DIR", str(tmp_path))
+    store_result_data("doc-expiring", [{"text": "expiring"}])
+    original_replace = os.replace
+
+    def replace_then_remove_claim(source: Path, destination: Path) -> None:
+        original_replace(source, destination)
+        if destination.name.endswith(".claim"):
+            destination.unlink()
+
+    monkeypatch.setattr(worker_result_store.os, "replace", replace_then_remove_claim)
+
+    assert consume_result_data("doc-expiring") is None
+    assert not list(tmp_path.iterdir())
+
+
 @pytest.mark.parametrize("payload", ["{", '{"unexpected":true}'])
 def test_shared_result_store_discards_invalid_payload(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture, payload: str

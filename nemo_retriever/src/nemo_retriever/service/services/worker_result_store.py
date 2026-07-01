@@ -174,6 +174,9 @@ def _consume_from_filesystem(results_dir: Path, document_id: str) -> list[dict[s
         if not isinstance(rows, list):
             raise ValueError(f"Shared result payload for {document_id!r} is not a JSON list")
         return rows
+    except FileNotFoundError:
+        logger.debug("Shared result claim disappeared while consuming %r", document_id)
+        return None
     except ValueError:
         logger.warning("Unable to decode shared result payload for %r", document_id, exc_info=True)
         return None

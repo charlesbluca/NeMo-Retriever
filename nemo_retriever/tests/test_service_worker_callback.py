@@ -17,8 +17,14 @@ from unittest.mock import patch
 import pytest
 
 from nemo_retriever.service.services import worker_result_store
-from nemo_retriever.service.services.job_tracker import DEFAULT_STALE_JOB_TTL_S, DEFAULT_TTL_S
-from nemo_retriever.service.services.pipeline_pool import _fire_gateway_callback
+from nemo_retriever.service.services.job_tracker import (
+    DEFAULT_STALE_JOB_TTL_S,
+    DEFAULT_TTL_S,
+)
+from nemo_retriever.service.services.pipeline_pool import (
+    _CallbackDeliveryOutcome,
+    _fire_gateway_callback,
+)
 from nemo_retriever.service.services.worker_result_store import (
     ResultStoreTemporarilyUnavailable,
     clear_for_tests,
@@ -82,7 +88,11 @@ def test_worker_document_result_endpoint_is_idempotent() -> None:
     from fastapi.testclient import TestClient
 
     from nemo_retriever.service.app import create_app
-    from nemo_retriever.service.config import PipelineOverridesConfig, PipelinePoolConfig, ServiceConfig
+    from nemo_retriever.service.config import (
+        PipelineOverridesConfig,
+        PipelinePoolConfig,
+        ServiceConfig,
+    )
 
     cfg = ServiceConfig(
         mode="batch",
@@ -208,7 +218,10 @@ def test_shared_result_store_removes_only_expired_owned_files(monkeypatch: pytes
     monkeypatch.setenv("NEMO_RETRIEVER_RESULTS_TTL_SECONDS", "60")
     document_dir = worker_result_store._document_dir(tmp_path, "abandoned")
     document_dir.mkdir(parents=True)
-    stale_files = [document_dir / f"{('a' * 32)}.json", document_dir / f".{('b' * 32)}.tmp"]
+    stale_files = [
+        document_dir / f"{('a' * 32)}.json",
+        document_dir / f".{('b' * 32)}.tmp",
+    ]
     for path in stale_files:
         path.write_text("[]", encoding="utf-8")
         old = time.time() - 61
@@ -233,7 +246,9 @@ def test_sweep_preserves_fresh_empty_document_directory(monkeypatch: pytest.Monk
     assert document_dir.is_dir()
 
 
-def test_in_memory_result_store_is_idempotent_and_ttl_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_in_memory_result_store_is_idempotent_and_ttl_bounded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setenv("NEMO_RETRIEVER_RESULTS_TTL_SECONDS", "60")
     monotonic_now = 100.0
     monkeypatch.setattr(worker_result_store.time, "monotonic", lambda: monotonic_now)
@@ -301,7 +316,9 @@ def test_result_store_validation_rejects_unsupported_atomic_rename(
             pass
 
 
-def test_worker_result_endpoint_returns_retryable_503(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_worker_result_endpoint_returns_retryable_503(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from fastapi.testclient import TestClient
 
     from nemo_retriever.service.app import create_app
@@ -400,7 +417,9 @@ def test_gateway_status_routes_read_shared_results_idempotently(
             assert response.json()["result_data"] == rows
 
 
-def test_fire_gateway_callback_retries_and_advertises_worker_ip(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_fire_gateway_callback_retries_and_advertises_worker_ip(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from nemo_retriever.service.services import pipeline_pool
 
     attempts: list[dict[str, Any]] = []
@@ -425,7 +444,7 @@ def test_fire_gateway_callback_retries_and_advertises_worker_ip(monkeypatch: pyt
 
     monkeypatch.setattr(pipeline_pool, "_CALLBACK_RETRY_DELAYS_S", (0.0,))
     with patch("httpx.AsyncClient", _Client):
-        succeeded = asyncio.run(
+        outcome = asyncio.run(
             _fire_gateway_callback(
                 "http://gateway/v1/internal/job-callback",
                 "doc-retry",
@@ -435,10 +454,44 @@ def test_fire_gateway_callback_retries_and_advertises_worker_ip(monkeypatch: pyt
             )
         )
 
-    assert succeeded is True
+    assert outcome == _CallbackDeliveryOutcome.ACKNOWLEDGED
     assert len(attempts) == 2
     assert attempts[-1]["json"]["result_worker_ip"] == "10.1.2.3"
     assert "result_data" not in attempts[-1]["json"]
+
+
+def test_fire_gateway_callback_does_not_retry_permanent_4xx() -> None:
+    attempts = 0
+
+    class _Resp:
+        status_code = 401
+
+    class _Client:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        async def __aenter__(self) -> "_Client":
+            return self
+
+        async def __aexit__(self, *exc: Any) -> None:
+            return None
+
+        async def post(self, url: str, json: dict[str, Any]) -> _Resp:
+            nonlocal attempts
+            attempts += 1
+            return _Resp()
+
+    with patch("httpx.AsyncClient", _Client):
+        outcome = asyncio.run(
+            _fire_gateway_callback(
+                "http://gateway/v1/internal/job-callback",
+                "permanently-rejected-doc",
+                "completed",
+            )
+        )
+
+    assert outcome == _CallbackDeliveryOutcome.PERMANENT_FAILURE
+    assert attempts == 1
 
 
 def test_discard_local_result_data_removes_acknowledged_worker_rows() -> None:
@@ -458,7 +511,10 @@ def test_gateway_callback_copies_result_before_completing(
     from nemo_retriever.service.app import create_app
     from nemo_retriever.service.config import ServiceConfig
     from nemo_retriever.service.routers import ingest
-    from nemo_retriever.service.services.job_tracker import DocumentStatus, get_job_tracker
+    from nemo_retriever.service.services.job_tracker import (
+        DocumentStatus,
+        get_job_tracker,
+    )
 
     rows = [{"text": "owned by worker 10.1.2.3"}]
     requested_urls: list[str] = []
@@ -523,7 +579,10 @@ def test_gateway_callback_does_not_complete_when_result_handoff_fails(
     from nemo_retriever.service.app import create_app
     from nemo_retriever.service.config import ServiceConfig
     from nemo_retriever.service.routers import ingest
-    from nemo_retriever.service.services.job_tracker import DocumentStatus, get_job_tracker
+    from nemo_retriever.service.services.job_tracker import (
+        DocumentStatus,
+        get_job_tracker,
+    )
 
     class _Resp:
         status_code = 404
@@ -636,7 +695,7 @@ def test_fire_gateway_callback_sends_internal_auth_headers() -> None:
             return _Resp()
 
     with patch("httpx.AsyncClient", _Client):
-        succeeded = asyncio.run(
+        outcome = asyncio.run(
             _fire_gateway_callback(
                 "http://gateway/v1/internal/job-callback",
                 "authenticated-doc",
@@ -645,7 +704,7 @@ def test_fire_gateway_callback_sends_internal_auth_headers() -> None:
             )
         )
 
-    assert succeeded is True
+    assert outcome == _CallbackDeliveryOutcome.ACKNOWLEDGED
     assert client_kwargs["headers"] == {"X-Service-Token": "secret"}
 
 
@@ -657,18 +716,19 @@ def test_deferred_callback_retries_without_rerunning_and_discards_after_ack(
 
     attempts = 0
 
-    async def succeeds(*args: Any, **kwargs: Any) -> bool:
+    async def succeeds(*args: Any, **kwargs: Any) -> _CallbackDeliveryOutcome:
         nonlocal attempts
         attempts += 1
-        return True
+        return _CallbackDeliveryOutcome.ACKNOWLEDGED
 
     async def run() -> None:
         pool = _Pool("deferred-test", num_workers=1, max_queue_size=1)
         pool._running = True
+        pool._handoff_slots = asyncio.BoundedSemaphore(pool.num_workers)
         store_result_data("deferred-doc", [{"text": "retained"}])
         monkeypatch.setattr(pipeline_pool, "_fire_gateway_callback", succeeds)
         monkeypatch.setattr(pipeline_pool, "_CALLBACK_DEFERRED_INITIAL_DELAY_S", 0.0)
-        pool._schedule_gateway_callback_retry(
+        await pool._schedule_gateway_callback_retry(
             callback_url="http://gateway/v1/internal/job-callback",
             item_id="deferred-doc",
             status="completed",
@@ -685,6 +745,60 @@ def test_deferred_callback_retries_without_rerunning_and_discards_after_ack(
 
     assert attempts == 1
     assert get_result_data("deferred-doc") is None
+
+
+def test_deferred_callback_tasks_are_bounded_and_cancellation_releases_slot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from nemo_retriever.service.services.pipeline_pool import _Pool
+
+    async def run() -> None:
+        pool = _Pool("bounded-deferred-test", num_workers=1, max_queue_size=1)
+        pool._running = True
+        pool._handoff_slots = asyncio.BoundedSemaphore(pool.num_workers)
+        second_release = asyncio.Event()
+
+        async def wait_for_release(self: _Pool, *, item_id: str, **kwargs: Any) -> None:
+            if item_id == "second-doc":
+                await second_release.wait()
+            else:
+                await asyncio.Event().wait()
+
+        monkeypatch.setattr(_Pool, "_retry_gateway_callback_until_expired", wait_for_release)
+
+        await pool._schedule_gateway_callback_retry(
+            callback_url="http://gateway/v1/internal/job-callback",
+            item_id="first-doc",
+            status="completed",
+        )
+        first_task = pool._handoff_tasks["first-doc"]
+        second_schedule = asyncio.create_task(
+            pool._schedule_gateway_callback_retry(
+                callback_url="http://gateway/v1/internal/job-callback",
+                item_id="second-doc",
+                status="completed",
+            )
+        )
+        await asyncio.sleep(0)
+
+        assert len(pool._handoff_tasks) == pool.num_workers
+        assert not second_schedule.done()
+
+        first_task.cancel()
+        await asyncio.gather(first_task, return_exceptions=True)
+        await asyncio.wait_for(second_schedule, timeout=1.0)
+
+        assert len(pool._handoff_tasks) == pool.num_workers
+        assert "second-doc" in pool._handoff_tasks
+
+        second_task = pool._handoff_tasks["second-doc"]
+        second_release.set()
+        await asyncio.wait_for(second_task, timeout=1.0)
+        await asyncio.sleep(0)
+        assert pool._handoff_tasks == {}
+        pool._running = False
+
+    asyncio.run(run())
 
 
 def test_shared_result_publication_fsyncs_created_parents_and_generation(
@@ -723,7 +837,9 @@ def test_result_store_validation_rejects_unsupported_directory_fsync(
         validate_result_store()
 
 
-def test_gateway_result_pull_sends_configured_internal_auth(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_gateway_result_pull_sends_configured_internal_auth(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from types import SimpleNamespace
 
     from starlette.requests import Request
@@ -781,7 +897,9 @@ def test_gateway_result_pull_sends_configured_internal_auth(monkeypatch: pytest.
     assert get_result_data("auth-pull-doc") == [{"text": "authenticated handoff"}]
 
 
-def test_fire_gateway_callback_honors_capped_retry_after(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_fire_gateway_callback_honors_capped_retry_after(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from nemo_retriever.service.services import pipeline_pool
 
     sleeps: list[float] = []
@@ -813,7 +931,7 @@ def test_fire_gateway_callback_honors_capped_retry_after(monkeypatch: pytest.Mon
     monkeypatch.setattr(pipeline_pool, "_CALLBACK_RETRY_DELAYS_S", (0.0,))
     monkeypatch.setattr(pipeline_pool.asyncio, "sleep", record_sleep)
     with patch("httpx.AsyncClient", _Client):
-        succeeded = asyncio.run(
+        outcome = asyncio.run(
             _fire_gateway_callback(
                 "http://gateway/v1/internal/job-callback",
                 "retry-after-doc",
@@ -822,5 +940,5 @@ def test_fire_gateway_callback_honors_capped_retry_after(monkeypatch: pytest.Mon
             )
         )
 
-    assert succeeded is True
+    assert outcome == _CallbackDeliveryOutcome.ACKNOWLEDGED
     assert sleeps == [2.0]

@@ -1,14 +1,12 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Split-topology worker callback must not POST full result_data payloads."""
+"""Split-topology callback and retained-result storage coverage."""
 
 from __future__ import annotations
 
 import asyncio
 import errno
-import hashlib
-import logging
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -24,7 +22,7 @@ from nemo_retriever.service.services.pipeline_pool import _fire_gateway_callback
 from nemo_retriever.service.services.worker_result_store import (
     ResultStoreTemporarilyUnavailable,
     clear_for_tests,
-    consume_result_data,
+    get_result_data,
     store_result_data,
     validate_result_store,
 )
@@ -76,10 +74,10 @@ def test_fire_gateway_callback_omits_result_data() -> None:
 
     assert posted["json"] == {"id": "doc-1", "status": "completed", "result_rows": 42}
     assert "result_data" not in posted["json"]
-    assert consume_result_data("doc-1") == rows
+    assert get_result_data("doc-1") == rows
 
 
-def test_worker_document_result_endpoint() -> None:
+def test_worker_document_result_endpoint_is_idempotent() -> None:
     from fastapi.testclient import TestClient
 
     from nemo_retriever.service.app import create_app
@@ -90,177 +88,162 @@ def test_worker_document_result_endpoint() -> None:
         pipeline=PipelinePoolConfig(realtime_workers=1, batch_workers=1),
         pipeline_overrides=PipelineOverridesConfig(),
     )
-    store_result_data("doc-x", [{"text": "hello"}])
+    rows = [{"text": "hello"}]
+    store_result_data("doc-x", rows)
     with TestClient(create_app(cfg)) as client:
-        resp = client.get("/v1/internal/document-result/doc-x")
-        assert resp.status_code == 200
-        assert resp.json()["result_data"] == [{"text": "hello"}]
-        assert client.get("/v1/internal/document-result/doc-x").status_code == 404
+        assert client.get("/v1/internal/document-result/doc-x").json()["result_data"] == rows
+        assert client.get("/v1/internal/document-result/doc-x").json()["result_data"] == rows
 
 
-def test_shared_result_store_is_visible_across_memory_stores(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_shared_result_store_is_traversal_safe_and_cross_process_visible(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     monkeypatch.setenv("NEMO_RETRIEVER_RESULTS_DIR", str(tmp_path))
     rows = [{"page": 1, "text": "shared"}]
 
     store_result_data("../unsafe/document-id", rows)
     clear_for_tests()  # Simulate reading from another pod/process.
 
-    assert consume_result_data("../unsafe/document-id") == rows
-    assert consume_result_data("../unsafe/document-id") is None
-    assert not list(tmp_path.iterdir())
+    assert get_result_data("../unsafe/document-id") == rows
+    assert get_result_data("../unsafe/document-id") == rows
+    assert worker_result_store._document_dir(tmp_path, "../unsafe/document-id").is_relative_to(tmp_path)
 
 
-def test_shared_result_store_has_single_consumer(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("NEMO_RETRIEVER_RESULTS_DIR", str(tmp_path))
-    rows = [{"text": "consume once"}]
-    store_result_data("doc-concurrent", rows)
-
-    with ThreadPoolExecutor(max_workers=8) as executor:
-        consumed = list(executor.map(lambda _: consume_result_data("doc-concurrent"), range(8)))
-
-    assert consumed.count(rows) == 1
-    assert consumed.count(None) == 7
-
-
-def test_shared_result_store_tolerates_concurrently_swept_claim(
+def test_shared_result_store_supports_concurrent_idempotent_readers(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setenv("NEMO_RETRIEVER_RESULTS_DIR", str(tmp_path))
-    store_result_data("doc-expiring", [{"text": "expiring"}])
-    original_replace = os.replace
+    rows = [{"text": "read repeatedly"}]
+    store_result_data("doc-concurrent", rows)
 
-    def replace_then_remove_claim(source: Path, destination: Path) -> None:
-        original_replace(source, destination)
-        if destination.name.endswith(".claim"):
-            destination.unlink()
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        results = list(executor.map(lambda _: get_result_data("doc-concurrent"), range(8)))
 
-    monkeypatch.setattr(worker_result_store.os, "replace", replace_then_remove_claim)
-
-    assert consume_result_data("doc-expiring") is None
-    assert not list(tmp_path.iterdir())
+    assert results == [rows] * 8
 
 
-def test_shared_result_store_retries_after_claim_error(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("NEMO_RETRIEVER_RESULTS_DIR", str(tmp_path))
-    rows = [{"text": "retry claim"}]
-    store_result_data("doc-claim-error", rows)
-    target = worker_result_store._result_path(tmp_path, "doc-claim-error")
-    original_replace = os.replace
-    fail_claim = True
-
-    def fail_claim_once(source: Path, destination: Path) -> None:
-        nonlocal fail_claim
-        if fail_claim and source == target and destination.name.endswith(".claim"):
-            fail_claim = False
-            raise OSError(errno.ESTALE, "Stale file handle")
-        original_replace(source, destination)
-
-    monkeypatch.setattr(worker_result_store.os, "replace", fail_claim_once)
-
-    with pytest.raises(ResultStoreTemporarilyUnavailable):
-        consume_result_data("doc-claim-error")
-    assert consume_result_data("doc-claim-error") == rows
-
-
-def test_shared_result_store_restores_claim_after_read_error(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_shared_result_store_preserves_generation_after_read_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     monkeypatch.setenv("NEMO_RETRIEVER_RESULTS_DIR", str(tmp_path))
     rows = [{"text": "retry read"}]
     store_result_data("doc-read-error", rows)
-    target = worker_result_store._result_path(tmp_path, "doc-read-error")
+    generation = next(worker_result_store._document_dir(tmp_path, "doc-read-error").glob("*.json"))
     original_open = Path.open
     fail_read = True
 
-    def fail_claim_read_once(path: Path, *args: Any, **kwargs: Any) -> Any:
+    def fail_generation_read_once(path: Path, *args: Any, **kwargs: Any) -> Any:
         nonlocal fail_read
-        if fail_read and path.name.endswith(".claim"):
+        if fail_read and path == generation:
             fail_read = False
             raise OSError(errno.EIO, "I/O error")
         return original_open(path, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "open", fail_claim_read_once)
+    monkeypatch.setattr(Path, "open", fail_generation_read_once)
 
     with pytest.raises(ResultStoreTemporarilyUnavailable):
-        consume_result_data("doc-read-error")
-    assert target.exists()
-    assert consume_result_data("doc-read-error") == rows
+        get_result_data("doc-read-error")
+    assert generation.exists()
+    assert get_result_data("doc-read-error") == rows
 
 
-def test_shared_result_store_recovers_abandoned_claim_after_restore_fails(
+@pytest.mark.parametrize("payload", ["{", '{"unexpected":true}', "[1]"])
+def test_shared_result_store_preserves_invalid_payload_for_diagnosis(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, payload: str
+) -> None:
+    monkeypatch.setenv("NEMO_RETRIEVER_RESULTS_DIR", str(tmp_path))
+    document_dir = worker_result_store._document_dir(tmp_path, "invalid")
+    document_dir.mkdir(parents=True)
+    generation = document_dir / f"{('a' * 32)}.json"
+    generation.write_text(payload, encoding="utf-8")
+
+    with pytest.raises(ResultStoreTemporarilyUnavailable):
+        get_result_data("invalid")
+
+    assert generation.read_text(encoding="utf-8") == payload
+
+
+def test_shared_result_store_chooses_newest_completed_generation(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setenv("NEMO_RETRIEVER_RESULTS_DIR", str(tmp_path))
-    rows = [{"text": "preserve"}]
-    store_result_data("doc-restore-error", rows)
-    original_open = Path.open
-    original_link = os.link
+    store_result_data("regenerated", [{"version": 1}])
+    first = next(worker_result_store._document_dir(tmp_path, "regenerated").glob("*.json"))
+    old = time.time() - 10
+    os.utime(first, (old, old))
 
-    def fail_claim_read(path: Path, *args: Any, **kwargs: Any) -> Any:
-        if path.name.endswith(".claim"):
-            raise OSError(errno.EIO, "I/O error")
-        return original_open(path, *args, **kwargs)
+    store_result_data("regenerated", [{"version": 2}])
 
-    def fail_restore(source: Path, destination: Path) -> None:
-        if source.name.endswith(".claim"):
-            raise OSError(errno.ESTALE, "Stale file handle")
-        original_link(source, destination)
-
-    with monkeypatch.context() as context:
-        context.setattr(Path, "open", fail_claim_read)
-        context.setattr(worker_result_store.os, "link", fail_restore)
-        with pytest.raises(ResultStoreTemporarilyUnavailable):
-            consume_result_data("doc-restore-error")
-
-    claims = list(tmp_path.glob("*.claim"))
-    assert len(claims) == 1
-    expired_lease = time.time() - worker_result_store._CLAIM_LEASE_S - 1
-    os.utime(claims[0], (expired_lease, expired_lease))
-
-    assert consume_result_data("doc-restore-error") == rows
-    assert not list(tmp_path.iterdir())
+    assert get_result_data("regenerated") == [{"version": 2}]
 
 
-def test_shared_result_store_does_not_steal_active_claim(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("NEMO_RETRIEVER_RESULTS_DIR", str(tmp_path))
-    store_result_data("doc-active", [{"text": "active"}])
-    target = worker_result_store._result_path(tmp_path, "doc-active")
-    claimed = tmp_path / f".{target.name}.{('a' * 32)}.claim"
-    os.replace(target, claimed)
-    os.utime(claimed, None)
-
-    assert consume_result_data("doc-active") is None
-    assert claimed.exists()
-
-
-def test_shared_result_store_ignores_claim_cleanup_error(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("NEMO_RETRIEVER_RESULTS_DIR", str(tmp_path))
-    rows = [{"text": "successful read"}]
-    store_result_data("doc-cleanup-error", rows)
-    original_unlink = Path.unlink
-
-    def fail_claim_unlink(path: Path, *args: Any, **kwargs: Any) -> None:
-        if path.name.endswith(".claim"):
-            raise OSError(errno.EIO, "I/O error")
-        original_unlink(path, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "unlink", fail_claim_unlink)
-
-    assert consume_result_data("doc-cleanup-error") == rows
-    assert len(list(tmp_path.glob("*.claim"))) == 1
-
-
-@pytest.mark.parametrize("payload", ["{", '{"unexpected":true}'])
-def test_shared_result_store_discards_invalid_payload(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture, payload: str
+def test_expiry_sweep_cannot_delete_concurrent_fresh_generation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setenv("NEMO_RETRIEVER_RESULTS_DIR", str(tmp_path))
-    target = worker_result_store._result_path(tmp_path, "invalid")
-    target.write_text(payload, encoding="utf-8")
+    monkeypatch.setenv("NEMO_RETRIEVER_RESULTS_TTL_SECONDS", "60")
+    store_result_data("replaced", [{"version": 1}])
+    old_generation = next(worker_result_store._document_dir(tmp_path, "replaced").glob("*.json"))
+    old = time.time() - 61
+    os.utime(old_generation, (old, old))
+    original_unlink = Path.unlink
+    published_replacement = False
 
-    with caplog.at_level(logging.WARNING, logger=worker_result_store.__name__):
-        assert consume_result_data("invalid") is None
+    def publish_before_unlink(path: Path, *args: Any, **kwargs: Any) -> None:
+        nonlocal published_replacement
+        if path == old_generation and not published_replacement:
+            published_replacement = True
+            store_result_data("replaced", [{"version": 2}])
+        original_unlink(path, *args, **kwargs)
 
-    assert "Unable to decode shared result payload for 'invalid'" in caplog.text
-    assert not list(tmp_path.iterdir())
+    monkeypatch.setattr(Path, "unlink", publish_before_unlink)
+    worker_result_store._remove_expired_file(old_generation, cutoff=time.time() - 60)
+
+    assert get_result_data("replaced") == [{"version": 2}]
+
+
+def test_shared_result_store_removes_only_expired_owned_files(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("NEMO_RETRIEVER_RESULTS_DIR", str(tmp_path))
+    monkeypatch.setenv("NEMO_RETRIEVER_RESULTS_TTL_SECONDS", "60")
+    document_dir = worker_result_store._document_dir(tmp_path, "abandoned")
+    document_dir.mkdir(parents=True)
+    stale_files = [document_dir / f"{('a' * 32)}.json", document_dir / f".{('b' * 32)}.tmp"]
+    for path in stale_files:
+        path.write_text("[]", encoding="utf-8")
+        old = time.time() - 61
+        os.utime(path, (old, old))
+    unrelated = worker_result_store._results_root(tmp_path) / "keep-me.json"
+    unrelated.write_text("[]", encoding="utf-8")
+
+    store_result_data("fresh", [{"text": "available"}])
+
+    assert all(not path.exists() for path in stale_files)
+    assert unrelated.exists()
+    assert get_result_data("fresh") == [{"text": "available"}]
+
+
+def test_sweep_preserves_fresh_empty_document_directory(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("NEMO_RETRIEVER_RESULTS_DIR", str(tmp_path))
+    document_dir = worker_result_store._document_dir(tmp_path, "about-to-publish")
+    document_dir.mkdir(parents=True)
+
+    worker_result_store._sweep_expired_files(tmp_path, now=time.time(), ttl_s=60)
+
+    assert document_dir.is_dir()
+
+
+def test_in_memory_result_store_is_idempotent_and_ttl_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("NEMO_RETRIEVER_RESULTS_TTL_SECONDS", "60")
+    monotonic_now = 100.0
+    monkeypatch.setattr(worker_result_store.time, "monotonic", lambda: monotonic_now)
+    rows = [{"text": "memory"}]
+    store_result_data("memory", rows)
+
+    assert get_result_data("memory") == rows
+    assert get_result_data("memory") == rows
+
+    monotonic_now = 161.0
+    assert get_result_data("memory") is None
 
 
 def test_shared_result_store_default_ttl_covers_full_job_lifecycle() -> None:
@@ -272,10 +255,10 @@ def test_result_store_validation_probes_required_operations(monkeypatch: pytest.
 
     validate_result_store()
 
-    assert not list(tmp_path.iterdir())
+    assert not list(worker_result_store._results_root(tmp_path).iterdir())
 
 
-def test_result_store_validation_rejects_unsupported_hard_links(
+def test_result_store_validation_rejects_unsupported_atomic_rename(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     from fastapi.testclient import TestClient
@@ -285,94 +268,14 @@ def test_result_store_validation_rejects_unsupported_hard_links(
 
     monkeypatch.setenv("NEMO_RETRIEVER_RESULTS_DIR", str(tmp_path))
 
-    def unsupported_link(*_: object) -> None:
-        raise OSError(errno.EOPNOTSUPP, "Hard links are not supported")
+    def unsupported_replace(*_: object) -> None:
+        raise OSError(errno.EOPNOTSUPP, "Atomic rename is not supported")
 
-    monkeypatch.setattr(worker_result_store.os, "link", unsupported_link)
+    monkeypatch.setattr(worker_result_store.os, "replace", unsupported_replace)
 
-    with pytest.raises(RuntimeError, match="must support file creation"):
+    with pytest.raises(RuntimeError, match="same-directory atomic rename"):
         with TestClient(create_app(ServiceConfig(mode="gateway"))):
             pass
-    assert not list(tmp_path.iterdir())
-
-
-def test_shared_result_store_removes_expired_owned_files(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("NEMO_RETRIEVER_RESULTS_DIR", str(tmp_path))
-    monkeypatch.setenv("NEMO_RETRIEVER_RESULTS_TTL_SECONDS", "60")
-    digest = hashlib.sha256(b"abandoned").hexdigest()
-    stale_files = [
-        tmp_path / f"{digest}.json",
-        tmp_path / f".{digest}.json.{("a" * 32)}.tmp",
-        tmp_path / f".{digest}.json.{("b" * 32)}.claim",
-    ]
-    for path in stale_files:
-        path.write_text("[]", encoding="utf-8")
-        os.utime(path, (time.time() - 61, time.time() - 61))
-    unrelated = tmp_path / "keep-me.json"
-    unrelated.write_text("[]", encoding="utf-8")
-
-    store_result_data("fresh", [{"text": "available"}])
-
-    assert all(not path.exists() for path in stale_files)
-    assert unrelated.exists()
-    assert consume_result_data("fresh") == [{"text": "available"}]
-
-
-def test_expiry_sweep_does_not_delete_concurrently_replaced_result(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    target = worker_result_store._result_path(tmp_path, "replaced")
-    target.write_text("[1]", encoding="utf-8")
-    os.utime(target, (time.time() - 61, time.time() - 61))
-    replacement = tmp_path / "replacement"
-    replacement.write_text("[2]", encoding="utf-8")
-    original_replace = os.replace
-
-    def replace_during_claim(source: Path, destination: Path) -> None:
-        if source == target and str(destination).endswith(".cleanup"):
-            original_replace(replacement, target)
-        original_replace(source, destination)
-
-    with monkeypatch.context() as context:
-        context.setattr(worker_result_store.os, "replace", replace_during_claim)
-        removed = worker_result_store._remove_expired_result(target, cutoff=time.time() - 60)
-
-    assert not removed
-    assert target.read_text(encoding="utf-8") == "[2]"
-
-
-def test_expiry_sweep_leaves_result_when_hard_links_are_unsupported(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    target = worker_result_store._result_path(tmp_path, "unsupported-hard-links")
-    target.write_text("[1]", encoding="utf-8")
-    os.utime(target, (time.time() - 61, time.time() - 61))
-
-    def unsupported_link(*_: object) -> None:
-        raise OSError(errno.EOPNOTSUPP, "Hard links are not supported")
-
-    def unexpected_replace(*_: object) -> None:
-        raise AssertionError("A result must not be claimed when hard links are unsupported")
-
-    with monkeypatch.context() as context:
-        context.setattr(worker_result_store.os, "link", unsupported_link)
-        context.setattr(worker_result_store.os, "replace", unexpected_replace)
-        removed = worker_result_store._remove_expired_result(target, cutoff=time.time() - 60)
-
-    assert not removed
-    assert target.read_text(encoding="utf-8") == "[1]"
-
-
-def test_shared_result_store_keeps_unexpired_results(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("NEMO_RETRIEVER_RESULTS_DIR", str(tmp_path))
-    monkeypatch.setenv("NEMO_RETRIEVER_RESULTS_TTL_SECONDS", "3600")
-    store_result_data("existing", [{"text": "existing"}])
-    clear_for_tests()  # Make the next operation run an immediate sweep.
-
-    store_result_data("new", [{"text": "new"}])
-
-    assert consume_result_data("existing") == [{"text": "existing"}]
-    assert consume_result_data("new") == [{"text": "new"}]
 
 
 def test_worker_result_endpoint_returns_retryable_503(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -385,7 +288,7 @@ def test_worker_result_endpoint_returns_retryable_503(monkeypatch: pytest.Monkey
     def unavailable(_: str) -> None:
         raise ResultStoreTemporarilyUnavailable("shared result store unavailable")
 
-    monkeypatch.setattr(ingest, "consume_result_data", unavailable)
+    monkeypatch.setattr(ingest, "get_result_data", unavailable)
 
     with TestClient(create_app(ServiceConfig(mode="batch"))) as client:
         response = client.get("/v1/internal/document-result/doc-unavailable")
@@ -405,7 +308,7 @@ def test_gateway_fetch_returns_retryable_503_when_shared_store_is_unavailable(
     def unavailable(_: str) -> None:
         raise ResultStoreTemporarilyUnavailable("shared result store unavailable")
 
-    monkeypatch.setattr(ingest, "consume_result_data", unavailable)
+    monkeypatch.setattr(ingest, "get_result_data", unavailable)
 
     with pytest.raises(HTTPException) as error:
         asyncio.run(ingest._fetch_result_data_from_workers("doc-unavailable"))
@@ -424,34 +327,25 @@ def test_gateway_fetches_shared_result_before_proxy(monkeypatch: pytest.MonkeyPa
     assert asyncio.run(_fetch_result_data_from_workers("doc-gateway")) == rows
 
 
-def test_gateway_falls_back_to_proxy_for_invalid_shared_result(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    from nemo_retriever.service.routers import ingest
+def test_gateway_returns_503_for_missing_configured_shared_result(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from fastapi import HTTPException
+
+    from nemo_retriever.service.routers.ingest import _fetch_result_data_from_workers
 
     monkeypatch.setenv("NEMO_RETRIEVER_RESULTS_DIR", str(tmp_path))
-    target = worker_result_store._result_path(tmp_path, "doc-invalid")
-    target.write_text("{", encoding="utf-8")
-    rows = [{"text": "worker fallback"}]
 
-    class _Response:
-        status_code = 200
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(_fetch_result_data_from_workers("doc-missing"))
 
-        def json(self) -> dict[str, list[dict[str, str]]]:
-            return {"result_data": rows}
-
-    class _Client:
-        async def get(self, _: str) -> _Response:
-            return _Response()
-
-    class _Proxy:
-        def _client_for(self, _: object) -> _Client:
-            return _Client()
-
-    monkeypatch.setattr(ingest, "get_proxy", lambda: _Proxy())
-
-    assert asyncio.run(ingest._fetch_result_data_from_workers("doc-invalid")) == rows
+    assert error.value.status_code == 503
+    assert error.value.headers == {"Retry-After": "60"}
 
 
-def test_gateway_status_routes_consume_shared_results(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_gateway_status_routes_read_shared_results_idempotently(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     from fastapi.testclient import TestClient
 
     from nemo_retriever.service.app import create_app
@@ -469,13 +363,15 @@ def test_gateway_status_routes_consume_shared_results(monkeypatch: pytest.Monkey
         tracker.register_document("doc-job-route", job_id="job-shared")
         tracker.mark_completed("doc-job-route", result_rows=1)
         store_result_data("doc-job-route", rows)
-        response = client.get("/v1/ingest/job/job-shared/document/doc-job-route")
-        assert response.status_code == 200
-        assert response.json()["result_data"] == rows
+        for _ in range(2):
+            response = client.get("/v1/ingest/job/job-shared/document/doc-job-route")
+            assert response.status_code == 200
+            assert response.json()["result_data"] == rows
 
         tracker.register_document("doc-status-route", job_id="job-shared")
         tracker.mark_completed("doc-status-route", result_rows=1)
         store_result_data("doc-status-route", rows)
-        response = client.get("/v1/ingest/status/doc-status-route")
-        assert response.status_code == 200
-        assert response.json()["result_data"] == rows
+        for _ in range(2):
+            response = client.get("/v1/ingest/status/doc-status-route")
+            assert response.status_code == 200
+            assert response.json()["result_data"] == rows

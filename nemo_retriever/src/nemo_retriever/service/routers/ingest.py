@@ -68,7 +68,8 @@ from nemo_retriever.service.services.prometheus import (
 from nemo_retriever.service.services.proxy import get_proxy
 from nemo_retriever.service.services.worker_result_store import (
     ResultStoreTemporarilyUnavailable,
-    consume_result_data,
+    get_result_data,
+    is_shared_result_store_configured,
 )
 from nemo_retriever.service.utils.file_type import (
     FileCategory,
@@ -77,7 +78,7 @@ from nemo_retriever.service.utils.file_type import (
 )
 
 _RETRY_AFTER_SECONDS = "5"
-_CLAIM_RETRY_AFTER_SECONDS = 60
+_RESULT_RETRY_AFTER_SECONDS = 60
 _DRY_RUN_HEADER = "X-Nemo-Dry-Run"
 _GATEWAY_DOC_ID_HEADER = "X-Gateway-Document-Id"
 _GATEWAY_CALLBACK_HEADER = "X-Gateway-Callback-Url"
@@ -258,20 +259,26 @@ async def _enqueue_or_reject(pool_type: PoolType, item: WorkItem) -> None:
 
 
 async def _fetch_result_data_from_workers(document_id: str) -> list[dict[str, Any]] | None:
-    """Consume shared rows, falling back to legacy worker Service lookup."""
+    """Read shared rows, falling back to legacy worker Service lookup."""
     try:
-        rows = consume_result_data(document_id)
+        rows = get_result_data(document_id)
     except ResultStoreTemporarilyUnavailable as exc:
         raise HTTPException(
             status_code=503,
             detail=str(exc),
-            headers={"Retry-After": str(_CLAIM_RETRY_AFTER_SECONDS)},
+            headers={"Retry-After": str(_RESULT_RETRY_AFTER_SECONDS)},
         ) from exc
     if rows is not None:
         return rows
 
     proxy = get_proxy()
     if proxy is None:
+        if is_shared_result_store_configured():
+            raise HTTPException(
+                status_code=503,
+                detail=f"Retained result data for {document_id!r} is temporarily unavailable",
+                headers={"Retry-After": str(_RESULT_RETRY_AFTER_SECONDS)},
+            )
         return None
     for pool_type in (PoolType.BATCH, PoolType.REALTIME):
         client = proxy._client_for(pool_type)
@@ -298,6 +305,12 @@ async def _fetch_result_data_from_workers(document_id: str) -> list[dict[str, An
         rows = resp.json().get("result_data")
         if rows is not None:
             return rows
+    if is_shared_result_store_configured():
+        raise HTTPException(
+            status_code=503,
+            detail=f"Retained result data for {document_id!r} is temporarily unavailable",
+            headers={"Retry-After": str(_RESULT_RETRY_AFTER_SECONDS)},
+        )
     return None
 
 
@@ -772,8 +785,8 @@ async def get_job_document(
 ) -> Response:
     """Single-document detail nested under the owning job.
 
-    Returns HTTP 200 when the document is terminal (consumes
-    ``result_data`` so memory is freed for the caller) and HTTP 202
+    Returns HTTP 200 when the document is terminal (including retained
+    ``result_data`` when requested for the job) and HTTP 202
     while still pending/processing. A 404 is returned if either the
     job is unknown or the document does not belong to this job — the
     latter prevents leaking document existence across tenants.
@@ -791,8 +804,14 @@ async def get_job_document(
             detail=f"Document {document_id!r} not found in job {job_id!r}",
         )
     is_terminal = rec.status in (DocumentStatus.COMPLETED, DocumentStatus.FAILED)
-    result_data = tracker.consume_result_data(document_id) if is_terminal else None
-    if is_terminal and result_data is None and rec.result_rows and _is_gateway(request):
+    result_data = tracker.get_result_data(document_id) if is_terminal else None
+    if (
+        is_terminal
+        and result_data is None
+        and rec.result_rows
+        and _job_retain_results(rec.job_id)
+        and _is_gateway(request)
+    ):
         result_data = await _fetch_result_data_from_workers(document_id)
     body = _document_to_response(rec, result_data=result_data).model_dump()
     return JSONResponse(content=body, status_code=200 if is_terminal else 202)
@@ -1224,9 +1243,8 @@ async def _status_response(request: Request, item_id: str) -> JSONResponse:
     """Look up document status and return the appropriate HTTP code.
 
     Returns 200 for completed/failed, 202 for pending/processing, 404 if unknown.
-    When returning a terminal (200) response, result_data is consumed from the
-    tracker (or, in gateway mode, from the worker pod that ran the pipeline)
-    so memory is freed after the client has retrieved it.
+    Terminal result data is read idempotently from the tracker or, in gateway
+    mode, from the shared worker result store.
     """
     from nemo_retriever.service.services.job_tracker import DocumentStatus
 
@@ -1241,8 +1259,14 @@ async def _status_response(request: Request, item_id: str) -> JSONResponse:
         raise HTTPException(status_code=404, detail=f"No tracked document with id={item_id!r}")
 
     is_terminal = rec.status in (DocumentStatus.COMPLETED, DocumentStatus.FAILED)
-    result_data = tracker.consume_result_data(item_id) if is_terminal else None
-    if is_terminal and result_data is None and rec.result_rows and _is_gateway(request):
+    result_data = tracker.get_result_data(item_id) if is_terminal else None
+    if (
+        is_terminal
+        and result_data is None
+        and rec.result_rows
+        and _job_retain_results(rec.job_id)
+        and _is_gateway(request)
+    ):
         result_data = await _fetch_result_data_from_workers(item_id)
 
     body = JobStatusResponse(
@@ -1691,12 +1715,12 @@ async def query(request: Request) -> Response:
 async def worker_document_result(document_id: str) -> JSONResponse:
     """Return rows stored by the worker pool after pipeline completion."""
     try:
-        rows = consume_result_data(document_id)
+        rows = get_result_data(document_id)
     except ResultStoreTemporarilyUnavailable as exc:
         raise HTTPException(
             status_code=503,
             detail=str(exc),
-            headers={"Retry-After": str(_CLAIM_RETRY_AFTER_SECONDS)},
+            headers={"Retry-After": str(_RESULT_RETRY_AFTER_SECONDS)},
         ) from exc
     if rows is None:
         raise HTTPException(

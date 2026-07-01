@@ -568,14 +568,13 @@ def test_mark_completed_drops_result_data_when_retain_false() -> None:
     assert rec is not None
     assert rec.result_rows == 3
     assert rec.result_data is None
-    assert tracker.consume_result_data("d") is None
+    assert tracker.get_result_data("d") is None
 
 
-def test_consume_result_data_clears_after_read() -> None:
+def test_get_result_data_is_idempotent_until_job_eviction() -> None:
     tracker = JobTracker()
     tracker.register_job("j", expected_documents=1, retain_results=True)
     tracker.register_document("d", job_id="j")
     tracker.mark_completed("d", result_data=[{"x": 1}])
-    assert tracker.consume_result_data("d") == [{"x": 1}]
-    # Subsequent calls return None — bulky data is purged.
-    assert tracker.consume_result_data("d") is None
+    assert tracker.get_result_data("d") == [{"x": 1}]
+    assert tracker.get_result_data("d") == [{"x": 1}]

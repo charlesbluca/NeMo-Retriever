@@ -1,13 +1,23 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Per-document result rows for split-topology workers.
+"""Retained per-document result rows for split-topology workers.
 
 Worker → gateway completion callbacks intentionally omit ``result_data``
-to keep POST bodies small. When ``NEMO_RETRIEVER_RESULTS_DIR`` is set, rows
-are written atomically to that shared directory so any gateway or worker pod
-can consume them by document ID. The in-memory store remains as a fallback
-for local and non-Helm deployments that do not configure shared storage.
+to keep POST bodies small. When ``NEMO_RETRIEVER_RESULTS_DIR`` is set, each
+write publishes a uniquely named immutable generation beneath that shared
+directory. Reads are idempotent: every gateway can read the same generation
+until TTL cleanup removes it.
+
+The storage protocol intentionally has no claims or reader leases:
+
+* a published generation is never renamed or replaced;
+* reads never mutate storage;
+* cleanup unlinks only the exact immutable generation it inspected; and
+* I/O or decode failures preserve the generation and remain retryable.
+
+An in-memory TTL-bounded store provides the same read semantics for local and
+non-Helm deployments that do not configure shared storage.
 """
 
 from __future__ import annotations
@@ -26,18 +36,18 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 _lock = threading.Lock()
-_store: dict[str, list[dict[str, Any]]] = {}
+_store: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 _RESULTS_DIR_ENV = "NEMO_RETRIEVER_RESULTS_DIR"
 _RESULTS_TTL_S_ENV = "NEMO_RETRIEVER_RESULTS_TTL_SECONDS"
 _DEFAULT_RESULTS_TTL_S = 8 * 3600  # stale-job window plus terminal-job retention
 _SWEEP_INTERVAL_S = 60
-_CLAIM_LEASE_S = 60
+_STORE_NAMESPACE = ".worker-results-v1"
 _last_sweep_dir: Path | None = None
 _last_sweep_at = 0.0
 
 
 class ResultStoreTemporarilyUnavailable(RuntimeError):
-    """Raised when shared result data may be retryable after an I/O failure."""
+    """Raised when retained result data cannot currently be read safely."""
 
 
 def _results_dir() -> Path | None:
@@ -45,10 +55,39 @@ def _results_dir() -> Path | None:
     return Path(value) if value else None
 
 
-def _result_path(results_dir: Path, document_id: str) -> Path:
-    """Return a traversal-safe, deterministic path for *document_id*."""
-    digest = hashlib.sha256(document_id.encode("utf-8")).hexdigest()
-    return results_dir / f"{digest}.json"
+def is_shared_result_store_configured() -> bool:
+    """Return whether this process is configured to use shared result files."""
+    return _results_dir() is not None
+
+
+def _results_root(results_dir: Path) -> Path:
+    return results_dir / _STORE_NAMESPACE
+
+
+def _document_digest(document_id: str) -> str:
+    return hashlib.sha256(document_id.encode("utf-8")).hexdigest()
+
+
+def _document_dir(results_dir: Path, document_id: str) -> Path:
+    """Return a traversal-safe directory for *document_id*."""
+    return _results_root(results_dir) / _document_digest(document_id)
+
+
+def _is_hex(value: str, length: int) -> bool:
+    return len(value) == length and all(character in "0123456789abcdef" for character in value)
+
+
+def _is_document_dir(path: Path) -> bool:
+    return _is_hex(path.name, 64)
+
+
+def _is_generation(path: Path) -> bool:
+    return path.name.endswith(".json") and _is_hex(path.name.removesuffix(".json"), 32)
+
+
+def _is_temporary(path: Path) -> bool:
+    name = path.name
+    return name.startswith(".") and name.endswith(".tmp") and _is_hex(name[1:].removesuffix(".tmp"), 32)
 
 
 def validate_result_store() -> None:
@@ -57,34 +96,42 @@ def validate_result_store() -> None:
     if results_dir is None:
         return
 
+    root = _results_root(results_dir)
     probe_id = uuid.uuid4().hex
-    source = results_dir / f".result-store-probe-{probe_id}.tmp"
-    target = results_dir / f".result-store-probe-{probe_id}.target"
-    linked = results_dir / f".result-store-probe-{probe_id}.link"
+    probe_dir = root / f".probe-{probe_id}"
+    source = probe_dir / f".{probe_id}.tmp"
+    target = probe_dir / f"{probe_id}.json"
     failure: OSError | None = None
     try:
-        results_dir.mkdir(parents=True, exist_ok=True)
+        probe_dir.mkdir(parents=True, exist_ok=False)
         with source.open("x", encoding="utf-8") as stream:
             stream.write("probe")
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(source, target)
-        os.link(target, linked)
-        linked.unlink()
+        if target.read_text(encoding="utf-8") != "probe":
+            raise OSError("shared result store probe read returned unexpected data")
         target.unlink()
+        probe_dir.rmdir()
     except OSError as exc:
         failure = exc
     finally:
-        for path in (source, target, linked):
+        for path in (source, target):
             try:
                 path.unlink(missing_ok=True)
             except OSError as exc:
                 failure = failure or exc
+        try:
+            probe_dir.rmdir()
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            failure = failure or exc
 
     if failure is not None:
         raise RuntimeError(
-            f"Shared result directory {results_dir} must support file creation, fsync, "
-            "atomic rename, hard links, and unlink"
+            f"Shared result directory {results_dir} must support directory and file creation, "
+            "fsync, same-directory atomic rename, read, and unlink"
         ) from failure
 
 
@@ -102,74 +149,53 @@ def _results_ttl_s() -> float:
     return ttl_s
 
 
-def _is_result_store_file(path: Path) -> bool:
-    """Return whether *path* is a result or an intermediate result file."""
-    name = path.name
-    if name.endswith(".json"):
-        digest = name.removesuffix(".json")
-        return len(digest) == 64 and all(character in "0123456789abcdef" for character in digest)
-    if not name.startswith(".") or not name.endswith((".tmp", ".claim", ".cleanup")):
-        return False
-    parts = name[1:].split(".")
-    return (
-        len(parts) == 4
-        and len(parts[0]) == 64
-        and all(character in "0123456789abcdef" for character in parts[0])
-        and parts[1] == "json"
-        and len(parts[2]) == 32
-        and all(character in "0123456789abcdef" for character in parts[2])
-    )
-
-
-def _remove_expired_result(path: Path, *, cutoff: float) -> bool:
-    """Atomically claim and remove an expired result without deleting a replacement."""
+def _remove_expired_file(path: Path, *, cutoff: float) -> bool:
+    """Remove an expired immutable generation or interrupted temporary file."""
     try:
         if path.stat().st_mtime > cutoff:
             return False
-        if not path.name.endswith(".json"):
-            path.unlink(missing_ok=True)
-            return True
-
-        claimed = path.with_name(f".{path.name}.{uuid.uuid4().hex}.cleanup")
-        # Restoring a concurrently replaced result requires an atomic,
-        # no-overwrite hard link. Startup validates this operation, while this
-        # runtime guard keeps expiry best-effort if mount behavior changes.
-        os.link(path, claimed)
-        claimed.unlink(missing_ok=True)
-
-        os.replace(path, claimed)
-        if claimed.stat().st_mtime <= cutoff:
-            claimed.unlink(missing_ok=True)
-            return True
-
-        # A writer replaced the stale file between stat() and os.replace().
-        # Restore the fresh inode only if no newer result now owns the path.
-        try:
-            os.link(claimed, path)
-        except FileExistsError:
-            pass
-        claimed.unlink(missing_ok=True)
+        path.unlink(missing_ok=True)
+        return True
     except FileNotFoundError:
-        pass  # Another pod consumed, replaced, or swept it first.
+        return False
     except OSError:
         logger.debug("Unable to remove expired shared result file %s", path, exc_info=True)
-    return False
+        return False
 
 
 def _sweep_expired_files(results_dir: Path, *, now: float, ttl_s: float) -> None:
-    """Best-effort removal of expired files owned by this result store."""
+    """Best-effort removal of expired immutable files owned by this store."""
+    root = _results_root(results_dir)
     try:
-        paths = list(results_dir.iterdir())
+        document_dirs = list(root.iterdir())
     except FileNotFoundError:
         return
     except OSError:
-        logger.warning("Unable to scan shared result directory %s", results_dir, exc_info=True)
+        logger.warning("Unable to scan shared result directory %s", root, exc_info=True)
         return
 
     cutoff = now - ttl_s
-    removed = sum(_remove_expired_result(path, cutoff=cutoff) for path in paths if _is_result_store_file(path))
+    removed = 0
+    for document_dir in document_dirs:
+        if not _is_document_dir(document_dir):
+            continue
+        try:
+            paths = list(document_dir.iterdir())
+        except FileNotFoundError:
+            continue
+        except OSError:
+            logger.debug("Unable to scan shared result document directory %s", document_dir, exc_info=True)
+            continue
+        removed += sum(
+            _remove_expired_file(path, cutoff=cutoff) for path in paths if _is_generation(path) or _is_temporary(path)
+        )
+        try:
+            if document_dir.stat().st_mtime <= cutoff:
+                document_dir.rmdir()
+        except OSError:
+            pass
     if removed:
-        logger.info("Removed %d expired shared result file(s) from %s", removed, results_dir)
+        logger.info("Removed %d expired shared result file(s) from %s", removed, root)
 
 
 def _maybe_sweep_expired_files(results_dir: Path) -> None:
@@ -186,10 +212,12 @@ def _maybe_sweep_expired_files(results_dir: Path) -> None:
 
 
 def _store_on_filesystem(results_dir: Path, document_id: str, result_data: list[dict[str, Any]]) -> None:
-    results_dir.mkdir(parents=True, exist_ok=True)
     _maybe_sweep_expired_files(results_dir)
-    target = _result_path(results_dir, document_id)
-    temporary = results_dir / f".{target.name}.{uuid.uuid4().hex}.tmp"
+    document_dir = _document_dir(results_dir, document_id)
+    document_dir.mkdir(parents=True, exist_ok=True)
+    generation_id = uuid.uuid4().hex
+    temporary = document_dir / f".{generation_id}.tmp"
+    target = document_dir / f"{generation_id}.json"
     try:
         with temporary.open("x", encoding="utf-8") as stream:
             json.dump(result_data, stream, ensure_ascii=False, separators=(",", ":"))
@@ -197,134 +225,85 @@ def _store_on_filesystem(results_dir: Path, document_id: str, result_data: list[
             os.fsync(stream.fileno())
         os.replace(temporary, target)
     finally:
-        temporary.unlink(missing_ok=True)
-
-
-def _remove_claim(claimed: Path, document_id: str) -> None:
-    """Best-effort removal that must not turn a successful read into an error."""
-    try:
-        claimed.unlink(missing_ok=True)
-    except OSError:
-        logger.warning("Unable to remove shared result claim for %r", document_id, exc_info=True)
-
-
-def _restore_claim(claimed: Path, target: Path, document_id: str) -> bool:
-    """Restore a failed claim for retry without replacing an existing result."""
-    try:
-        os.link(claimed, target)
-    except FileExistsError:
-        # A replacement already owns the canonical path, so the older claim
-        # must not overwrite it.
-        _remove_claim(claimed, document_id)
-        return True
-    except FileNotFoundError:
         try:
-            target.stat()
-        except FileNotFoundError:
-            return False
+            temporary.unlink(missing_ok=True)
         except OSError:
-            logger.warning("Unable to inspect shared result while restoring %r", document_id, exc_info=True)
-            return False
-        return True
-    except OSError:
-        # Preserve the claim when restoration fails. A later request can
-        # recover it after its active-consumer lease expires.
-        logger.warning("Unable to restore shared result claim for %r", document_id, exc_info=True)
-        return False
-
-    _remove_claim(claimed, document_id)
-    return True
+            logger.warning("Unable to remove interrupted shared result write %s", temporary, exc_info=True)
 
 
-def _recover_abandoned_claim(results_dir: Path, target: Path, claimed: Path, document_id: str) -> bool:
-    """Atomically acquire an abandoned claim after its consumer lease expires."""
-    cutoff = time.time() - _CLAIM_LEASE_S
+def _generation_candidates(document_dir: Path, document_id: str) -> list[Path]:
     try:
-        candidates = list(results_dir.glob(f".{target.name}.*.claim"))
+        paths = list(document_dir.iterdir())
+    except FileNotFoundError:
+        return []
     except OSError as exc:
-        raise ResultStoreTemporarilyUnavailable(f"Unable to scan shared result claims for {document_id!r}") from exc
+        raise ResultStoreTemporarilyUnavailable(f"Unable to scan shared results for {document_id!r}") from exc
 
-    for candidate in candidates:
+    candidates: list[tuple[int, str, Path]] = []
+    for path in paths:
+        if not _is_generation(path):
+            continue
         try:
-            if candidate.stat().st_mtime > cutoff:
-                continue
-            os.replace(candidate, claimed)
-            os.utime(claimed, None)
-            logger.info("Recovered abandoned shared result claim for %r", document_id)
-            return True
+            candidates.append((path.stat().st_mtime_ns, path.name, path))
         except FileNotFoundError:
             continue
         except OSError as exc:
-            raise ResultStoreTemporarilyUnavailable(
-                f"Unable to recover shared result claim for {document_id!r}"
-            ) from exc
-    return False
+            raise ResultStoreTemporarilyUnavailable(f"Unable to inspect shared result for {document_id!r}") from exc
+    candidates.sort(reverse=True)
+    return [path for _, _, path in candidates]
 
 
-def _consume_from_filesystem(results_dir: Path, document_id: str) -> list[dict[str, Any]] | None:
+def _get_from_filesystem(results_dir: Path, document_id: str) -> list[dict[str, Any]] | None:
     _maybe_sweep_expired_files(results_dir)
-    target = _result_path(results_dir, document_id)
-    claimed = results_dir / f".{target.name}.{uuid.uuid4().hex}.claim"
-    try:
-        os.replace(target, claimed)
-        # A rename preserves the result's original mtime. Touch the claim so
-        # other consumers can distinguish an active lease from an abandoned
-        # claim left behind by an interrupted or failed reader.
-        os.utime(claimed, None)
-    except FileNotFoundError:
-        if not _recover_abandoned_claim(results_dir, target, claimed, document_id):
-            return None
-    except OSError as exc:
-        logger.warning("Unable to claim shared result for %r", document_id, exc_info=True)
-        # Network filesystems can report an error after applying a rename, so
-        # restore the known claim path if the canonical path disappeared.
-        _restore_claim(claimed, target, document_id)
-        raise ResultStoreTemporarilyUnavailable(f"Unable to claim shared result for {document_id!r}") from exc
-
-    discard_claim = True
-    try:
-        with claimed.open(encoding="utf-8") as stream:
-            rows = json.load(stream)
-        if not isinstance(rows, list):
-            raise ValueError(f"Shared result payload for {document_id!r} is not a JSON list")
+    candidates = _generation_candidates(_document_dir(results_dir, document_id), document_id)
+    for candidate in candidates:
+        try:
+            with candidate.open(encoding="utf-8") as stream:
+                rows = json.load(stream)
+        except FileNotFoundError:
+            continue
+        except (ValueError, OSError) as exc:
+            logger.warning("Unable to read shared result payload for %r", document_id, exc_info=True)
+            raise ResultStoreTemporarilyUnavailable(f"Unable to read shared result for {document_id!r}") from exc
+        if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
+            logger.warning("Shared result payload for %r is not a JSON list of objects", document_id)
+            raise ResultStoreTemporarilyUnavailable(f"Invalid shared result payload for {document_id!r}")
         return rows
-    except FileNotFoundError:
-        logger.debug("Shared result claim disappeared while consuming %r", document_id)
-        return None
-    except ValueError:
-        logger.warning("Unable to decode shared result payload for %r", document_id, exc_info=True)
-        return None
-    except OSError as exc:
-        discard_claim = False
-        logger.warning("I/O error while reading shared result for %r", document_id, exc_info=True)
-        _restore_claim(claimed, target, document_id)
-        raise ResultStoreTemporarilyUnavailable(f"Unable to read shared result for {document_id!r}") from exc
-    finally:
-        if discard_claim:
-            _remove_claim(claimed, document_id)
+    return None
+
+
+def _sweep_memory_locked(*, now: float) -> None:
+    cutoff = now - _results_ttl_s()
+    for document_id, (stored_at, _) in list(_store.items()):
+        if stored_at <= cutoff:
+            _store.pop(document_id, None)
 
 
 def store_result_data(document_id: str, result_data: list[dict[str, Any]] | None) -> None:
-    """Retain *result_data* for a completed document."""
+    """Retain *result_data* for a completed document until TTL cleanup."""
     if not document_id or not result_data:
         return
     if results_dir := _results_dir():
         _store_on_filesystem(results_dir, document_id, result_data)
         return
     with _lock:
-        _store[document_id] = result_data
+        now = time.monotonic()
+        _sweep_memory_locked(now=now)
+        _store[document_id] = (now, result_data)
 
 
-def consume_result_data(document_id: str) -> list[dict[str, Any]] | None:
-    """Return stored rows for *document_id* and remove them from the store."""
+def get_result_data(document_id: str) -> list[dict[str, Any]] | None:
+    """Return retained rows for *document_id* without consuming them."""
     if results_dir := _results_dir():
-        return _consume_from_filesystem(results_dir, document_id)
+        return _get_from_filesystem(results_dir, document_id)
     with _lock:
-        return _store.pop(document_id, None)
+        _sweep_memory_locked(now=time.monotonic())
+        entry = _store.get(document_id)
+        return entry[1] if entry is not None else None
 
 
 def clear_for_tests() -> None:
-    """Test helper — drop all cached rows."""
+    """Test helper — drop all cached rows and sweep timestamps."""
     global _last_sweep_at, _last_sweep_dir
     with _lock:
         _store.clear()

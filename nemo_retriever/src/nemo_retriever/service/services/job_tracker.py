@@ -694,15 +694,11 @@ class JobTracker:
             rec = self._documents.get(document_id)
             return rec.model_copy(deep=True) if rec is not None else None
 
-    def consume_result_data(self, document_id: str) -> list[dict[str, Any]] | None:
-        """Return ``result_data`` for *document_id* and clear it from memory."""
+    def get_result_data(self, document_id: str) -> list[dict[str, Any]] | None:
+        """Return retained ``result_data`` for *document_id* without consuming it."""
         with self._lock:
             rec = self._documents.get(document_id)
-            if rec is None:
-                return None
-            data = rec.result_data
-            rec.result_data = None
-            return data
+            return rec.result_data if rec is not None else None
 
     def summary(self) -> dict[str, Any]:
         with self._lock:

@@ -58,6 +58,7 @@ def _run_result_payload(
 ) -> dict[str, Any]:
     result = {
         "run_id": writer.run_id,
+        "target": "library",
         "benchmark": writer.benchmark,
         "status": status,
         "success": success,
@@ -126,14 +127,42 @@ def run_benchmark(
     dry_run: bool = False,
     runfile_payload: dict[str, Any] | None = None,
     runfile_path: str | None = None,
+    target: str = "library",
+    helm_config: str | None = None,
 ) -> RunOutcome:
     effective_run_id = run_id or make_run_id(benchmark)
+    if target not in {"library", "helm"}:
+        raise HarnessRunError(
+            EXIT_INVALID,
+            FailurePayload(
+                failed_phase="resolve",
+                failure_reason="invalid_target",
+                retryable=False,
+                message=f"Unknown harness target {target!r}; expected 'library' or 'helm'.",
+            ),
+        )
+
     writer = ArtifactWriter(
         artifact_dir=resolve_artifact_dir(benchmark, effective_run_id, output_dir),
         run_id=effective_run_id,
         benchmark=benchmark,
     )
     silence_noisy_libraries()
+    if target == "helm":
+        from pathlib import Path
+
+        from nemo_retriever.harness.helm_execution import run_helm_benchmark
+
+        return run_helm_benchmark(
+            writer,
+            benchmark,
+            helm_config_path=Path(helm_config).expanduser().resolve() if helm_config else None,
+            overrides=overrides,
+            requirements=requirements,
+            dry_run=dry_run,
+            runfile_payload=runfile_payload,
+            runfile_path=runfile_path,
+        )
     resolved: dict[str, Any] | None = None
     summary_metrics: dict[str, Any] | None = None
     try:

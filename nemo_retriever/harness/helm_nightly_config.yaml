@@ -1,0 +1,16 @@
+session_name: library_nightly_helm_jp20
+runs:
+  - name: jp20_helm
+    runfile: runfiles/jp20_helm_nightly.yaml
+slack:
+  enabled: true
+  title: nemo-retriever Helm Nightly (JP20)
+  post_artifact_paths: true
+  metric_keys:
+    - pages
+    - ingest_secs
+    - pages_per_sec_ingest
+    - query_count
+    - query_latency_p95_ms
+    - recall_5
+    - ndcg_10

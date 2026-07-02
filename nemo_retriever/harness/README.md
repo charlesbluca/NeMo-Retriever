@@ -58,6 +58,31 @@ uv run --project nemo_retriever retriever harness run \
   --output-dir /tmp/retriever-harness-jp20-beir \
   --json
 ```
+Run the managed Helm JP20 target without deploying:
+
+```bash
+export HARNESS_HELM_SERVICE_IMAGE_REPOSITORY=<registry>/nrl-service
+export HARNESS_HELM_SERVICE_IMAGE_TAG=<immutable-main-tag>
+
+uv run --project nemo_retriever retriever harness run \
+  --runfile nemo_retriever/harness/runfiles/jp20_helm_nightly.yaml \
+  --dry-run \
+  --json
+```
+
+The scheduled Helm session uses the same runfile and posts a top-level summary
+through a channel-bound incoming webhook:
+
+```bash
+export SLACK_WEBHOOK_URL=<secret-webhook>
+nemo_retriever/harness/run_helm_nightly.sh
+```
+
+The runner deploys the checked-out chart, waits for the service and core NIMs,
+ingests and queries JP20 through the service API, records service logs on
+failure, and uninstalls the release. Image and Slack credentials are required
+environment values and are never stored in runfiles or artifacts.
+
 
 Large checked-in BEIR runfiles such as BO767, FinanceBench, Earnings, and
 ViDoRe use `mode: batch`. Keep JP20 local for quick smoke validation, and use
@@ -69,12 +94,13 @@ parallelism and memory pressure.
 - `list`: list code-owned benchmarks and optional runsets.
 - `show`: inspect one benchmark definition.
 - `run`: run one benchmark.
+- `nightly`: execute runfiles as a session and optionally publish its Slack report.
 - `run-set`: expand and run a code-owned runset.
 - `diff`: compare two run artifact directories by `summary_metrics.json`.
 
-Legacy graph-pipeline harness execution, sweep, nightly, runner, reporting, and
-portal commands are not part of the phase-one CLI surface. Portal and Helm
-support files are intentionally preserved for follow-on owner work.
+Legacy graph-pipeline execution, sweep, runner, reporting, and portal commands
+remain outside the CLI surface. The new nightly and Helm paths consume only the
+artifact-first run contract.
 
 ## Reviewer Guide
 
@@ -99,17 +125,13 @@ Intentional removals:
 - old `run.py` and `runner.py`: subprocess-oriented graph-pipeline harness
   execution and portal runner agent
 - old `parsers.py`: regex parsing of stdout/progress logs
-- old `nightly.py`, `reporting.py`, and nightly/sweep YAML: previous session
-  reporting and scheduled-run machinery
+- old `reporting.py` and sweep YAML: previous stdout-oriented reporting
 - old harness pytests: this harness is validated by functional benchmark
   execution and artifact/exit-code checks
 
-Intentional preserves:
-
-- `portal/`, `history.py`, `scheduler.py`, `slack.py`: retained for the
-  upcoming portal repurpose work
-- `helm_manager.py`, `helm-profiles/`, and harness Helm examples: retained for
-  Helm owner follow-up work
+The replacement `nightly.py`, Slack loader, and managed Helm execution consume
+`results.json`, `summary_metrics.json`, and the current session `runs`
+schema. Portal/history files remain preserved for separate repurpose work.
 
 ## Runfiles
 
@@ -118,6 +140,8 @@ orchestrators. They describe one concrete run request:
 
 - registered `benchmark`
 - optional `name`, `mode`, `run_id`, and `output_dir`
+- optional `target` (`library` or `helm`)
+- required `helm_config` when `target: helm`
 - optional `set` overrides
 - optional `require` metric gates
 
@@ -254,6 +278,7 @@ For automated harness work:
 - `0`: success
 - `2`: invalid benchmark/config/override/gate syntax
 - `3`: dataset or input missing
+- `4`: Helm deployment, readiness, or teardown failure
 - `10`: ingest failure
 - `11`: query failure
 - `12`: evaluation failure

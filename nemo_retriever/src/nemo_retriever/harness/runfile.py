@@ -19,6 +19,8 @@ _ALLOWED_RUNFILE_KEYS = {
     "base",
     "name",
     "mode",
+    "target",
+    "helm_config",
     "output_dir",
     "run_id",
     "set",
@@ -33,6 +35,8 @@ class RunFileRequest:
     benchmark: str
     name: str | None
     mode: str | None
+    target: str | None
+    helm_config: str | None
     output_dir: str | None
     run_id: str | None
     overrides: tuple[str, ...]
@@ -145,11 +149,21 @@ def load_runfile(path: Path) -> RunFileRequest:
     dry_run = payload.get("dry_run")
     if dry_run is not None and not isinstance(dry_run, bool):
         raise _invalid("Runfile 'dry_run' must be true or false.")
+    target = _optional_string(payload, "target")
+    helm_config = _optional_string(payload, "helm_config")
+    if helm_config:
+        config_path = Path(helm_config).expanduser()
+        if not config_path.is_absolute():
+            config_path = source_path.parent / config_path
+        helm_config = str(config_path.resolve())
+
 
     return RunFileRequest(
         benchmark=benchmark,
         name=_optional_string(payload, "name"),
         mode=_optional_string(payload, "mode"),
+        target=target,
+        helm_config=helm_config,
         output_dir=_optional_string(payload, "output_dir"),
         run_id=_optional_string(payload, "run_id"),
         overrides=_overrides_from_payload(payload.get("set")),

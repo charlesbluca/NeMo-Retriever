@@ -22,11 +22,13 @@ from nemo_retriever.harness.revamp_runner import (
     show_benchmark_payload,
 )
 from nemo_retriever.harness.diff import diff_artifact_dirs
+from nemo_retriever.harness.nightly import nightly_command
 from nemo_retriever.harness.resolution import make_run_id
 from nemo_retriever.harness.runfile import load_runfile
 from nemo_retriever.harness.runsets import run_runset
 
 app = typer.Typer(help="Artifact-first Retriever benchmark harness.")
+app.command("nightly")(nightly_command)
 
 
 def _echo_json(payload: object) -> None:
@@ -89,6 +91,8 @@ def run_command(
     output_dir: Annotated[str | None, typer.Option("--output-dir", help="Directory for run artifacts.")] = None,
     run_id: Annotated[str | None, typer.Option("--run-id", help="Stable run identifier.")] = None,
     mode: Annotated[str | None, typer.Option("--mode", help="Ingest mode: local or batch.")] = None,
+    target: Annotated[str | None, typer.Option("--target", help="Execution target: library or helm.")] = None,
+    helm_config: Annotated[Path | None, typer.Option("--helm-config", help="Managed Helm deployment YAML.")] = None,
     set_values: Annotated[
         list[str] | None,
         typer.Option("--set", help="Apply a small KEY=VALUE override. Repeatable."),
@@ -121,6 +125,8 @@ def run_command(
             run_id = run_id or request.run_id or make_run_id(request.name or request.benchmark)
             mode = mode or request.mode
             set_values = list(request.overrides) + list(set_values or ())
+            target = target or request.target
+            helm_config = helm_config or (Path(request.helm_config) if request.helm_config else None)
             requirements = list(request.requirements) + list(requirements or ())
             dry_run = dry_run or bool(request.dry_run)
             runfile_payload = dict(request.payload)
@@ -145,6 +151,8 @@ def run_command(
             dry_run=dry_run,
             runfile_payload=runfile_payload,
             runfile_path=runfile_path,
+            target=target or "library",
+            helm_config=str(helm_config) if helm_config else None,
         )
     except HarnessRunError as exc:
         typer.echo(exc.failure.message, err=True)

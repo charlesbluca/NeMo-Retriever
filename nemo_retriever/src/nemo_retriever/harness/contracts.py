@@ -11,16 +11,20 @@ from typing import Any
 STATUS_VALUES = {"planned", "running", "complete", "failed"}
 PHASE_VALUES = {
     "resolve",
+    "deploy",
+    "readiness",
     "ingest_plan",
     "ingest",
     "query_plan",
     "query",
     "evaluate",
+    "teardown",
     "write_artifacts",
 }
 EXIT_SUCCESS = 0
 EXIT_INVALID = 2
 EXIT_MISSING_INPUT = 3
+EXIT_HELM_FAILURE = 4
 EXIT_INGEST_FAILURE = 10
 EXIT_QUERY_FAILURE = 11
 EXIT_EVALUATION_FAILURE = 12

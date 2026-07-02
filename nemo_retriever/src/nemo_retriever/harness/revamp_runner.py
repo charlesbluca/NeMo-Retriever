@@ -7,6 +7,7 @@ from __future__ import annotations
 from nemo_retriever.harness.contracts import (
     EXIT_ARTIFACT_WRITE_FAILURE,
     EXIT_EVALUATION_FAILURE,
+    EXIT_HELM_FAILURE,
     EXIT_INGEST_FAILURE,
     EXIT_INTERNAL_ERROR,
     EXIT_INVALID,
@@ -24,6 +25,7 @@ from nemo_retriever.harness.resolution import show_benchmark_payload
 __all__ = [
     "EXIT_ARTIFACT_WRITE_FAILURE",
     "EXIT_EVALUATION_FAILURE",
+    "EXIT_HELM_FAILURE",
     "EXIT_INGEST_FAILURE",
     "EXIT_INTERNAL_ERROR",
     "EXIT_INVALID",

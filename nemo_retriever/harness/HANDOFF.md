@@ -41,20 +41,21 @@ The primary command surface is intentionally small:
 - `list`
 - `show`
 - `run`
+- `nightly`
 - `run-set`
 - `diff`
 
-Legacy graph-pipeline harness execution, sweep, nightly, runner, reporting, and
-portal commands are not part of the phase-one CLI surface. Portal and Helm
-support files are preserved for follow-on owner work.
+The `run` command supports `target: helm` through a non-secret deployment
+config. The new `nightly` command runs artifact-first runfiles and posts the
+current-schema session summary to Slack.
 
 For review, start with `README.md`, then inspect the core implementation in
 `benchmark_registry.py`, `resolution.py`, `execution.py`, `beir_runner.py`,
 `metrics.py`, `artifact_writer.py`, and `json_io.py`. `json_io.py` is the shared
 artifact JSON read/write seam used to avoid duplicate JSON helper behavior. The
 intentional deletion set is the old subprocess-oriented
-runner/sweep/nightly/reporting/stdout-parser machinery, not the portal or Helm
-ownership surfaces.
+runner/sweep/reporting/stdout-parser machinery. Managed Helm execution and
+nightly reporting are rebuilt on the stable artifact contract.
 
 Useful negative-path checks:
 
@@ -162,6 +163,10 @@ Validated in the dedicated Retriever harness worktree:
 - Failing gate `--require 'files>20'` exits `20` with
   `failure_reason=metric_gate_failed`.
 - Invalid gate syntax exits `2` with `failure_reason=invalid_metric_gate`.
+- The checked-in `jp20_helm_nightly.yaml` resolves with an explicit image and
+  skips unavailable execution gates during `--dry-run`.
+- Helm readiness failures exit `4`, collect service logs, and attempt release
+  teardown.
 - `run-set jp20_core --dry-run --require 'files>=20'` exits `0`.
 - `run-set jp20_core --dry-run --require 'files>20'` exits `20`.
 - `retriever harness run jp20_beir --require 'recall_5>=0.85' --require 'ndcg_10>=0.75' --json`

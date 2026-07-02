@@ -1815,10 +1815,13 @@ async def job_callback(request: Request) -> JSONResponse:
     else:
         result_rows = body.get("result_rows", 0)
         if pre_rec is None and result_rows and body.get("result_worker_ip"):
+            logger.warning(
+                "Permanently rejecting retained result handoff for unknown document %s",
+                item_id,
+            )
             raise HTTPException(
-                status_code=503,
+                status_code=410,
                 detail=f"Gateway has no tracked document {item_id!r} for retained result handoff",
-                headers={"Retry-After": "1"},
             )
         if pre_rec is not None and result_rows and tracker.should_retain_results(pre_rec.job_id):
             try:

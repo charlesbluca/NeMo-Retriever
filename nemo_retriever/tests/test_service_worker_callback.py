@@ -460,11 +460,11 @@ def test_fire_gateway_callback_retries_and_advertises_worker_ip(
     assert "result_data" not in attempts[-1]["json"]
 
 
-def test_fire_gateway_callback_does_not_retry_permanent_4xx() -> None:
+def test_fire_gateway_callback_does_not_retry_gone_document() -> None:
     attempts = 0
 
     class _Resp:
-        status_code = 401
+        status_code = 410
 
     class _Client:
         def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -625,6 +625,35 @@ def test_gateway_callback_does_not_complete_when_result_handoff_fails(
         assert record is not None
         assert record.status == DocumentStatus.PROCESSING
         assert get_result_data("failed-handoff-doc") is None
+
+
+def test_gateway_callback_permanently_rejects_retained_result_for_unknown_document(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from fastapi.testclient import TestClient
+
+    from nemo_retriever.service.app import create_app
+    from nemo_retriever.service.config import ServiceConfig
+    from nemo_retriever.service.services.job_tracker import get_job_tracker
+
+    monkeypatch.setenv("NEMO_RETRIEVER_RESULTS_DIR", str(tmp_path))
+    with TestClient(create_app(ServiceConfig(mode="gateway"))) as client:
+        response = client.post(
+            "/v1/internal/job-callback",
+            json={
+                "id": "restart-orphaned-doc",
+                "status": "completed",
+                "result_rows": 1,
+                "result_worker_ip": "10.1.2.3",
+            },
+        )
+
+        assert response.status_code == 410
+        assert "retry-after" not in response.headers
+        tracker = get_job_tracker()
+        assert tracker is not None
+        assert tracker.get_document("restart-orphaned-doc") is None
 
 
 def test_worker_result_url_supports_ipv6_and_rejects_spoofed_peer() -> None:
@@ -799,6 +828,49 @@ def test_deferred_callback_tasks_are_bounded_and_cancellation_releases_slot(
         pool._running = False
 
     asyncio.run(run())
+
+
+def test_deferred_permanent_rejection_releases_slot_and_preserves_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from nemo_retriever.service.services import pipeline_pool
+    from nemo_retriever.service.services.pipeline_pool import _Pool
+
+    async def run() -> None:
+        pool = _Pool("permanent-rejection-test", num_workers=1, max_queue_size=1)
+        pool._running = True
+        pool._handoff_slots = asyncio.BoundedSemaphore(pool.num_workers)
+
+        async def permanently_rejected(*args: Any, **kwargs: Any) -> _CallbackDeliveryOutcome:
+            return _CallbackDeliveryOutcome.PERMANENT_FAILURE
+
+        store_result_data("restart-orphaned-doc", [{"text": "retained until TTL"}])
+        monkeypatch.setattr(pipeline_pool, "_fire_gateway_callback", permanently_rejected)
+        monkeypatch.setattr(pipeline_pool, "_CALLBACK_DEFERRED_INITIAL_DELAY_S", 0.0)
+
+        await pool._schedule_gateway_callback_retry(
+            callback_url="http://gateway/v1/internal/job-callback",
+            item_id="restart-orphaned-doc",
+            status="completed",
+            result_rows=1,
+            result_worker_ip="10.1.2.3",
+            retain_results=True,
+        )
+        task = pool._handoff_tasks["restart-orphaned-doc"]
+        await asyncio.wait_for(task, timeout=1.0)
+        await asyncio.sleep(0)
+
+        assert pool._handoff_tasks == {}
+        assert pool._handoff_slots is not None
+        await asyncio.wait_for(pool._handoff_slots.acquire(), timeout=1.0)
+        pool._handoff_slots.release()
+        pool._running = False
+
+    try:
+        asyncio.run(run())
+        assert get_result_data("restart-orphaned-doc") == [{"text": "retained until TTL"}]
+    finally:
+        discard_local_result_data("restart-orphaned-doc")
 
 
 def test_shared_result_publication_fsyncs_created_parents_and_generation(

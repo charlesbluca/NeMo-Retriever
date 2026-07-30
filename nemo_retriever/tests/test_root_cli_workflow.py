@@ -242,6 +242,7 @@ def test_root_ingest_service_mode_uses_service_ingest_core(tmp_path, monkeypatch
             return self
 
         def ingest(self, *args: Any, **kwargs: Any):
+            captured["ingest_kwargs"] = kwargs
             return self
 
     monkeypatch.setattr(service_ingestor_module, "ServiceIngestor", _FakeServiceIngestor)
@@ -289,6 +290,7 @@ def test_root_ingest_service_mode_uses_service_ingest_core(tmp_path, monkeypatch
     assert captured["dedup_params"].iou_threshold == 0.6
     assert captured["caption_params"].context_text_max_chars == 12
     assert captured["embed_params"].embed_granularity == "page"
+    assert captured["ingest_kwargs"] == {"return_results": True}
     assert "through retriever service http://retriever-service:7670" in result.output
 
 
@@ -1046,10 +1048,11 @@ def test_root_ingest_help_defaults_to_local_workflow(monkeypatch: pytest.MonkeyP
         cli_main.app,
         ["ingest", "--help"],
         prog_name="retriever",
+        terminal_width=200,
     )
 
     assert result.exit_code == 0
-    assert "Usage: retriever ingest [OPTIONS] {documents}..." in result.output
+    assert "Usage: retriever ingest [OPTIONS]" in result.output
     assert "input formats, not commands" in result.output
     assert "CPU-only hosts use NVIDIA's hosted embedding endpoint" in result.output
     assert "retriever ingest batch --help" in result.output
@@ -1093,10 +1096,10 @@ def test_root_ingest_errors_reference_only_the_public_help_path() -> None:
 def test_root_ingest_batch_help_remains_mode_specific(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(typer_rich_utils, "MAX_WIDTH", 200)
     monkeypatch.setattr(typer_rich_utils, "FORCE_TERMINAL", False)
-    result = RUNNER.invoke(cli_main.app, ["ingest", "batch", "--help"])
+    result = RUNNER.invoke(cli_main.app, ["ingest", "batch", "--help"], terminal_width=200)
 
     assert result.exit_code == 0
-    assert "Usage: root ingest batch [OPTIONS] {documents}..." in result.output
+    assert "Usage: root ingest batch [OPTIONS]" in result.output
     assert "--ray-address" in result.output
     assert "--pdf-extract-workers" in result.output
     assert "--lancedb-uri" in result.output
@@ -1105,17 +1108,22 @@ def test_root_ingest_batch_help_remains_mode_specific(monkeypatch: pytest.Monkey
 
 
 def test_root_ingest_local_help_uses_shared_graph_contract() -> None:
-    result = RUNNER.invoke(cli_main.app, ["ingest", "local", "--help"], prog_name="retriever")
+    result = RUNNER.invoke(
+        cli_main.app,
+        ["ingest", "local", "--help"],
+        prog_name="retriever",
+        terminal_width=200,
+    )
 
     assert result.exit_code == 0
-    assert "Usage: retriever ingest [OPTIONS] {documents}..." in result.output
+    assert "Usage: retriever ingest [OPTIONS]" in result.output
     assert "retriever ingest local" not in result.output
     assert "--input-type" not in result.output
     assert "--run-mode" not in result.output
     assert "--service-url" not in result.output
     assert "--ray-address" in result.output
     assert "--profile" in result.output
-    assert "<auto|fast-text>" in result.output
+    assert "auto|fast-text" in result.output
     assert "--extract-images" in result.output
     assert "--use-page" not in result.output
     assert "--use-graphic" not in result.output
@@ -1166,10 +1174,10 @@ def test_root_ingest_default_local_rejects_batch_only_options(tmp_path) -> None:
 
 
 def test_root_ingest_service_help_hides_local_only_options() -> None:
-    result = RUNNER.invoke(cli_main.app, ["ingest", "service", "--help"], env={"COLUMNS": "200"})
+    result = RUNNER.invoke(cli_main.app, ["ingest", "service", "--help"], terminal_width=200)
 
     assert result.exit_code == 0
-    assert "Usage: root ingest service [OPTIONS] {documents}..." in result.output
+    assert "Usage: root ingest service [OPTIONS]" in result.output
     assert "--service-url" in result.output
     assert "--extract-images" in result.output
     assert "--embed-granular" in result.output

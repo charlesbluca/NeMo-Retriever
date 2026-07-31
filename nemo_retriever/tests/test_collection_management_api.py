@@ -27,7 +27,12 @@ from nemo_retriever.common.vdb.adt_vdb import (
 from nemo_retriever.common.vdb.lancedb import LanceDB
 from nemo_retriever.service.auth import ScopeAuthorizer
 from nemo_retriever.service.app import create_app
-from nemo_retriever.service.config import AuthConfig, LLMConfig, ServiceConfig, VectorDbConfig
+from nemo_retriever.service.config import (
+    AuthConfig,
+    LLMConfig,
+    ServiceConfig,
+    VectorDbConfig,
+)
 from nemo_retriever.service.query_schema import QueryRequest
 from nemo_retriever.service.errors import RetrieverServiceError
 import nemo_retriever.service.client as client_module
@@ -82,11 +87,23 @@ def test_collection_crud_scope_pagination_and_injection_rejection(tmp_path) -> N
     app = create_vectordb_app(lancedb_uri=str(tmp_path), embed_endpoint="http://embed")
     with TestClient(app) as client:
         headers = {"X-NRL-Scope": "workspace-a"}
-        assert client.post("/v1/collections", json={"name": "one"}, headers=headers).status_code == 201
-        assert client.post("/v1/collections", json={"name": "two"}, headers=headers).status_code == 201
+        assert (
+            client.post(
+                "/v1/collections", json={"name": "one"}, headers=headers
+            ).status_code
+            == 201
+        )
+        assert (
+            client.post(
+                "/v1/collections", json={"name": "two"}, headers=headers
+            ).status_code
+            == 201
+        )
         page = client.get("/v1/collections?limit=1", headers=headers).json()
         assert len(page["items"]) == 1 and page["next_token"]
-        other_scope = client.get("/v1/collections/one", headers={"X-NRL-Scope": "workspace-b"})
+        other_scope = client.get(
+            "/v1/collections/one", headers={"X-NRL-Scope": "workspace-b"}
+        )
         assert other_scope.status_code == 404
         injected = client.post(
             "/v1/query",
@@ -97,9 +114,13 @@ def test_collection_crud_scope_pagination_and_injection_rejection(tmp_path) -> N
         health = client.get("/v1/health").json()
         assert "table" not in health and "workspace-a" not in str(health)
         metrics = client.get("/metrics").text
-        assert "workspace-a" not in metrics and "nrl_vectordb_cleanup_pending" in metrics
+        assert (
+            "workspace-a" not in metrics and "nrl_vectordb_cleanup_pending" in metrics
+        )
         assert client.delete("/v1/collections/one", headers=headers).status_code == 200
-        repeated = client.delete("/v1/collections/one?if_exists=true", headers=headers).json()
+        repeated = client.delete(
+            "/v1/collections/one?if_exists=true", headers=headers
+        ).json()
         assert repeated == {
             "name": "one",
             "scope": "workspace-a",
@@ -155,7 +176,9 @@ def test_public_sdk_and_citation_ready_query(tmp_path) -> None:
 
             class InProcessClient(RetrieverServiceClient):
                 def _request(self, method: str, path: str, **kwargs):
-                    response = service.request(method, path, headers=self._auth_headers, **kwargs)
+                    response = service.request(
+                        method, path, headers=self._auth_headers, **kwargs
+                    )
                     self._raise_for_response(response, f"{method} {path}")
                     return response.json() if response.content else None
 
@@ -187,11 +210,19 @@ def test_public_sdk_and_citation_ready_query(tmp_path) -> None:
             )
             assert write.status_code == 200, write.text
             sync_hits = sdk.query("finding", top_k=10, collection_name="research")
-            async_hits = asyncio.run(sdk.aquery("finding", top_k=10, collection_name="research"))
+            async_hits = asyncio.run(
+                sdk.aquery("finding", top_k=10, collection_name="research")
+            )
             assert sync_hits[0].model_dump() == async_hits[0].model_dump()
-            assert sync_hits[0].chunk_id == hashlib.sha256(f"doc\0v1\0{0}".encode()).hexdigest()
+            assert (
+                sync_hits[0].chunk_id
+                == hashlib.sha256(f"doc\0v1\0{0}".encode()).hexdigest()
+            )
             assert sync_hits[0].text == "finding"
-            assert sync_hits[0].distance >= 0.0
+            assert sync_hits[0].ranking.rank == 1
+            assert sync_hits[0].ranking.kind == "vector_distance"
+            assert not sync_hits[0].ranking.higher_is_better
+            assert sync_hits[0].ranking.value >= 0.0
             assert sync_hits[0].page_number == 1
             assert sync_hits[0].filename == "report.pdf"
             assert sdk.list_documents("research").items[0].document_id == "doc"
@@ -248,7 +279,14 @@ def test_target_document_id_rejects_query_metacharacters() -> None:
 @pytest.mark.parametrize(
     ("payload", "message"),
     [
-        ({"expected_documents": 1, "operation": "replace", "target_document_id": "doc"}, "collection_name"),
+        (
+            {
+                "expected_documents": 1,
+                "operation": "replace",
+                "target_document_id": "doc",
+            },
+            "collection_name",
+        ),
         (
             {
                 "expected_documents": 2,
@@ -258,11 +296,27 @@ def test_target_document_id_rejects_query_metacharacters() -> None:
             },
             "exactly one document",
         ),
-        ({"expected_documents": 1, "collection_name": "research", "operation": "replace"}, "target_document_id"),
-        ({"expected_documents": 1, "operation": "append", "target_document_id": "doc"}, "append"),
+        (
+            {
+                "expected_documents": 1,
+                "collection_name": "research",
+                "operation": "replace",
+            },
+            "target_document_id",
+        ),
+        (
+            {
+                "expected_documents": 1,
+                "operation": "append",
+                "target_document_id": "doc",
+            },
+            "append",
+        ),
     ],
 )
-def test_job_create_request_enforces_collection_operation_invariants(payload, message) -> None:
+def test_job_create_request_enforces_collection_operation_invariants(
+    payload, message
+) -> None:
     with pytest.raises(ValueError, match=message):
         JobCreateRequest(**payload)
 
@@ -341,8 +395,12 @@ def test_raw_storage_selection_is_rejected_for_query_requests() -> None:
 
 def test_scope_authorizer_secret_mapping_and_internal_vectordb_token(tmp_path) -> None:
     secret = tmp_path / "scope-tokens.json"
-    secret.write_text('{"tokens":[{"token":"alpha-token","scopes":["alpha"]}]}', encoding="utf-8")
-    authorizer = ScopeAuthorizer(AuthConfig(scope_token_file=str(secret), allow_unscoped_dev=False))
+    secret.write_text(
+        '{"tokens":[{"token":"alpha-token","scopes":["alpha"]}]}', encoding="utf-8"
+    )
+    authorizer = ScopeAuthorizer(
+        AuthConfig(scope_token_file=str(secret), allow_unscoped_dev=False)
+    )
     assert authorizer.authorize("alpha-token", "alpha") == ("alpha", None)
     assert authorizer.authorize("alpha-token", "beta") == (None, 401)
     assert authorizer.authorize("invalid", "alpha") == (None, 401)
@@ -355,8 +413,18 @@ def test_scope_authorizer_secret_mapping_and_internal_vectordb_token(tmp_path) -
     with TestClient(app) as client:
         assert client.get("/v1/health").status_code == 200
         assert client.get("/v1/collections").status_code == 401
-        assert client.get("/v1/collections", headers={"X-NRL-Internal-Token": "wrong"}).status_code == 401
-        assert client.get("/v1/collections", headers={"X-NRL-Internal-Token": "internal-secret"}).status_code == 200
+        assert (
+            client.get(
+                "/v1/collections", headers={"X-NRL-Internal-Token": "wrong"}
+            ).status_code
+            == 401
+        )
+        assert (
+            client.get(
+                "/v1/collections", headers={"X-NRL-Internal-Token": "internal-secret"}
+            ).status_code
+            == 200
+        )
 
 
 def test_service_routes_use_authorized_scope_not_raw_header() -> None:
@@ -379,7 +447,11 @@ def test_service_routes_use_authorized_scope_not_raw_header() -> None:
             headers={"Authorization": "Bearer alpha-token", "X-NRL-Scope": "beta"},
         )
         assert invalid_token.status_code == invalid_scope.status_code == 401
-        assert invalid_token.json() == invalid_scope.json() == {"detail": "Missing or invalid bearer token."}
+        assert (
+            invalid_token.json()
+            == invalid_scope.json()
+            == {"detail": "Missing or invalid bearer token."}
+        )
         created = client.post(
             "/v1/ingest/job",
             json={"expected_documents": 1},
@@ -434,7 +506,9 @@ def test_vectordb_proxy_failures_do_not_expose_internal_details(monkeypatch) -> 
     app = create_app(
         ServiceConfig(
             mode="gateway",
-            vectordb=VectorDbConfig(enabled=True, vectordb_url="http://private-vectordb:7671"),
+            vectordb=VectorDbConfig(
+                enabled=True, vectordb_url="http://private-vectordb:7671"
+            ),
             llm=LLMConfig(enabled=True),
         )
     )
@@ -463,7 +537,9 @@ def test_openapi_operation_ids_are_unique() -> None:
     assert len(operation_ids) == len(set(operation_ids))
 
 
-def test_sdk_replays_every_manifest_entry_after_idempotent_job_replay(tmp_path, monkeypatch) -> None:
+def test_sdk_replays_every_manifest_entry_after_idempotent_job_replay(
+    tmp_path, monkeypatch
+) -> None:
     first = tmp_path / "first.txt"
     second = tmp_path / "second.txt"
     first.write_text("one", encoding="utf-8")
@@ -501,14 +577,22 @@ def test_sdk_replays_every_manifest_entry_after_idempotent_job_replay(tmp_path, 
     sdk._create_job = AsyncMock(return_value=client_module._CreatedJob("job"))
     sdk._upload_one = AsyncMock(return_value={"status": "accepted"})
 
-    result = asyncio.run(sdk.asubmit_documents("research", [first, second], idempotency_key="key"))
+    result = asyncio.run(
+        sdk.asubmit_documents("research", [first, second], idempotency_key="key")
+    )
     assert result.job_id == "job"
     assert sdk._upload_one.await_count == 2
-    entry_ids = [call.kwargs["manifest_entry_id"] for call in sdk._upload_one.await_args_list]
+    entry_ids = [
+        call.kwargs["manifest_entry_id"] for call in sdk._upload_one.await_args_list
+    ]
     expected = []
     for position, path in enumerate((first, second)):
         digest = hashlib.sha256(path.read_bytes()).hexdigest()
-        expected.append(hashlib.sha256(f"{position}\0{path.name}\0{digest}".encode("utf-8")).hexdigest())
+        expected.append(
+            hashlib.sha256(
+                f"{position}\0{path.name}\0{digest}".encode("utf-8")
+            ).hexdigest()
+        )
     assert entry_ids == expected
 
 
@@ -532,14 +616,18 @@ def test_expiration_is_timezone_aware_and_normalized() -> None:
         CollectionCreateRequest(name="bad", expires_at="2030-01-01T00:00:00")
     with pytest.raises(ValueError, match="ISO-8601"):
         CollectionCreateRequest(name="bad-type", expires_at=123)
-    request = CollectionCreateRequest(name="good", expires_at="2030-01-01T01:00:00+01:00")
+    request = CollectionCreateRequest(
+        name="good", expires_at="2030-01-01T01:00:00+01:00"
+    )
     assert request.expires_at == "2030-01-01T00:00:00+00:00"
 
 
 def test_keyset_cursors_are_stable_and_context_bound(tmp_path) -> None:
     backend = _vdb(tmp_path)
     for name in ("a", "c"):
-        backend.create_collection(scope="scope", request=CollectionCreateRequest(name=name))
+        backend.create_collection(
+            scope="scope", request=CollectionCreateRequest(name=name)
+        )
 
     first = backend.list_collections(
         scope="scope",
@@ -585,7 +673,9 @@ def test_keyset_cursors_are_stable_and_context_bound(tmp_path) -> None:
         )
 
 
-def test_search_and_collection_delete_share_lifecycle_lock(tmp_path, monkeypatch) -> None:
+def test_search_and_collection_delete_share_lifecycle_lock(
+    tmp_path, monkeypatch
+) -> None:
     backend = _vdb(tmp_path)
     backend.create_collection(
         scope="scope",
@@ -610,7 +700,9 @@ def test_search_and_collection_delete_share_lifecycle_lock(tmp_path, monkeypatch
         delete_entered.set()
 
     monkeypatch.setattr(LanceDB, "retrieval", blocked_retrieval)
-    monkeypatch.setattr(backend._get_collection_store()._db, "drop_table", observed_drop_table)
+    monkeypatch.setattr(
+        backend._get_collection_store()._db, "drop_table", observed_drop_table
+    )
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         search = pool.submit(
@@ -673,7 +765,9 @@ def test_collection_searches_run_concurrently(tmp_path, monkeypatch) -> None:
         assert [future.result(timeout=5)[0] for future in searches] == [[[]], [[]]]
 
 
-def test_reconcile_catalog_scan_does_not_hold_the_write_lock(tmp_path, monkeypatch) -> None:
+def test_reconcile_catalog_scan_does_not_hold_the_write_lock(
+    tmp_path, monkeypatch
+) -> None:
     backend = _vdb(tmp_path)
     store = backend._get_collection_store()
     scan_entered = threading.Event()
@@ -705,7 +799,9 @@ def test_reconcile_catalog_scan_does_not_hold_the_write_lock(tmp_path, monkeypat
         assert reconciliation.result(timeout=5) == {"successes": 0, "failures": 0}
 
 
-def test_replacement_marker_recovers_after_catalog_finalize_failure(tmp_path, monkeypatch) -> None:
+def test_replacement_marker_recovers_after_catalog_finalize_failure(
+    tmp_path, monkeypatch
+) -> None:
     backend = _vdb(tmp_path)
     backend.create_collection(
         scope="scope",
@@ -735,11 +831,15 @@ def test_replacement_marker_recovers_after_catalog_finalize_failure(tmp_path, mo
             context=_context("doc", version="v2", operation="replace"),
         )
     monkeypatch.setattr(store, "_persist_document_row", original_persist)
-    document = backend.get_document(scope="scope", collection_name="research", document_id="doc")
+    document = backend.get_document(
+        scope="scope", collection_name="research", document_id="doc"
+    )
     assert document.status == "replacing"
     result = backend.reconcile_collections()
     assert result["successes"] == 1
-    document = backend.get_document(scope="scope", collection_name="research", document_id="doc")
+    document = backend.get_document(
+        scope="scope", collection_name="research", document_id="doc"
+    )
     assert document.document_version == "v2"
     assert document.content_sha256 == "v2"
     assert document.filename == "report.pdf"
@@ -769,7 +869,9 @@ def test_collection_deletion_does_not_delete_external_artifacts(tmp_path) -> Non
         [[_record("chunk", "doc", "owned")]],
         context=_context("doc"),
     )
-    deleted = backend.delete_collection(scope="scope", collection_name="research", if_exists=False)
+    deleted = backend.delete_collection(
+        scope="scope", collection_name="research", if_exists=False
+    )
 
     assert deleted.deleted
     assert artifact.read_bytes() == b"image"
@@ -829,7 +931,10 @@ def test_catalog_startup_fails_fast_on_missing_required_columns(tmp_path) -> Non
         backend.health()
 
     db.drop_table("_nrl_collections")
-    assert backend.list_collections(scope="scope", limit=1, continuation_token=None).items == []
+    assert (
+        backend.list_collections(scope="scope", limit=1, continuation_token=None).items
+        == []
+    )
     assert backend.health()["catalog"]["initialized"] is True
 
 

@@ -68,7 +68,9 @@ def _now() -> str:
 
 
 def _is_uncommitted_initial_append(row: Mapping[str, Any]) -> bool:
-    return row.get("recovery_state") == "appending" and not row.get("current_document_version")
+    return row.get("recovery_state") == "appending" and not row.get(
+        "current_document_version"
+    )
 
 
 def _physical_table(scope: str, collection_name: str) -> str:
@@ -80,7 +82,9 @@ def _quoted(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
-def _encode_cursor(resource: str, scope: str, collection: str | None, last: list[str]) -> str:
+def _encode_cursor(
+    resource: str, scope: str, collection: str | None, last: list[str]
+) -> str:
     """Encode a pagination position bound to its logical resource context."""
 
     payload = {
@@ -91,7 +95,9 @@ def _encode_cursor(resource: str, scope: str, collection: str | None, last: list
         "last": last,
     }
     return (
-        base64.urlsafe_b64encode(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode())
+        base64.urlsafe_b64encode(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        )
         .decode()
         .rstrip("=")
     )
@@ -109,7 +115,9 @@ def _decode_cursor(
     if not token:
         return None
     try:
-        payload = json.loads(base64.urlsafe_b64decode(token + "=" * (-len(token) % 4)).decode())
+        payload = json.loads(
+            base64.urlsafe_b64decode(token + "=" * (-len(token) % 4)).decode()
+        )
     except Exception as exc:
         raise VDBInvalidRequest("Invalid continuation token") from exc
     if (
@@ -120,14 +128,18 @@ def _decode_cursor(
         or payload.get("collection") != collection
         or not isinstance(payload.get("last"), list)
     ):
-        raise VDBInvalidRequest("Continuation token does not match this resource context")
+        raise VDBInvalidRequest(
+            "Continuation token does not match this resource context"
+        )
     return [str(value) for value in payload["last"]]
 
 
 def _json_string(value: Any) -> str:
     if isinstance(value, str):
         return value
-    return json.dumps(value or {}, ensure_ascii=False, separators=(",", ":"), default=str)
+    return json.dumps(
+        value or {}, ensure_ascii=False, separators=(",", ":"), default=str
+    )
 
 
 def _content_text(record: dict[str, Any], metadata: dict[str, Any]) -> str:
@@ -143,7 +155,10 @@ def _content_text(record: dict[str, Any], metadata: dict[str, Any]) -> str:
         image_metadata = metadata.get("image_metadata")
         if isinstance(image_metadata, dict):
             content_metadata = metadata.get("content_metadata")
-            is_page = isinstance(content_metadata, dict) and content_metadata.get("subtype") == "page_image"
+            is_page = (
+                isinstance(content_metadata, dict)
+                and content_metadata.get("subtype") == "page_image"
+            )
             return str(image_metadata.get("text" if is_page else "caption") or "")
     if document_type == "audio":
         audio_metadata = metadata.get("audio_metadata")
@@ -192,7 +207,9 @@ def _collection_rows(
                 source_metadata = {}
 
             text = _content_text(record, metadata)
-            content_type = normalize_content_type(content_metadata.get("type") or record.get("document_type"))
+            content_type = normalize_content_type(
+                content_metadata.get("type") or record.get("document_type")
+            )
             content_type = content_type or ""
             if content_type:
                 content_metadata = dict(content_metadata)
@@ -202,13 +219,20 @@ def _collection_rows(
                 continue
 
             source_id = str(
-                source_metadata.get("source_id") or source_metadata.get("source_name") or context.filename or ""
+                source_metadata.get("source_id")
+                or source_metadata.get("source_name")
+                or context.filename
+                or ""
             )
             source_path = Path(source_id) if source_id else None
             filename = context.filename or (source_path.name if source_path else "")
             pdf_basename = source_path.stem if source_path else Path(filename).stem
             page_number = _positive_or_unknown_page(content_metadata.get("page_number"))
-            pdf_page = f"{pdf_basename}_{page_number}" if pdf_basename and page_number > 0 else ""
+            pdf_page = (
+                f"{pdf_basename}_{page_number}"
+                if pdf_basename and page_number > 0
+                else ""
+            )
             stored_image_uri = str(content_metadata.get("stored_image_uri") or "")
             bbox = content_metadata.get("bbox_xyxy_norm")
 
@@ -240,19 +264,25 @@ def _collection_rows(
     return rows
 
 
-def _public_collection_hit(hit: dict[str, Any]) -> dict[str, Any]:
-    """Expose a finite native distance without leaking LanceDB score fields."""
+def _public_collection_hit(hit: dict[str, Any], *, rank: int) -> dict[str, Any]:
+    """Expose backend-neutral ordering without reinterpreting native distance."""
     raw = hit.get("_distance")
     if isinstance(raw, bool):
-        raise RetrievalContractError("Dense collection hit is missing a numeric _distance")
+        raise RetrievalContractError(
+            "Dense collection hit is missing a numeric _distance"
+        )
     try:
         distance = float(raw)
     except (TypeError, ValueError) as exc:
-        raise RetrievalContractError("Dense collection hit is missing a numeric _distance") from exc
+        raise RetrievalContractError(
+            "Dense collection hit is missing a numeric _distance"
+        ) from exc
     if not math.isfinite(distance):
         raise RetrievalContractError("Dense collection hit has a non-finite _distance")
 
-    public_hit = {key: value for key, value in hit.items() if key not in _NATIVE_SCORE_FIELDS}
+    public_hit = {
+        key: value for key, value in hit.items() if key not in _NATIVE_SCORE_FIELDS
+    }
     content_type = str(public_hit.get("content_type") or "").lower()
     page_number = _positive_or_unknown_page(public_hit.get("page_number"))
     if content_type.startswith(("audio", "video")) or page_number < 0:
@@ -260,7 +290,12 @@ def _public_collection_hit(hit: dict[str, Any]) -> dict[str, Any]:
         public_hit["pdf_page"] = ""
     else:
         public_hit["page_number"] = page_number
-    public_hit["distance"] = distance
+    public_hit["ranking"] = {
+        "rank": rank,
+        "value": distance,
+        "kind": "vector_distance",
+        "higher_is_better": False,
+    }
     return public_hit
 
 
@@ -271,13 +306,19 @@ def _normalize_collection_results(
 ) -> list[list[dict[str, Any]]]:
     """Strictly validate collection result cardinality and hit shape."""
     if not isinstance(raw_results, list) or len(raw_results) != expected_queries:
-        raise RetrievalContractError("Collection retrieval returned an invalid query-result cardinality")
+        raise RetrievalContractError(
+            "Collection retrieval returned an invalid query-result cardinality"
+        )
     for query_index, hits in enumerate(raw_results):
         if not isinstance(hits, list):
-            raise RetrievalContractError(f"Collection retrieval result {query_index} is not a hit list")
+            raise RetrievalContractError(
+                f"Collection retrieval result {query_index} is not a hit list"
+            )
         for hit_index, hit in enumerate(hits):
             if not isinstance(hit, Mapping):
-                raise RetrievalContractError(f"Collection retrieval hit {query_index}:{hit_index} is not a mapping")
+                raise RetrievalContractError(
+                    f"Collection retrieval hit {query_index}:{hit_index} is not a mapping"
+                )
     return normalize_retrieval_results(raw_results)
 
 
@@ -289,7 +330,9 @@ class LanceDBCollectionStore:
     from racing with active reads or writes.
     """
 
-    def __init__(self, backend: Any, *, expiration_cleanup_enabled: bool = True) -> None:
+    def __init__(
+        self, backend: Any, *, expiration_cleanup_enabled: bool = True
+    ) -> None:
         self._backend = backend
         self._uri = backend.uri
         self.expiration_cleanup_enabled = expiration_cleanup_enabled
@@ -359,7 +402,9 @@ class LanceDBCollectionStore:
             missing = [field for field in schema if field.name not in existing]
             if missing:
                 missing_names = ", ".join(sorted(field.name for field in missing))
-                raise RuntimeError(f"Incompatible {name} catalog: missing required columns: {missing_names}")
+                raise RuntimeError(
+                    f"Incompatible {name} catalog: missing required columns: {missing_names}"
+                )
             index_columns = (
                 ("scope", "name", "status", "expires_at")
                 if name == _COLLECTIONS_TABLE
@@ -392,7 +437,9 @@ class LanceDBCollectionStore:
         return table
 
     def _acquire_table_user_locked(self, table_name: str) -> None:
-        self._active_table_users[table_name] = self._active_table_users.get(table_name, 0) + 1
+        self._active_table_users[table_name] = (
+            self._active_table_users.get(table_name, 0) + 1
+        )
 
     def _release_table_user(self, table_name: str) -> None:
         with self._table_user_condition:
@@ -409,7 +456,9 @@ class LanceDBCollectionStore:
         while self._active_table_users.get(table_name, 0):
             self._table_user_condition.wait()
 
-    def _collection_row(self, scope: str, name: str, *, active: bool = False) -> dict[str, Any] | None:
+    def _collection_row(
+        self, scope: str, name: str, *, active: bool = False
+    ) -> dict[str, Any] | None:
         rows = self._rows(
             _COLLECTIONS_TABLE,
             f"scope = {_quoted(scope)} AND name = {_quoted(name)}",
@@ -440,7 +489,9 @@ class LanceDBCollectionStore:
     def _document_info(row: dict[str, Any]) -> DocumentInfo:
         return DocumentInfo(**{key: row.get(key) for key in DocumentInfo.model_fields})
 
-    def create_collection(self, scope: str, request: CollectionCreateRequest) -> CollectionInfo:
+    def create_collection(
+        self, scope: str, request: CollectionCreateRequest
+    ) -> CollectionInfo:
         """Create a scoped logical collection without exposing its physical table."""
 
         with self._write_lock:
@@ -498,9 +549,13 @@ class LanceDBCollectionStore:
             rows = [row for row in rows if row["name"] > last[0]]
         page = rows[:limit]
         next_token = (
-            _encode_cursor("collections", scope, None, [page[-1]["name"]]) if len(rows) > limit and page else None
+            _encode_cursor("collections", scope, None, [page[-1]["name"]])
+            if len(rows) > limit and page
+            else None
         )
-        return CollectionPage(items=[self._collection_info(row) for row in page], next_token=next_token)
+        return CollectionPage(
+            items=[self._collection_info(row) for row in page], next_token=next_token
+        )
 
     def update_collection(
         self,
@@ -517,7 +572,9 @@ class LanceDBCollectionStore:
             update = request.model_dump(exclude_unset=True)
             row["description"] = update.get("description", row["description"]) or ""
             if "metadata" in update:
-                row["metadata_json"] = json.dumps(update["metadata"] or {}, sort_keys=True)
+                row["metadata_json"] = json.dumps(
+                    update["metadata"] or {}, sort_keys=True
+                )
             row["expires_at"] = update.get("expires_at", row["expires_at"]) or ""
             row["updated_at"] = _now()
             (
@@ -542,7 +599,9 @@ class LanceDBCollectionStore:
         delay = min(3600, 2 ** min(max(retry_count, 1), 12))
         return (datetime.now(timezone.utc) + timedelta(seconds=delay)).isoformat()
 
-    def _schedule_collection_retry(self, row: dict[str, Any], phase: str, exc: Exception) -> None:
+    def _schedule_collection_retry(
+        self, row: dict[str, Any], phase: str, exc: Exception
+    ) -> None:
         retries = int(row.get("retry_count") or 0) + 1
         row.update(
             {
@@ -645,10 +704,14 @@ class LanceDBCollectionStore:
             return "dense"
         capabilities = capabilities or self._table_capabilities(table_name)
         if capabilities is None:
-            raise RetrievalContractError(f"Unable to inspect collection table {table_name!r}")
+            raise RetrievalContractError(
+                f"Unable to inspect collection table {table_name!r}"
+            )
         mode: LanceRetrievalMode = capabilities.retrieval_mode
         if mode == "unknown":
-            raise RetrievalContractError("Collection table has no supported vector or FTS search capability")
+            raise RetrievalContractError(
+                "Collection table has no supported vector or FTS search capability"
+            )
         if mode != "dense":
             raise UnsupportedVDBOperation(
                 f"{mode.capitalize()} collection retrieval is not supported; collection queries require dense vectors"
@@ -700,7 +763,9 @@ class LanceDBCollectionStore:
         with self._write_lock:
             table_name = self._resolved_table(context.scope, context.collection_name)
             if records and not rows:
-                raise VDBInvalidRequest("Collection records produced no writable vector rows")
+                raise VDBInvalidRequest(
+                    "Collection records produced no writable vector rows"
+                )
             existing = self._document_rows(
                 context.scope,
                 context.collection_name,
@@ -724,10 +789,14 @@ class LanceDBCollectionStore:
                     "",
                     "appending",
                 } or known_versions != {context.document_version}:
-                    raise VDBResourceConflict("append cannot change an existing document; use replace")
+                    raise VDBResourceConflict(
+                        "append cannot change an existing document; use replace"
+                    )
                 stored_hash = str(document.get("content_sha256") or "")
                 if stored_hash and stored_hash != context.content_sha256:
-                    raise VDBResourceConflict("append content does not match the existing document; use replace")
+                    raise VDBResourceConflict(
+                        "append content does not match the existing document; use replace"
+                    )
 
             if rows:
                 now = _now()
@@ -804,8 +873,12 @@ class LanceDBCollectionStore:
                 if not table_exists:
                     vector_dim = infer_vector_dim(rows)
                     if vector_dim == 0:
-                        raise VDBInvalidRequest("Cannot infer vector dimension from collection records")
-                    schema = lancedb_schema(vector_dim=vector_dim, collection_managed=True)
+                        raise VDBInvalidRequest(
+                            "Cannot infer vector dimension from collection records"
+                        )
+                    schema = lancedb_schema(
+                        vector_dim=vector_dim, collection_managed=True
+                    )
                     table = create_or_append_lancedb_table(
                         self._db,
                         table_name,
@@ -869,7 +942,9 @@ class LanceDBCollectionStore:
         """Run scoped dense retrieval and expose finite native vector distances."""
 
         if len(query_texts) != len(vectors):
-            raise RetrievalContractError("query_texts must contain one entry per query vector")
+            raise RetrievalContractError(
+                "query_texts must contain one entry per query vector"
+            )
         with self._write_lock:
             table_name = self._resolved_table(scope, collection_name)
             if not self._has_table(table_name):
@@ -892,21 +967,38 @@ class LanceDBCollectionStore:
             )
             if pending_document_ids:
                 visibility_filter = " AND ".join(
-                    f"document_id != {_quoted(document_id)}" for document_id in pending_document_ids
+                    f"document_id != {_quoted(document_id)}"
+                    for document_id in pending_document_ids
                 )
-                requested_filter = retrieval_kwargs.get("where", retrieval_kwargs.get("_filter"))
+                requested_filter = retrieval_kwargs.get(
+                    "where", retrieval_kwargs.get("_filter")
+                )
                 if requested_filter is not None and str(requested_filter).strip():
-                    visibility_filter = f"({str(requested_filter).strip()}) AND ({visibility_filter})"
+                    visibility_filter = (
+                        f"({str(requested_filter).strip()}) AND ({visibility_filter})"
+                    )
                 retrieval_kwargs["where"] = visibility_filter
 
-            if capabilities is not None and capabilities.vector_column and capabilities.vector_column != "vector":
+            if (
+                capabilities is not None
+                and capabilities.vector_column
+                and capabilities.vector_column != "vector"
+            ):
                 retrieval_kwargs["vector_column_name"] = capabilities.vector_column
             self._acquire_table_user_locked(table_name)
 
         try:
             raw_results = self._backend.retrieval(vectors, **retrieval_kwargs)
-            normalized_results = _normalize_collection_results(raw_results, expected_queries=len(vectors))
-            public_results = [[_public_collection_hit(hit) for hit in hits] for hits in normalized_results]
+            normalized_results = _normalize_collection_results(
+                raw_results, expected_queries=len(vectors)
+            )
+            public_results = [
+                [
+                    _public_collection_hit(hit, rank=rank)
+                    for rank, hit in enumerate(hits, start=1)
+                ]
+                for hits in normalized_results
+            ]
             return public_results, ["dense"]
         finally:
             self._release_table_user(table_name)
@@ -936,7 +1028,11 @@ class LanceDBCollectionStore:
         if last is not None:
             if len(last) != 2:
                 raise VDBInvalidRequest("Invalid document continuation token")
-            rows = [row for row in rows if (row["created_at"], row["document_id"]) > (last[0], last[1])]
+            rows = [
+                row
+                for row in rows
+                if (row["created_at"], row["document_id"]) > (last[0], last[1])
+            ]
         page = rows[:limit]
         return DocumentPage(
             items=[self._document_info(row) for row in page],
@@ -966,7 +1062,9 @@ class LanceDBCollectionStore:
             raise VDBResourceNotFound("Document not found")
         return self._document_info(rows[0])
 
-    def _reconcile_document_row_locked(self, row: dict[str, Any], table_name: str) -> bool:
+    def _reconcile_document_row_locked(
+        self, row: dict[str, Any], table_name: str
+    ) -> bool:
         """Complete or roll back one interrupted document lifecycle operation."""
 
         state = str(row.get("recovery_state") or "")
@@ -980,7 +1078,11 @@ class LanceDBCollectionStore:
                         f"document_id = {_quoted(row['document_id'])}",
                         ["document_version", "content_sha256", "filename"],
                     )
-                    pending_chunks = [chunk for chunk in chunks if str(chunk.get("document_version") or "") == pending]
+                    pending_chunks = [
+                        chunk
+                        for chunk in chunks
+                        if str(chunk.get("document_version") or "") == pending
+                    ]
                 if pending and pending_chunks:
                     pending_chunk = pending_chunks[0]
                     row.update(
@@ -988,9 +1090,15 @@ class LanceDBCollectionStore:
                             "document_version": pending,
                             "current_document_version": pending,
                             "content_sha256": str(
-                                pending_chunk.get("content_sha256") or row.get("content_sha256") or ""
+                                pending_chunk.get("content_sha256")
+                                or row.get("content_sha256")
+                                or ""
                             ),
-                            "filename": str(pending_chunk.get("filename") or row.get("filename") or ""),
+                            "filename": str(
+                                pending_chunk.get("filename")
+                                or row.get("filename")
+                                or ""
+                            ),
                             "chunk_count": len(pending_chunks),
                             "pending_document_version": "",
                             "status": "completed",
@@ -1021,7 +1129,9 @@ class LanceDBCollectionStore:
             if state == "deleting_chunks":
                 if self._has_table(table_name):
                     self._wait_for_table_users_locked(table_name)
-                    self._open_table(table_name).delete(f"document_id = {_quoted(row['document_id'])}")
+                    self._open_table(table_name).delete(
+                        f"document_id = {_quoted(row['document_id'])}"
+                    )
                 self._db.open_table(_DOCUMENTS_TABLE).delete(
                     f"scope = {_quoted(row['scope'])} AND collection_name = {_quoted(row['collection_name'])} "
                     f"AND document_id = {_quoted(row['document_id'])}"
@@ -1103,7 +1213,9 @@ class LanceDBCollectionStore:
                     continue
                 table_name = collection["physical_table"]
                 self._wait_for_table_users_locked(table_name)
-                rows = self._document_rows(row["scope"], row["collection_name"], row["document_id"])
+                rows = self._document_rows(
+                    row["scope"], row["collection_name"], row["document_id"]
+                )
                 if not rows or not rows[0].get("recovery_state"):
                     continue
                 if self._reconcile_document_row_locked(rows[0], table_name):
@@ -1179,20 +1291,28 @@ class LanceDBCollectionStore:
             _COLLECTIONS_TABLE,
             columns=["status", "expires_at", "delete_started_at"],
         )
-        documents = self._rows(_DOCUMENTS_TABLE, columns=["recovery_state", "updated_at"])
+        documents = self._rows(
+            _DOCUMENTS_TABLE, columns=["recovery_state", "updated_at"]
+        )
         active = sum(row.get("status") == "active" for row in collections)
         deleting = sum(row.get("status") == "deleting" for row in collections)
         expired = sum(
-            bool(row.get("expires_at")) and datetime.fromisoformat(str(row["expires_at"])) <= now for row in collections
+            bool(row.get("expires_at"))
+            and datetime.fromisoformat(str(row["expires_at"])) <= now
+            for row in collections
         )
         pending_times: list[datetime] = []
         for row in collections:
             if row.get("status") == "deleting" and row.get("delete_started_at"):
-                pending_times.append(datetime.fromisoformat(str(row["delete_started_at"])))
+                pending_times.append(
+                    datetime.fromisoformat(str(row["delete_started_at"]))
+                )
         for row in documents:
             if row.get("recovery_state") and row.get("updated_at"):
                 pending_times.append(datetime.fromisoformat(str(row["updated_at"])))
-        oldest_age = max(((now - started).total_seconds() for started in pending_times), default=0.0)
+        oldest_age = max(
+            ((now - started).total_seconds() for started in pending_times), default=0.0
+        )
         return {
             "catalog": {
                 "healthy": True,

@@ -102,7 +102,12 @@ def test_query_hit_validates_canonical_page_instead_of_repairing_it() -> None:
         "chunk_id": "chunk",
         "document_id": "document",
         "text": "text",
-        "distance": 0.2,
+        "ranking": {
+            "rank": 1,
+            "value": 0.2,
+            "kind": "vector_distance",
+            "higher_is_better": False,
+        },
         "filename": "document.pdf",
     }
 

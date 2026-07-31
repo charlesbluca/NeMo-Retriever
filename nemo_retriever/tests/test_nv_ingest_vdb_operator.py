@@ -62,9 +62,13 @@ class FakeVDB(VDB):
         self.put_calls.append((records, dict(kwargs)))
         return {"put": sum(len(b) for b in records)}
 
-    def write_collection(self, records: list, *, context: CollectionWriteContext) -> CollectionWriteResult:
+    def write_collection(
+        self, records: list, *, context: CollectionWriteContext
+    ) -> CollectionWriteResult:
         self.write_collection_calls.append((records, context))
-        return CollectionWriteResult(written=sum(len(batch) for batch in records), total_rows=7)
+        return CollectionWriteResult(
+            written=sum(len(batch) for batch in records), total_rows=7
+        )
 
     def retrieve_collection(
         self,
@@ -90,7 +94,12 @@ class FakeVDB(VDB):
                     "chunk_id": "chunk-1",
                     "document_id": "document-1",
                     "text": "retrieved chunk",
-                    "distance": 0.12,
+                    "ranking": {
+                        "rank": 1,
+                        "value": 0.12,
+                        "kind": "vector_distance",
+                        "higher_is_better": False,
+                    },
                     "filename": "doc-a.pdf",
                     "page_number": 1,
                     "content_type": "table",
@@ -134,7 +143,9 @@ def _graph_rows() -> list[dict[str, Any]]:
     ]
 
 
-def test_process_returns_original_graph_rows_and_delegates_converted_records_to_run() -> None:
+def test_process_returns_original_graph_rows_and_delegates_converted_records_to_run() -> (
+    None
+):
     data = _graph_rows()
     vdb = FakeVDB()
     operator = IngestVdbOperator(vdb=vdb)
@@ -325,7 +336,9 @@ def test_ingest_operator_drops_ineligible_blank_row(row: dict[str, Any]) -> None
 
 def test_retrieve_operator_delegates_vectors_to_retrieval() -> None:
     vdb = FakeVDB()
-    operator = RetrieveVdbOperator(vdb=vdb, vdb_kwargs={"collection_name": "docs", "model_name": "embedder"})
+    operator = RetrieveVdbOperator(
+        vdb=vdb, vdb_kwargs={"collection_name": "docs", "model_name": "embedder"}
+    )
 
     result = operator.process([[0.1, 0.2]], top_k=3)
 
@@ -359,9 +372,14 @@ def test_retrieve_operator_reads_index_metadata_from_any_vdb() -> None:
     class MetadataVDB(FakeVDB):
         def get_index_metadata(self, key: str, **kwargs: Any) -> str | None:
             assert kwargs == {"collection_name": "docs"}
-            return {"embedding_model_name": "acme/embed", "retrieval_mode": "dense"}.get(key)
+            return {
+                "embedding_model_name": "acme/embed",
+                "retrieval_mode": "dense",
+            }.get(key)
 
-    operator = RetrieveVdbOperator(vdb=MetadataVDB(), vdb_kwargs={"collection_name": "docs"})
+    operator = RetrieveVdbOperator(
+        vdb=MetadataVDB(), vdb_kwargs={"collection_name": "docs"}
+    )
 
     assert operator.get_index_metadata("embedding_model_name") == "acme/embed"
     assert operator.get_index_metadata("retrieval_mode") == "dense"
@@ -401,7 +419,9 @@ def test_retrieve_operator_forwards_query_texts_for_hybrid_vdb_instance() -> Non
 
     operator.process([[0.1, 0.2]], top_k=3, query_texts=["current"])
 
-    assert vdb.retrieval_calls == [([[0.1, 0.2]], {"top_k": 3, "query_texts": ["current"]})]
+    assert vdb.retrieval_calls == [
+        ([[0.1, 0.2]], {"top_k": 3, "query_texts": ["current"]})
+    ]
 
 
 def test_retrieve_operator_respects_dense_override_for_hybrid_vdb_instance() -> None:
@@ -415,7 +435,9 @@ def test_retrieve_operator_respects_dense_override_for_hybrid_vdb_instance() -> 
 
 def test_retrieve_operator_does_not_forward_query_texts_for_dense_retrieval() -> None:
     vdb = FakeVDB()
-    operator = RetrieveVdbOperator(vdb=vdb, vdb_kwargs={"collection_name": "docs", "model_name": "embedder"})
+    operator = RetrieveVdbOperator(
+        vdb=vdb, vdb_kwargs={"collection_name": "docs", "model_name": "embedder"}
+    )
 
     operator.process([[0.1, 0.2]], top_k=3, query_texts=["current"])
 

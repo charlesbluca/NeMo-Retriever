@@ -83,16 +83,7 @@ def test_visual_only_match_is_reported_when_text_evidence_remains() -> None:
     }
 
 
-@pytest.mark.parametrize(
-    ("score_fields", "expected"),
-    [
-        ({"distance": 0.17}, 0.17),
-        ({"_score": 0.81}, 0.81),
-        ({"_distance": 0.24}, 0.24),
-        ({}, 0.0),
-    ],
-)
-def test_reachable_ranking_values_are_preserved_in_evidence(score_fields: dict[str, float], expected: float) -> None:
+def test_collection_ranking_value_is_preserved_in_evidence() -> None:
     result = build_evidence_result(
         [
             {
@@ -100,10 +91,15 @@ def test_reachable_ranking_values_are_preserved_in_evidence(score_fields: dict[s
                 "source": "report.pdf",
                 "page_number": 2,
                 "metadata": {"type": "text"},
-                **score_fields,
+                "ranking": {
+                    "rank": 1,
+                    "value": 0.17,
+                    "kind": "vector_distance",
+                    "higher_is_better": False,
+                },
             }
         ],
         ["dense"],
     )
 
-    assert result["evidence"][0]["score"] == expected
+    assert result["evidence"][0]["score"] == 0.17

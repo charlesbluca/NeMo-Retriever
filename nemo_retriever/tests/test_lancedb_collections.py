@@ -189,16 +189,21 @@ def test_service_row_adapter_preserves_multimodal_provenance(raw_type, expected_
     assert json.loads(row["bbox_xyxy_norm"]) == [0.1, 0.2, 0.8, 0.9]
 
 
-def test_collection_hit_preserves_native_dense_distance():
+def test_collection_hit_preserves_native_dense_ranking():
     hit = {
         "text": "chunk",
         "_score": 42.0,
         "_distance": 0.125,
     }
 
-    public = _public_collection_hit(hit)
+    public = _public_collection_hit(hit, rank=2)
 
-    assert public["distance"] == 0.125
+    assert public["ranking"] == {
+        "rank": 2,
+        "value": 0.125,
+        "kind": "vector_distance",
+        "higher_is_better": False,
+    }
     assert public["text"] == "chunk"
     assert not {"_score", "_distance"} & public.keys()
 
@@ -207,7 +212,9 @@ def test_collection_hit_preserves_native_dense_distance():
     ("content_type", "page_number"),
     [("audio", 3), ("video", 3), ("video_frame", 3), ("text", -1)],
 )
-def test_collection_hit_does_not_expose_non_document_pages(content_type: str, page_number: int):
+def test_collection_hit_does_not_expose_non_document_pages(
+    content_type: str, page_number: int
+):
     public = _public_collection_hit(
         {
             "text": "chunk",
@@ -215,17 +222,20 @@ def test_collection_hit_does_not_expose_non_document_pages(content_type: str, pa
             "page_number": page_number,
             "pdf_page": "document_3",
             "_distance": 0.125,
-        }
+        },
+        rank=1,
     )
 
     assert public["page_number"] is None
     assert public["pdf_page"] == ""
 
 
-@pytest.mark.parametrize("bad_value", [None, True, math.nan, math.inf, -math.inf, "not-a-number"])
+@pytest.mark.parametrize(
+    "bad_value", [None, True, math.nan, math.inf, -math.inf, "not-a-number"]
+)
 def test_collection_hit_rejects_missing_or_invalid_native_distance(bad_value):
     with pytest.raises(RetrievalContractError):
-        _public_collection_hit({"text": "chunk", "_distance": bad_value})
+        _public_collection_hit({"text": "chunk", "_distance": bad_value}, rank=1)
 
 
 @pytest.mark.parametrize(
@@ -259,7 +269,9 @@ def test_collection_write_enforces_append_and_replace_invariants(tmp_path):
 
     backend.write_collection(_records(), context=_context())
     with pytest.raises(VDBResourceConflict, match="use replace"):
-        backend.write_collection(_records(text="new version"), context=_context(version="v2"))
+        backend.write_collection(
+            _records(text="new version"), context=_context(version="v2")
+        )
     with pytest.raises(VDBResourceConflict, match="content does not match"):
         backend.write_collection(
             _records(text="different content"),
@@ -302,10 +314,16 @@ def test_collection_lifecycle_is_lazy_and_restart_safe(tmp_path):
             backend.list_collections(
                 scope="workspace-a",
                 limit=10,
-                continuation_token=_encode_cursor("collections", "workspace-a", None, invalid_last),
+                continuation_token=_encode_cursor(
+                    "collections", "workspace-a", None, invalid_last
+                ),
             )
-    expected_table = "nrl_" + hashlib.sha256(b"workspace-a\x00collection-a").hexdigest()[:40]
-    assert {"_nrl_collections", "_nrl_documents"} <= set(lancedb.connect(uri).list_tables().tables)
+    expected_table = (
+        "nrl_" + hashlib.sha256(b"workspace-a\x00collection-a").hexdigest()[:40]
+    )
+    assert {"_nrl_collections", "_nrl_documents"} <= set(
+        lancedb.connect(uri).list_tables().tables
+    )
 
     backend.create_collection(
         scope="workspace-a",
@@ -379,7 +397,13 @@ def test_collection_lifecycle_is_lazy_and_restart_safe(tmp_path):
     )
     assert strategies == ["dense"]
     assert hits[0][0]["document_id"] == "document-a"
-    assert hits[0][0]["distance"] >= 0.0
+    assert hits[0][0]["ranking"] == {
+        "rank": 1,
+        "value": hits[0][0]["ranking"]["value"],
+        "kind": "vector_distance",
+        "higher_is_better": False,
+    }
+    assert hits[0][0]["ranking"]["value"] >= 0.0
     assert "_distance" not in hits[0][0]
 
     restarted = LanceDB(uri=uri, table_name="legacy", vector_dim=2, build_index=False)
@@ -432,7 +456,9 @@ def test_collection_lifecycle_is_lazy_and_restart_safe(tmp_path):
     assert expected_table not in lancedb.connect(uri).list_tables().tables
 
 
-def test_initial_append_reconciles_after_catalog_finalize_failure(tmp_path, monkeypatch):
+def test_initial_append_reconciles_after_catalog_finalize_failure(
+    tmp_path, monkeypatch
+):
     backend = _backend_with_collection(tmp_path)
     store = backend._get_collection_store()
     _fail_document_finalize(monkeypatch, store)
@@ -498,7 +524,9 @@ def test_initial_append_reconciles_after_catalog_finalize_failure(tmp_path, monk
     assert visible_hits[0][0]["document_id"] == "document-a"
 
 
-def test_pending_initial_append_does_not_hide_completed_documents(tmp_path, monkeypatch):
+def test_pending_initial_append_does_not_hide_completed_documents(
+    tmp_path, monkeypatch
+):
     backend = _backend_with_collection(tmp_path)
     backend.write_collection(
         _records(text="completed", vector=[1.0, 0.0]),
@@ -525,7 +553,9 @@ def test_pending_initial_append_does_not_hide_completed_documents(tmp_path, monk
     assert [hit["document_id"] for hit in hits[0]] == ["document-completed"]
 
 
-def test_initial_append_retry_does_not_duplicate_committed_chunks(tmp_path, monkeypatch):
+def test_initial_append_retry_does_not_duplicate_committed_chunks(
+    tmp_path, monkeypatch
+):
     backend = _backend_with_collection(tmp_path)
     store = backend._get_collection_store()
     original_persist = _fail_document_finalize(monkeypatch, store)
@@ -627,14 +657,20 @@ def test_service_table_schema_survives_append_restart_and_query(tmp_path):
         "_service_table_schema": True,
     }
     backend = LanceDB(**common)
-    backend.run(_service_records("table_caption", text="table caption", vector=[1.0, 0.0, 0.0]))
+    backend.run(
+        _service_records("table_caption", text="table caption", vector=[1.0, 0.0, 0.0])
+    )
 
     restarted = LanceDB(**common)
-    restarted.run(_service_records("chart_caption", text="chart caption", vector=[0.0, 1.0, 0.0]))
+    restarted.run(
+        _service_records("chart_caption", text="chart caption", vector=[0.0, 1.0, 0.0])
+    )
 
     table = lancedb.connect(uri).open_table("legacy")
     assert table.schema.field("vector").type.list_size == 3
-    assert {"content_type", "stored_image_uri", "bbox_xyxy_norm"} <= set(table.schema.names)
+    assert {"content_type", "stored_image_uri", "bbox_xyxy_norm"} <= set(
+        table.schema.names
+    )
     assert table.count_rows() == 2
 
     results = restarted.retrieval([[1.0, 0.0, 0.0]], top_k=2)
@@ -661,10 +697,14 @@ def test_collection_query_is_not_blocked_by_unrelated_write(tmp_path, monkeypatc
         build_index=False,
     )
     for name in ("collection-a", "collection-b"):
-        backend.create_collection(scope="workspace-a", request=CollectionCreateRequest(name=name))
+        backend.create_collection(
+            scope="workspace-a", request=CollectionCreateRequest(name=name)
+        )
     backend.write_collection(
         _records(text="collection b"),
-        context=replace(_context(), collection_name="collection-b", document_id="document-b"),
+        context=replace(
+            _context(), collection_name="collection-b", document_id="document-b"
+        ),
     )
 
     write_entered = threading.Event()
@@ -682,11 +722,15 @@ def test_collection_query_is_not_blocked_by_unrelated_write(tmp_path, monkeypatc
         query_entered.set()
         return [[] for _ in vectors]
 
-    monkeypatch.setattr(collections_module, "create_or_append_lancedb_table", blocking_create)
+    monkeypatch.setattr(
+        collections_module, "create_or_append_lancedb_table", blocking_create
+    )
     monkeypatch.setattr(backend, "retrieval", immediate_retrieval)
 
     with ThreadPoolExecutor(max_workers=2) as pool:
-        write_future = pool.submit(backend.write_collection, _records(), context=_context())
+        write_future = pool.submit(
+            backend.write_collection, _records(), context=_context()
+        )
         assert write_entered.wait(timeout=5)
         query_future = pool.submit(
             backend.retrieve_collection,
@@ -713,7 +757,9 @@ def test_collection_delete_waits_for_active_write(tmp_path, monkeypatch):
         overwrite=False,
         build_index=False,
     )
-    backend.create_collection(scope="workspace-a", request=CollectionCreateRequest(name="collection-a"))
+    backend.create_collection(
+        scope="workspace-a", request=CollectionCreateRequest(name="collection-a")
+    )
 
     write_entered = threading.Event()
     allow_write_to_finish = threading.Event()
@@ -725,10 +771,14 @@ def test_collection_delete_waits_for_active_write(tmp_path, monkeypatch):
             raise TimeoutError("test did not release blocked collection write")
         return original_create(*args, **kwargs)
 
-    monkeypatch.setattr(collections_module, "create_or_append_lancedb_table", blocking_create)
+    monkeypatch.setattr(
+        collections_module, "create_or_append_lancedb_table", blocking_create
+    )
 
     with ThreadPoolExecutor(max_workers=2) as pool:
-        write_future = pool.submit(backend.write_collection, _records(), context=_context())
+        write_future = pool.submit(
+            backend.write_collection, _records(), context=_context()
+        )
         assert write_entered.wait(timeout=5)
         delete_future = pool.submit(
             backend.delete_collection,
@@ -755,7 +805,9 @@ def test_collection_reconciliation_waits_for_active_write(tmp_path, monkeypatch)
         overwrite=False,
         build_index=False,
     )
-    backend.create_collection(scope="workspace-a", request=CollectionCreateRequest(name="collection-a"))
+    backend.create_collection(
+        scope="workspace-a", request=CollectionCreateRequest(name="collection-a")
+    )
 
     write_entered = threading.Event()
     allow_write_to_finish = threading.Event()
@@ -767,10 +819,14 @@ def test_collection_reconciliation_waits_for_active_write(tmp_path, monkeypatch)
             raise TimeoutError("test did not release blocked collection write")
         return original_create(*args, **kwargs)
 
-    monkeypatch.setattr(collections_module, "create_or_append_lancedb_table", blocking_create)
+    monkeypatch.setattr(
+        collections_module, "create_or_append_lancedb_table", blocking_create
+    )
 
     with ThreadPoolExecutor(max_workers=2) as pool:
-        write_future = pool.submit(backend.write_collection, _records(), context=_context())
+        write_future = pool.submit(
+            backend.write_collection, _records(), context=_context()
+        )
         assert write_entered.wait(timeout=5)
         reconcile_future = pool.submit(backend.reconcile_collections)
         try:
@@ -793,7 +849,9 @@ def test_collection_writes_remain_serialized(tmp_path, monkeypatch):
         build_index=False,
     )
     for name in ("collection-a", "collection-b"):
-        backend.create_collection(scope="workspace-a", request=CollectionCreateRequest(name=name))
+        backend.create_collection(
+            scope="workspace-a", request=CollectionCreateRequest(name=name)
+        )
 
     first_write_entered = threading.Event()
     second_write_entered = threading.Event()
@@ -815,13 +873,21 @@ def test_collection_writes_remain_serialized(tmp_path, monkeypatch):
             second_write_entered.set()
         return original_create(*args, **kwargs)
 
-    monkeypatch.setattr(collections_module, "create_or_append_lancedb_table", blocking_first_create)
+    monkeypatch.setattr(
+        collections_module, "create_or_append_lancedb_table", blocking_first_create
+    )
 
-    second_context = replace(_context(), collection_name="collection-b", document_id="document-b")
+    second_context = replace(
+        _context(), collection_name="collection-b", document_id="document-b"
+    )
     with ThreadPoolExecutor(max_workers=2) as pool:
-        first_future = pool.submit(backend.write_collection, _records(), context=_context())
+        first_future = pool.submit(
+            backend.write_collection, _records(), context=_context()
+        )
         assert first_write_entered.wait(timeout=5)
-        second_future = pool.submit(backend.write_collection, _records(), context=second_context)
+        second_future = pool.submit(
+            backend.write_collection, _records(), context=second_context
+        )
         try:
             assert not second_write_entered.wait(timeout=0.2)
             assert not second_future.done()

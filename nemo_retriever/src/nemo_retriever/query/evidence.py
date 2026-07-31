@@ -65,9 +65,12 @@ def _evidence_item(hit: dict[str, Any]) -> dict[str, Any]:
         locator = {"kind": "page", "value": None}
         citation = source
 
-    fidelity = meta.get("fidelity") or _derive_fidelity(raw_modality, meta, meta) or "verbatim"
+    fidelity = (
+        meta.get("fidelity") or _derive_fidelity(raw_modality, meta, meta) or "verbatim"
+    )
 
-    raw_score = hit.get("distance")
+    ranking = hit.get("ranking")
+    raw_score = ranking.get("value") if isinstance(ranking, dict) else None
     if raw_score is None:
         raw_score = hit.get("_score")
     if raw_score is None:
@@ -109,7 +112,9 @@ def build_evidence_result(hits: list, strategies_used: list[str]) -> dict[str, A
             omitted.append(item)
     sources = {item["source"] for item in projected if item.get("source")}
     evidence_sources = {item["source"] for item in evidence if item.get("source")}
-    only_visual_omissions = bool(omitted) and all(item.get("modality") == "image" for item in omitted)
+    only_visual_omissions = bool(omitted) and all(
+        item.get("modality") == "image" for item in omitted
+    )
     thin: list[str] = []
     if not evidence:
         if only_visual_omissions:
@@ -125,7 +130,9 @@ def build_evidence_result(hits: list, strategies_used: list[str]) -> dict[str, A
             thin.append("only low-fidelity (chart/image) evidence")
         if omitted:
             thin.append(
-                "visual-only matches omitted" if only_visual_omissions else "matches without answer-ready text omitted"
+                "visual-only matches omitted"
+                if only_visual_omissions
+                else "matches without answer-ready text omitted"
             )
     return {
         "evidence": evidence,

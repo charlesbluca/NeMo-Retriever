@@ -42,7 +42,9 @@ def _normalize_expires_at(value: str | None) -> str | None:
 class CollectionCreateRequest(RichModel):
     """Properties accepted when creating a logical collection."""
 
-    name: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+    name: str = Field(
+        min_length=1, max_length=128, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$"
+    )
     description: str | None = Field(default=None, max_length=4096)
     metadata: dict[str, Any] = Field(default_factory=dict)
     expires_at: str | None = None
@@ -133,16 +135,22 @@ class CollectionDeleteResult(RichModel):
     cleanup_pending: bool = False
 
 
+class QueryRanking(RichModel):
+    """Backend-neutral description of how a query hit was ordered."""
+
+    rank: int = Field(ge=1)
+    value: float = Field(allow_inf_nan=False)
+    kind: Literal["vector_distance", "hybrid_relevance"]
+    higher_is_better: bool
+
+
 class QueryHit(RichModel):
     """Citation-ready hit returned to agentic applications."""
 
     chunk_id: str
     document_id: DocumentId
     text: str
-    distance: float = Field(
-        allow_inf_nan=False,
-        description="Native dense-vector distance; lower values are more similar.",
-    )
+    ranking: QueryRanking
     filename: str
     page_number: int | None = Field(
         default=None,

@@ -375,6 +375,71 @@ For LiteLLM `nvidia_nim/...` models, including the default `LiteLLMClient` and `
 
 Serializing a graph containing a literal API key fails with a contextual error instead of guessing which provider credential should be used on a worker.
 
+## Select a dense ingest index family { #dense-ingest-index-family }
+
+!!! note "Development branch option"
+
+    `IngestStorageOptions.index_type` is under development. It is not
+    available in current NVIDIA `main` or a released package.
+
+Typed library ingestion accepts an optional vector-index family through
+`IngestPlanRequest.storage.index_type`. Import `IngestStorageOptions` from
+`nemo_retriever.ingest.plan` and use the following values.
+
+| Value | Behavior |
+| --- | --- |
+| `None` | Omits the override and preserves existing upload kwargs and backend defaults. This is the default. |
+| `"IVF_HNSW_SQ"` | Explicitly selects the existing default vector-index family. |
+| `"IVF_FLAT"` | Selects the backend's IVF flat vector-index family. |
+
+An explicit family requires resolved `index_mode="dense"` and
+`overwrite=True` to build the requested vector index. Unsupported values,
+sparse or hybrid modes, and non-overwrite requests raise `ValueError` during
+plan resolution. Fresh `index_mode="auto"` resolves to hybrid, so set
+`index_mode="dense"` explicitly. This setting does not change a prebuilt
+index in place.
+
+The following example creates a typed batch ingest plan and executes it.
+Replace the input path with your PDF. Use a new table name because
+`overwrite=True` replaces an existing target table.
+
+```python
+from nemo_retriever.ingest.execution import execute_ingest_plan
+from nemo_retriever.ingest.plan import (
+    IngestPlanRequest,
+    IngestRuntimeOptions,
+    IngestSourceOptions,
+    IngestStorageOptions,
+    resolve_ingest_plan,
+)
+
+plan = resolve_ingest_plan(
+    IngestPlanRequest(
+        source=IngestSourceOptions(documents=["/path/to/your/document.pdf"]),
+        runtime=IngestRuntimeOptions(run_mode="batch"),
+        storage=IngestStorageOptions(
+            lancedb_uri="./lancedb-index-family",
+            table_name="dense-ivf-flat",
+            overwrite=True,
+            index_mode="dense",
+            index_type="IVF_FLAT",
+        ),
+    )
+)
+result = execute_ingest_plan(plan)
+```
+
+The plan forwards an explicit value to the existing `vdb_kwargs.index_type`
+option. It does not change query search budgets or add other index-tuning
+controls. Existing small-table behavior still applies: IVF vector-index
+creation requires at least 2 rows.
+
+The CLI does not expose a standalone index-family flag.
+
+`IVF_FLAT` does not guarantee exhaustive search results or better throughput.
+For comparison guidance, refer to
+[Evaluate a dense index family](performance_guide.md#evaluate-dense-index-family).
+
 ## Generated Python API { #generated-python-api }
 
 The signatures below are the supported public ingest, retrieve, generation, and parameter surfaces. Private helpers, module loggers, and duplicate re-exports are omitted.

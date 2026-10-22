@@ -375,6 +375,71 @@ For LiteLLM `nvidia_nim/...` models, including the default `LiteLLMClient` and `
 
 Serializing a graph containing a literal API key fails with a contextual error instead of guessing which provider credential should be used on a worker.
 
+## Select a dense ingest index family { #dense-ingest-index-family }
+
+!!! note "Development branch option"
+
+    `IngestStorageOptions.index_type` is under development. It is not
+    available in current NVIDIA `main` or a released package.
+
+Typed library ingestion accepts an optional vector-index family through
+`IngestPlanRequest.storage.index_type`. Import `IngestStorageOptions` from
+`nemo_retriever.ingest.plan` and use the following values.
+
+| Value | Behavior |
+| --- | --- |
+| `None` | Omits the override and preserves existing upload kwargs and backend defaults. This is the default. |
+| `"IVF_HNSW_SQ"` | Explicitly selects the existing default vector-index family. |
+| `"IVF_FLAT"` | Selects the backend's IVF flat vector-index family. |
+
+An explicit family requires resolved `index_mode="dense"` and
+`overwrite=True` to build the requested vector index. Unsupported values,
+sparse or hybrid modes, and non-overwrite requests raise `ValueError` during
+plan resolution. Fresh `index_mode="auto"` resolves to hybrid, so set
+`index_mode="dense"` explicitly. This setting does not change a prebuilt
+index in place.
+
+The following example creates a typed batch ingest plan and executes it.
+Replace the input path with your PDF. Use a new table name because
+`overwrite=True` replaces an existing target table.
+
+```python
+from nemo_retriever.ingest.execution import execute_ingest_plan
+from nemo_retriever.ingest.plan import (
+    IngestPlanRequest,
+    IngestRuntimeOptions,
+    IngestSourceOptions,
+    IngestStorageOptions,
+    resolve_ingest_plan,
+)
+
+plan = resolve_ingest_plan(
+    IngestPlanRequest(
+        source=IngestSourceOptions(documents=["/path/to/your/document.pdf"]),
+        runtime=IngestRuntimeOptions(run_mode="batch"),
+        storage=IngestStorageOptions(
+            lancedb_uri="./lancedb-index-family",
+            table_name="dense-ivf-flat",
+            overwrite=True,
+            index_mode="dense",
+            index_type="IVF_FLAT",
+        ),
+    )
+)
+result = execute_ingest_plan(plan)
+```
+
+The plan forwards an explicit value to the existing `vdb_kwargs.index_type`
+option. It does not change query search budgets or add other index-tuning
+controls. Existing small-table behavior still applies: IVF vector-index
+creation requires at least 2 rows.
+
+The CLI does not expose a standalone index-family flag.
+
+`IVF_FLAT` does not guarantee exhaustive search results or better throughput.
+For comparison guidance, refer to
+[Evaluate a dense index family](performance_guide.md#evaluate-dense-index-family).
+
 ## Tune HNSW search { #hnsw-query-ef }
 
 !!! note "Development branch option"
@@ -405,7 +470,7 @@ from nemo_retriever.query.workflow import query_documents
 hits = query_documents(
     QueryRequest(
         query="What methods improve document retrieval?",
-        retrieval=QueryRetrievalOptions(retrieval_mode="dense", ef=256),
+        retrieval=QueryRetrievalOptions(retrieval_mode="dense", ef=4096),
         storage=QueryStorageOptions(lancedb_uri="./lancedb", table_name="nemo-retriever"),
     )
 )
@@ -417,12 +482,18 @@ hits = query_documents(
 from nemo_retriever.graph.retriever import Retriever
 
 retriever = Retriever(vdb_kwargs={"uri": "./lancedb", "table_name": "nemo-retriever"})
-hits = retriever.query("What methods improve document retrieval?", vdb_kwargs={"ef": 256})
+hits = retriever.query("What methods improve document retrieval?", vdb_kwargs={"ef": 4096})
 ```
 
-The value `256` is an example, not a recommended setting. Tune it against your
-own retrieval-quality and latency measurements. `ef` does not change `top_k`
-or the `candidate_k` result bound.
+With pinned LanceDB `0.34.0` and `lance-index` `8.0.0`, effective search
+`k = candidate_k × refine_factor`. An explicit `ef` must be at least that
+`k`: `50 × 50` requires `ef >= 2500`. For this configuration, pinned native
+source computes an omitted default of `3750`. This is source-derived, not an
+observed effective runtime value or a stable NeMo Retriever Library default.
+
+The examples use `4096` to satisfy this compatibility bound, not as a
+universal recommendation. Tune against your retrieval-quality and latency
+measurements. `ef` does not change `top_k` or the `candidate_k` result bound.
 
 Sparse retrieval rejects explicit `ef`. Typed service and agentic query
 workflows also reject it rather than ignoring it. The CLI does not expose an
@@ -479,7 +550,7 @@ results after normal hit shaping. `candidate_k` controls the candidate bound
 shared by both searches and must be at least `top_k`. The method also
 accepts `page_dedup`, `content_types`, `vdb_kwargs`, and `embed_kwargs`.
 
-To tune HNSW search, pass `vdb_kwargs={"ef": 256}` to
+To tune HNSW search, pass `vdb_kwargs={"ef": 4096}` to
 `query_compare_exact()`. Only the indexed search applies this value. The exact
 search never applies `ef`. The evidence field `indexed_ef` records the explicit
 integer, or `None` when you request the native default. It does not report the

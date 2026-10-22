@@ -210,6 +210,13 @@ class IngestEmbedOptions:
     embed_inference_batch_size: int | None = None
     batch: IngestEmbedBatchOptions = field(default_factory=IngestEmbedBatchOptions)
     embed_input_audit: EmbedInputAuditParams | None = None
+    local_hf_image_batch_size: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.local_hf_image_batch_size is not None:
+            from nemo_retriever.models.local_hf_image_batch import validate_local_hf_image_batch_size
+
+            validate_local_hf_image_batch_size(self.local_hf_image_batch_size)
 
 
 @dataclass(frozen=True)
@@ -634,6 +641,27 @@ def resolve_ingest_plan(request: IngestPlanRequest) -> ResolvedIngestPlan:
     validated_profile = validate_ingest_profile(source.profile)
     validated_input_type = validate_ingest_input_type(source.input_type)
     requested_index_mode = validate_ingest_index_mode(storage.index_mode)
+    # Validate an explicit nondefault cap before any document expansion or
+    # extraction. Metadata resolution is CPU-only and never loads a model.
+    if embed.local_hf_image_batch_size is not None:
+        from nemo_retriever.models.local_hf_image_batch import validate_local_hf_image_batch_scope
+
+        cap = validate_local_hf_image_batch_scope(
+            embed.local_hf_image_batch_size,
+            backend=embed.local_ingest_embed_backend or "vllm",
+            endpoint=embed.embed_invoke_url,
+            index_mode=requested_index_mode,
+        )
+        if cap != 2:
+            from nemo_retriever.models.local_embedder_spec import LocalEmbedderSpec
+
+            LocalEmbedderSpec.from_config(
+                {
+                    "embed_model_name": embed.embed_model_name,
+                    "local_ingest_embed_backend": embed.local_ingest_embed_backend,
+                    "local_hf_image_batch_size": cap,
+                }
+            )
     existing_index_mode = (
         None if storage.overwrite else inspect_existing_lancedb_mode(storage.lancedb_uri, storage.table_name)
     )
@@ -642,6 +670,13 @@ def resolve_ingest_plan(request: IngestPlanRequest) -> ResolvedIngestPlan:
         overwrite=storage.overwrite,
         existing_mode=existing_index_mode,
     )
+    if embed.local_hf_image_batch_size is not None:
+        validate_local_hf_image_batch_scope(
+            embed.local_hf_image_batch_size,
+            backend=embed.local_ingest_embed_backend or "vllm",
+            endpoint=embed.embed_invoke_url,
+            index_mode=resolved_index_mode,
+        )
     validated_audio_split_type = _validate_audio_split_type(media.audio_split_type)
     document_list = expand_ingest_documents(source.documents, input_type=validated_input_type)
     branches = plan_extraction_branches(build_input_manifest(document_list))
@@ -719,6 +754,7 @@ def resolve_ingest_plan(request: IngestPlanRequest) -> ResolvedIngestPlan:
         embed_input_audit=embed.embed_input_audit,
         embed_model_revision=embedding_model_revision if embed_runtime_model_name is not None else None,
         local_ingest_embed_backend=embed.local_ingest_embed_backend,
+        local_hf_image_batch_size=embed.local_hf_image_batch_size,
         embed_api_key=embed.embed_api_key,
         embed_model_provider_prefix=embed.embed_model_provider_prefix,
         embed_modality=embed.embed_modality,

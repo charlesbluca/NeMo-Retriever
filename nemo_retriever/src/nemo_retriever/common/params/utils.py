@@ -93,6 +93,7 @@ def build_embed_option_kwargs(
     embed_gpus_per_actor: float | None = None,
     embed_model_revision: str | None = None,
     embed_input_audit: EmbedInputAuditParams | None = None,
+    local_hf_image_batch_size: int | None = None,
 ) -> Dict[str, Any]:
     """Build ``EmbedParams`` kwargs from CLI/request option values."""
     embed_kwargs: Dict[str, Any] = {}
@@ -108,6 +109,8 @@ def build_embed_option_kwargs(
         embed_kwargs["embed_model_revision"] = embed_model_revision
     if local_ingest_embed_backend is not None:
         embed_kwargs["local_ingest_embed_backend"] = local_ingest_embed_backend
+    if local_hf_image_batch_size is not None:
+        embed_kwargs["local_hf_image_batch_size"] = local_hf_image_batch_size
     if embed_api_key is not None:
         embed_kwargs["api_key"] = embed_api_key
     if embed_model_provider_prefix is not None:

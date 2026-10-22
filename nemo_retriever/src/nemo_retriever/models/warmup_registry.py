@@ -105,6 +105,10 @@ def warm_local_models(spec: dict[str, Any]) -> None:
     """Load all models described by *spec* into this process's registry."""
     global _WARMED
 
+    # Resolve the full construction identity before any extraction or model
+    # preload. A rejected image-batch option must not start unrelated warmup.
+    embed_spec = spec.get("embed")
+    resolved_embed_spec = LocalEmbedderSpec.from_config(embed_spec) if embed_spec else None
     clear_warmed_models()
     stages = set(spec.get("stages") or [])
 
@@ -132,9 +136,7 @@ def warm_local_models(spec: dict[str, Any]) -> None:
         logger.info("Warming local model: table_structure")
         _REGISTRY["table_structure"] = NemotronTableStructureV1()
 
-    embed_spec = spec.get("embed")
-    if embed_spec:
-        resolved_embed_spec = LocalEmbedderSpec.from_config(embed_spec)
+    if resolved_embed_spec is not None:
         logger.info("Warming local model: embed (backend=%s)", resolved_embed_spec.backend)
         embedder = resolved_embed_spec.create()
         _preload_local_embedder(embedder, resolved_embed_spec.backend)

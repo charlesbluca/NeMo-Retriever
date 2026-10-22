@@ -38,6 +38,14 @@ class LocalEmbedderSpec:
     normalize: bool
     max_length: int
     query_max_length: int
+    local_hf_image_batch_size: int = 2
+
+    def __post_init__(self) -> None:
+        from nemo_retriever.models.local_hf_image_batch import validate_local_hf_image_batch_scope
+
+        validate_local_hf_image_batch_scope(
+            self.local_hf_image_batch_size, backend=self.backend, model_type=self.checkpoint.model_type
+        )
 
     @classmethod
     def from_config(cls, config: dict[str, Any]) -> "LocalEmbedderSpec":
@@ -46,6 +54,13 @@ class LocalEmbedderSpec:
         from nemo_retriever.models.embed_model_spec import resolve_embed_model_spec, validate_embed_model_backend
 
         backend = str(config.get("local_ingest_embed_backend") or config.get("backend") or "vllm").strip().lower()
+        from nemo_retriever.models.local_hf_image_batch import validate_local_hf_image_batch_scope
+
+        image_batch_size = validate_local_hf_image_batch_scope(
+            config.get("local_hf_image_batch_size", 2),
+            backend=backend,
+            endpoint=config.get("embedding_endpoint") or config.get("embed_invoke_url"),
+        )
         model_name = resolve_local_embed_model(
             config.get("embed_model_name") or config.get("model_name"), backend=backend
         )
@@ -75,6 +90,7 @@ class LocalEmbedderSpec:
             normalize=_as_bool(config.get("normalize"), default=True),
             max_length=max_length,
             query_max_length=query_max_length,
+            local_hf_image_batch_size=image_batch_size,
         )
 
     @property
@@ -107,6 +123,7 @@ class LocalEmbedderSpec:
             normalize=self.normalize,
             max_length=self.max_length,
             query_max_length=self.query_max_length,
+            local_hf_image_batch_size=self.local_hf_image_batch_size,
         )
 
 

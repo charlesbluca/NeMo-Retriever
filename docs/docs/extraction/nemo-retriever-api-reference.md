@@ -685,6 +685,67 @@ requirements, and an example. `get_dataset()` then returns the summary.
       heading_level: 4
       show_docstring_description: false
 
+#### Configure local HF image batches { #local-hf-image-batch-size }
+
+!!! note "Development branch option"
+
+    This option is available on `codex/b200-hf-image-microbatch`.
+    It is not available in current NVIDIA `main` or a released package.
+
+Set `EmbedParams.local_hf_image_batch_size` to limit image-bearing inputs per
+model call for local Hugging Face (`hf`) Nemotron 3.5 embedding. The default is
+`2`. The value must be a Python integer from `1` through `8`. Booleans,
+floating-point values, and strings are rejected.
+
+Typed ingest plans accept the same setting through
+`nemo_retriever.ingest.plan.IngestEmbedOptions.local_hf_image_batch_size`.
+Its default, `None`, resolves to `2`. Passing `None` to
+`EmbedParams.local_hf_image_batch_size` is invalid.
+
+`create_local_embedder()` and `create_local_query_embedder()` in
+`nemo_retriever.models` accept the same keyword, with default `2`.
+
+For graph ingestion, the effective image model-call batch size is the minimum of
+`EmbedParams.inference_batch_size`, the local runtime image limit of `8`, and
+`local_hf_image_batch_size`. A final partial batch can contain fewer inputs.
+`BatchTuningParams.embed_batch_size` controls the separate Ray row-batch size;
+increasing it does not override the model-call limit.
+
+This setting applies to `image` and image-bearing `text_image` inputs.
+Local HF text-only document and query model calls retain their limit of `8`.
+Prompt formatting, image expansion, token limits, and the
+[image input admission policy](embedding.md#text-input-overflow) remain unchanged.
+
+A nondefault value requires a local HF Nemotron 3.5 model. Configuration is
+rejected before execution for service ingestion, remote endpoints, vLLM,
+sparse embedding, and other model architectures. Omitting the setting or
+passing `2` retains the existing defaults for these paths. The CLI does not
+expose an option for this setting.
+
+The following example sets the image model-call limit to `4`. Measure
+throughput, GPU memory use, and retrieval quality on representative inputs
+before selecting a value.
+
+```python
+from nemo_retriever import create_ingestor
+from nemo_retriever.common.params import EmbedParams
+
+results = (
+    create_ingestor(run_mode="batch")
+    .files("./data/*.pdf")
+    .extract()
+    .embed(
+        EmbedParams(
+            local_ingest_embed_backend="hf",
+            embed_modality="image",
+            embed_granularity="page",
+            local_hf_image_batch_size=4,
+        )
+    )
+    .ingest()
+)
+```
+
 ### Service ingest { #service-ingestor }
 
 `create_ingestor(run_mode="service")` returns `ServiceIngestor`. Import the class from `nemo_retriever.service.service_ingestor`. `ingest()` returns `ServiceIngestResult`.

@@ -694,6 +694,7 @@ class EmbedParams(_ParamsModel):
         "vllm"  # "vllm" or "hf" — selects ingest-time embedder backend for both text and VL models
     )
     query_max_length: int = 128
+    local_hf_image_batch_size: int = Field(default=2, strict=True, ge=1, le=8)
     dimensions: Optional[int] = None
 
     # Concurrent HTTP embedding requests per Ray batch (OpenAI-compatible NIM).
@@ -702,6 +703,24 @@ class EmbedParams(_ParamsModel):
 
     runtime: ModelRuntimeParams = Field(default_factory=ModelRuntimeParams)
     batch_tuning: BatchTuningParams = Field(default_factory=BatchTuningParams)
+
+    @field_validator("local_hf_image_batch_size", mode="before")
+    @classmethod
+    def _validate_local_hf_image_batch_size(cls, value: object) -> int:
+        from nemo_retriever.models.local_hf_image_batch import validate_local_hf_image_batch_size
+
+        return validate_local_hf_image_batch_size(value)
+
+    @model_validator(mode="after")
+    def _validate_local_hf_image_batch_scope(self) -> "EmbedParams":
+        from nemo_retriever.models.local_hf_image_batch import validate_local_hf_image_batch_scope
+
+        validate_local_hf_image_batch_scope(
+            self.local_hf_image_batch_size,
+            backend=self.local_ingest_embed_backend,
+            endpoint=self.embedding_endpoint or self.embed_invoke_url,
+        )
+        return self
 
     @field_validator("local_ingest_embed_backend", mode="before")
     @classmethod

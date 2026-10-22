@@ -75,6 +75,18 @@ def resolve_graph(
                     update={"model_name": model_name, "embed_model_name": model_name, "embed_model_revision": revision}
                 )
                 resolved_kwargs["params"] = params
+            if params.local_hf_image_batch_size != 2:
+                from nemo_retriever.models.inference.shared import build_embed_kwargs
+                from nemo_retriever.models.local_embedder_spec import LocalEmbedderSpec
+                from nemo_retriever.models.local_hf_image_batch import validate_local_hf_image_batch_scope
+
+                validate_local_hf_image_batch_scope(
+                    params.local_hf_image_batch_size,
+                    backend=params.local_ingest_embed_backend,
+                    endpoint=params.embedding_endpoint or params.embed_invoke_url,
+                    local=local,
+                )
+                LocalEmbedderSpec.from_config(build_embed_kwargs(params))
             embedding_stage = (params, local)
         if resolved_kwargs.pop("_embedding_params", None) is not None:
             if embedding_stage is None:

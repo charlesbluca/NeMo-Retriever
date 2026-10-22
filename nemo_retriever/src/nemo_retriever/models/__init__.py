@@ -127,6 +127,7 @@ def create_local_embedder(
     max_length: int = 8192,
     query_max_length: int = 128,
     revision: str | None = None,
+    local_hf_image_batch_size: int = 2,
 ) -> Any:
     """Create the appropriate local embedding model (VL or non-VL).
 
@@ -150,6 +151,10 @@ def create_local_embedder(
     before construction. Backend-specific runtime options are ignored by
     loaders that do not support them.
 
+    ``local_hf_image_batch_size`` is a strict integer from one to eight,
+    defaulting to two. Nondefault values require the local HF Nemotron 3.5
+    adapter and affect only image-bearing model calls, not text-only batches.
+
     Local checkpoints and compatible Hub fine-tunes are routed from their
     immutable config. Compatibility requires a supported dense Nemotron
     embedding architecture and average pooling. Output dimensions and text
@@ -159,6 +164,9 @@ def create_local_embedder(
     if b not in ("vllm", "hf"):
         raise ValueError(f"backend must be 'vllm' or 'hf', got {backend!r}")
 
+    from nemo_retriever.models.local_hf_image_batch import validate_local_hf_image_batch_scope
+
+    validate_local_hf_image_batch_scope(local_hf_image_batch_size, backend=b)
     model_id = resolve_local_embed_model(model_name, backend=b)
     spec = resolve_embed_model_spec(model_id, revision=revision, hf_cache_dir=hf_cache_dir)
     return _create_local_embedder_from_spec(
@@ -172,6 +180,7 @@ def create_local_embedder(
         normalize=normalize,
         max_length=max_length,
         query_max_length=query_max_length,
+        local_hf_image_batch_size=local_hf_image_batch_size,
     )
 
 
@@ -187,10 +196,14 @@ def _create_local_embedder_from_spec(
     normalize: bool,
     max_length: int,
     query_max_length: int,
+    local_hf_image_batch_size: int = 2,
 ) -> Any:
     """Construct from already-resolved metadata without another checkpoint lookup."""
     b = backend
     model_id = spec.model_id
+    from nemo_retriever.models.local_hf_image_batch import validate_local_hf_image_batch_scope
+
+    validate_local_hf_image_batch_scope(local_hf_image_batch_size, backend=b, model_type=spec.model_type)
     validate_embed_model_backend(spec, b)
     effective_max_length = min(int(max_length), spec.max_input_tokens) if spec.max_input_tokens else int(max_length)
     effective_query_max_length = (
@@ -215,6 +228,7 @@ def _create_local_embedder_from_spec(
             query_max_length=effective_query_max_length,
             gpu_memory_utilization=gpu_memory_utilization,
             enforce_eager=enforce_eager,
+            local_hf_image_batch_size=local_hf_image_batch_size,
         )
 
     if spec.family == "vl":
@@ -315,6 +329,7 @@ def create_local_query_embedder(
     max_length: int = 8192,
     query_max_length: int = 128,
     revision: str | None = None,
+    local_hf_image_batch_size: int = 2,
 ) -> Any:
     """Create a local embedder for *query* vectors in retrieval (Retriever / recall).
 
@@ -340,6 +355,7 @@ def create_local_query_embedder(
         max_length=int(max_length),
         query_max_length=int(query_max_length),
         revision=revision,
+        local_hf_image_batch_size=local_hf_image_batch_size,
     )
 
 

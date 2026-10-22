@@ -36,6 +36,7 @@ class Nemotron35Embedder:
     query_max_length: int = 128
     gpu_memory_utilization: float = 0.45
     enforce_eager: bool = False
+    local_hf_image_batch_size: int = 2
     _model: Any = field(default=None, init=False, repr=False)
     _processor: Any = field(default=None, init=False, repr=False)
     _template: str | None = field(default=None, init=False, repr=False)
@@ -44,6 +45,9 @@ class Nemotron35Embedder:
         """Validate configuration; raise ValueError for unsupported backend, limits, or dimensions."""
         if self.backend not in {"hf", "vllm"}:
             raise ValueError("Nemotron 3.5 embedding backend must be 'hf' or 'vllm'.")
+        from nemo_retriever.models.local_hf_image_batch import validate_local_hf_image_batch_scope
+
+        validate_local_hf_image_batch_scope(self.local_hf_image_batch_size, backend=self.backend, model_type="mistral3")
         if min(self.max_length, self.query_max_length) <= 0:
             raise ValueError("Embedding input limits must be positive.")
         if self.dimensions not in {None, self.output_dimension}:
@@ -118,7 +122,7 @@ class Nemotron35Embedder:
         prompts = [render_retrieval_input(self._template, prefix, text, image=images is not None) for text in texts]
         step = max(1, int(batch_size))
         if self.backend == "hf":
-            step = min(step, 2 if images is not None else 8)
+            step = min(step, self.local_hf_image_batch_size if images is not None else 8)
         outputs = []
         for i in range(0, len(prompts), step):
             current = prompts[i : i + step]
@@ -331,7 +335,8 @@ class Nemotron35Embedder:
             Base64-encoded images. Full page images are accepted; the checkpoint
             processor applies its native resizing and expands image tokens.
         batch_size : int
-            Requested microbatch size, clamped to at least one; HF caps it at two.
+            Requested microbatch size, clamped to at least one; HF image calls are
+            capped by local_hf_image_batch_size (default two, maximum eight).
 
         Returns
         -------
@@ -367,7 +372,8 @@ class Nemotron35Embedder:
         images_b64 : Sequence[str]
             Base64-encoded images in output order, including full rendered pages.
         batch_size : int
-            Requested microbatch size, clamped to at least one; HF caps it at two.
+            Requested microbatch size, clamped to at least one; HF image calls are
+            capped by local_hf_image_batch_size (default two, maximum eight).
 
         Returns
         -------

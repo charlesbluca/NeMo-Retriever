@@ -274,6 +274,7 @@ class InputAuditSink:
             return {
                 "model_id": adapter.model_id,
                 "declared_revision": adapter.revision,
+                "local_hf_image_batch_size": adapter.local_hf_image_batch_size,
                 "resolved_config_commit": getattr(config, "_commit_hash", None),
                 "weight_hash_verified_here": False,
                 "model_config_sha256": self.bytes_hash("model-config", _canonical(config.to_dict())),

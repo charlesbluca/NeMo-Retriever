@@ -756,6 +756,16 @@ class ServiceIngestor(ingestor):
             from nemo_retriever.common.policy import _DEFAULT_ALLOWED_EMBED_KEYS
 
             merged = _merge_params(params, kwargs)
+            # The service allowlist does not expose this local-only option.
+            # Reject an explicit tuning request instead of silently filtering it.
+            from nemo_retriever.models.local_hf_image_batch import validate_local_hf_image_batch_scope
+
+            cap = (
+                merged.get("local_hf_image_batch_size", 2)
+                if isinstance(merged, dict)
+                else getattr(merged, "local_hf_image_batch_size", 2)
+            )
+            validate_local_hf_image_batch_scope(cap, backend="service")
             _wire_client_stage_params(
                 self._pipeline_spec,
                 "embed_params",

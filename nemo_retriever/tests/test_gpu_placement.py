@@ -205,7 +205,7 @@ def owner(tmp_path, monkeypatch):
     value.token = "owner"
     value.pid = os.getpid()
     value.lock = threading.Lock()
-    value.cursors = {}
+    value.observed_names = set()
     value.registered = set()
     value.issued = []
     value.pg = SimpleNamespace(id="abc", ready=lambda: "ready")
@@ -220,11 +220,15 @@ def owner(tmp_path, monkeypatch):
     value.receipt = {"schema_version": 1, "policy": "balanced_four_gpu", "terminal_iterator_closed": True}
     removed, killed = [], []
 
-    def absent(name, **kwargs):
-        raise ValueError(name)
+    registered = set()
+
+    def lookup(name, **kwargs):
+        if name not in registered:
+            raise ValueError(name)
+        return SimpleNamespace()
 
     value.ray = SimpleNamespace(
-        get_actor=absent, kill=lambda actor, **kw: killed.append(actor), available_resources=lambda: {"GPU": 4}
+        get_actor=lookup, kill=lambda actor, **kw: killed.append(actor), available_resources=lambda: {"GPU": 4}
     )
     group_module = ModuleType("ray.util.placement_group")
     group_module.placement_group_table = lambda group: {"state": "REMOVED"}
@@ -236,40 +240,69 @@ def owner(tmp_path, monkeypatch):
     monkeypatch.setitem(sys.modules, "ray.util.scheduling_strategies", strategy)
     monkeypatch.setattr(placement, "_process_start_ticks", lambda pid: None)
     monkeypatch.setitem(placement._OWNERS, value.token, value)
-    value.test_removed, value.test_killed = removed, killed
+    value.test_removed, value.test_killed, value.test_registered = removed, killed, registered
     return value
 
 
-def test_slot_callback_serialization_keeps_one_owner_cursor_and_no_lock(owner):
+def test_slot_callback_introspection_and_serialization_do_not_consume_pending_slot(owner):
     callback = owner.register("PageElementDetectionActor")
     copied = pickle.loads(pickle.dumps(callback))
-    first, second = callback(), copied()
+    first = callback()
+    assert all(copied()["name"] == first["name"] for _ in range(20))
+    owner.test_registered.add(first["name"])
+    second = copied()
     assert first["name"] != second["name"]
     assert second["scheduling_strategy"].placement_group_bundle_index == 1
-    assert set(first) == {"name", "scheduling_strategy"}  # Runtime env and resource kwargs are preserved.
-    with pytest.raises(RuntimeError, match="overflow"):
-        copied()
+    assert set(first) == {"name", "get_if_exists", "scheduling_strategy"}
+    assert first["get_if_exists"] is False
+    owner.test_registered.add(second["name"])
+    assert all(copied()["name"] == second["name"] for _ in range(20))
     with pytest.raises(RuntimeError, match="reused"):
         owner.register("PageElementDetectionActor")
 
 
-def test_parallel_callback_has_exactly_eight_noncycling_embedding_slots(owner):
+def test_parallel_pending_introspection_does_not_guess_creation_or_cycle(owner):
     callback = owner.register("_BatchEmbedActor")
     with ThreadPoolExecutor(max_workers=4) as pool:
         options = list(pool.map(lambda _: callback(), range(8)))
-    assert len({option["name"] for option in options}) == 8
-    assert sorted(option["scheduling_strategy"].placement_group_bundle_index for option in options) == [
-        0,
-        0,
-        1,
-        1,
-        2,
-        2,
-        3,
-        3,
-    ]
-    with pytest.raises(RuntimeError):
-        callback()
+    assert len({option["name"] for option in options}) == 1
+    assert options[0]["scheduling_strategy"].placement_group_bundle_index == 0
+    for index, name in enumerate(owner.actor_names("_BatchEmbedActor")):
+        assert callback()["name"] == name
+        owner.test_registered.add(name)
+    assert callback()["name"] == owner.actor_names("_BatchEmbedActor")[-1]
+
+
+def test_observed_registration_is_a_permanent_tombstone_after_name_disappears(owner):
+    callback = owner.register("PageElementDetectionActor")
+    first = callback()["name"]
+    owner.test_registered.add(first)
+    second = callback()["name"]
+    owner.test_registered.remove(first)
+    assert callback()["name"] == second
+
+
+def test_exclusive_constructor_claim_advances_pending_without_registration_visibility(owner):
+    callback = owner.register("PageElementDetectionActor")
+    record = next(r for r in records() if r["role"] == "PageElementDetectionActor" and r["slot"] == 0)
+    placement._claim_actor_slot(owner.directory, record)
+    assert callback()["name"] == owner.actor_names("PageElementDetectionActor")[1]
+    with pytest.raises(RuntimeError, match="recreation"):
+        placement._claim_actor_slot(owner.directory, record)
+
+
+def test_concurrent_constructor_claims_allow_exactly_one_winner(owner):
+    record = records()[0]
+
+    def claim(_):
+        try:
+            placement._claim_actor_slot(owner.directory, record)
+            return True
+        except RuntimeError:
+            return False
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        assert sum(pool.map(claim, range(8))) == 1
 
 
 def test_callback_rejects_foreign_process_and_closed_generation(owner):
@@ -460,6 +493,19 @@ def test_lazy_hf_preserves_normal_constructor_and_batch_without_extra_load(actor
     assert calls == [("construct", "unchanged"), ("batch", batch)]
     assert adapter._placement_record["state"] == "ready"
     assert adapter._placement_record["model_devices"] == ["cuda:0"]
+
+
+def test_duplicate_slot_cannot_reconstruct_underlying_operator(actor_context):
+    calls = []
+
+    class Operator:
+        def __init__(self):
+            calls.append("construct")
+
+    placement.PlacementOperatorAdapter(Operator, {}, actor_context)
+    with pytest.raises(RuntimeError, match="recreation"):
+        placement.PlacementOperatorAdapter(Operator, {}, actor_context)
+    assert calls == ["construct"]
 
 
 def test_lazy_hf_cpu_fallback_is_failed_after_existing_batch(actor_context):

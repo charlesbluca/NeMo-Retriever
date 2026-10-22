@@ -139,6 +139,26 @@ def _process_start_ticks(pid: int) -> int | None:
         return None
 
 
+def _claim_actor_slot(directory: Path, record: dict[str, Any]) -> None:
+    """Admit at most one constructor per role/slot for this owner generation."""
+    role, slot = record["role"], record["slot"]
+    if (
+        role not in ROLE_BUNDLES
+        or type(slot) is not int
+        or not 0 <= slot < len(ROLE_BUNDLES[role])
+        or record["actor_name"] != f"nrl-{record['owner']}-{role}-{slot}"
+    ):
+        raise RuntimeError("GPU actor constructor has an invalid owned slot")
+    claims = directory / "claims"
+    claims.mkdir(mode=0o700, exist_ok=True)
+    claimed = claims / f"{role}-{slot}"
+    try:
+        claimed.mkdir(mode=0o700)
+    except FileExistsError as error:
+        raise RuntimeError("GPU placement actor slot was already claimed; recreation is not admitted") from error
+    _save(claimed / "claim.yaml", record)
+
+
 @dataclass(frozen=True)
 class SlotCallback:
     """Serializable token only; mutable allocation/lock stays on its driver."""
@@ -158,7 +178,6 @@ class PlacementOperatorAdapter:
 
     def __init__(self, operator_class: type, operator_kwargs: dict[str, Any], placement: dict[str, Any]) -> None:
         import ray
-        import torch
 
         context = ray.get_runtime_context()
         name = context.get_actor_name()
@@ -170,9 +189,6 @@ class PlacementOperatorAdapter:
         accelerator_ids = context.get_accelerator_ids().get("GPU", [])
         if pg_id != placement["group_id"] or len(accelerator_ids) != 1:
             raise RuntimeError("GPU actor is outside its owned placement group or single-GPU slot")
-        gpu_uuid = _gpu_uuid(torch.cuda.get_device_properties(0).uuid)
-        if gpu_uuid not in placement["allowed_GPU_UUIDs"]:
-            raise RuntimeError("GPU actor is outside the admitted physical GPU UUID lease")
         record = {
             "schema_version": 1,
             "owner": placement["owner"],
@@ -189,9 +205,17 @@ class PlacementOperatorAdapter:
             "process_start_ticks": _process_start_ticks(os.getpid()),
             "accelerator_ids": list(accelerator_ids),
             "CUDA_VISIBLE_DEVICES": os.environ.get("CUDA_VISIBLE_DEVICES", ""),
-            "GPU_UUID": gpu_uuid,
             "state": "constructing",
         }
+        # Read-only remote-argument inspection never claims a slot. A real
+        # constructor claims it atomically before CUDA or operator/model work.
+        _claim_actor_slot(Path(placement["directory"]), record)
+        import torch
+
+        gpu_uuid = _gpu_uuid(torch.cuda.get_device_properties(0).uuid)
+        if gpu_uuid not in placement["allowed_GPU_UUIDs"]:
+            raise RuntimeError("GPU actor is outside the admitted physical GPU UUID lease")
+        record["GPU_UUID"] = gpu_uuid
         path = Path(placement["directory"]) / f"{record['actor_id']}-{os.getpid()}.yaml"
         self._placement_record = record
         self._placement_path = path
@@ -242,7 +266,7 @@ class BalancedPlacement:
         self.token = uuid.uuid4().hex
         self.pid = os.getpid()
         self.lock = threading.Lock()
-        self.cursors: dict[str, int] = {}
+        self.observed_names: set[str] = set()
         self.registered: set[str] = set()
         self.issued: list[str] = []
         self.pg = None
@@ -287,6 +311,8 @@ class BalancedPlacement:
                         "lifetime",
                         "max_restarts",
                         "runtime_env",
+                        "namespace",
+                        "get_if_exists",
                     )
                 ):
                     raise ValueError("balanced_four_gpu rejects custom actor scheduling/lifecycle overrides")
@@ -373,7 +399,6 @@ class BalancedPlacement:
             if role in self.registered or role not in ROLE_BUNDLES:
                 raise RuntimeError("GPU placement role was reused or is unsupported")
             self.registered.add(role)
-            self.cursors[role] = 0
         return SlotCallback(self.token, role, self.pid)
 
     def actor_names(self, role: str) -> list[str]:
@@ -383,14 +408,31 @@ class BalancedPlacement:
         from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
         with self.lock:
-            cursor = self.cursors[role]
-            if cursor >= len(ROLE_BUNDLES[role]) or self.startup_error:
-                raise RuntimeError("GPU placement actor replacement/overflow is not admitted")
-            self.cursors[role] += 1
-            name = self.actor_names(role)[cursor]
-            self.issued.append(name)
+            if role not in self.registered:
+                raise RuntimeError("GPU placement callback role is not registered")
+            if self.startup_error:
+                raise RuntimeError(self.startup_error)
+            names = self.actor_names(role)
+            # Ray calls this function for diagnostics as well as creation.
+            # Only actual named registration or a permanent constructor claim
+            # advances the pending slot. Do not retain get_actor strong refs.
+            cursor = len(names) - 1
+            for index, name in enumerate(names):
+                if name not in self.observed_names:
+                    claimed = (self.directory / "claims" / f"{role}-{index}").exists()
+                    if not claimed:
+                        try:
+                            self.ray.get_actor(name, namespace=self.namespace)
+                        except ValueError:
+                            cursor = index
+                            break
+                    self.observed_names.add(name)
+            name = names[cursor]
+            if name not in self.issued:
+                self.issued.append(name)
         return {
             "name": name,
+            "get_if_exists": False,
             "scheduling_strategy": PlacementGroupSchedulingStrategy(
                 placement_group=self.pg,
                 placement_group_bundle_index=ROLE_BUNDLES[role][cursor],
@@ -412,7 +454,15 @@ class BalancedPlacement:
     def _records(self) -> list[dict[str, Any]]:
         import yaml
 
-        return [yaml.safe_load(path.read_text()) for path in sorted(self.directory.glob("*.yaml"))]
+        records = {}
+        for path in [*sorted((self.directory / "claims").glob("*/claim.yaml")), *sorted(self.directory.glob("*.yaml"))]:
+            record = yaml.safe_load(path.read_text())
+            name = record["actor_name"]
+            previous = records.get(name)
+            if previous is not None and any(previous[key] != record[key] for key in ("actor_id", "pid", "owner")):
+                raise RuntimeError("GPU placement claim and constructor identity differ")
+            records[name] = record
+        return list(records.values())
 
     def _startup_watch(self) -> None:
         from ray.util.placement_group import remove_placement_group

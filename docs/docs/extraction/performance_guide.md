@@ -175,8 +175,12 @@ evidence. Check actual GPU UUIDs and successful resource release before you
 treat a run as placement-qualified. The property returns `None` for legacy
 placement and before an enabled execution produces a receipt.
 
-The fixed pools do not grow or reuse completed actor slots. An unexpected
-actor allocation beyond the declared slots fails the execution.
+On the `mr/b200-placement-callback-claims` follow-up branch, Ray's read-only
+scheduling inspections do not consume actor slots, including after all slots
+are registered. A real actor constructor claims its slot before CUDA
+inspection or underlying model construction. That claim remains for the
+owned execution after the actor dies. The fixed pools reject duplicate
+construction and replacement; they do not grow or reuse slots.
 
 Actor readiness requires verified CUDA model parameters. Local Hugging Face
 embedding models load lazily on their first normal batch. Their placement

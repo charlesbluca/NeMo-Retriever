@@ -148,6 +148,12 @@ validation can fail before a placement receipt exists.
 `KeyboardInterrupt` and `SystemExit` keep their types and receive a
 `gpu_placement_receipt` attribute after the owned execution cleans up.
 
+Ray `2.56.1` uses `HighMemoryIssueDetector` to inspect dynamic scheduling
+arguments during normal execution. The `mr/b200-placement-callback-claims`
+follow-up permits repeated inspections, including after all actors register.
+These read-only calls do not create actors or consume slots. Keep Ray's issue
+detection enabled.
+
 Use the failing phase to select the corrective action.
 
 | Failing phase | Checks |
@@ -155,7 +161,7 @@ Use the failing phase to select the corrective action.
 | Configuration or graph admission | Use `run_mode="batch"` with an ingestor-owned local Ray runtime. Omit `ray_address`, and do not reuse a runtime initialized externally or by legacy ingestion. Use one PDF branch, local Page Elements and OCR, local Hugging Face embedding, and disabled Table Structure. Remove unsupported GPU stages and scheduling overrides. |
 | Resource preflight | Set Page Elements, OCR, and embedding worker counts to `2`, `4`, and `8`. Request `1` CPU and `0.25` GPU per actor. Allow `16` CPUs for the group plus CPU capacity for PDF, source, and other work outside it. |
 | Placement-group readiness or actor startup | Set an explicit `CUDA_VISIBLE_DEVICES` value with four distinct GPU indices or UUIDs before Ray starts. Confirm that the runtime can reserve all four bundles on one node. A Hugging Face actor reaches `ready` after its first normal batch verifies CUDA parameters. Check resource availability, data flow, and actor logs before raising `gpu_placement_ready_timeout_s`. Its default is `60.0` seconds. |
-| Unexpected actor allocation | Use the fixed pools without adaptive concurrency or additional consumers. The policy rejects new allocations beyond the exact role-slot counts. |
+| Duplicate or replacement actor construction | Use the fixed pools without adaptive concurrency or additional consumers. Permanent constructor claims reject reuse even after an actor name disappears. The callback-claim follow-up permits repeated scheduling inspection while retaining this restriction. |
 | Actor placement verification | Retain the creator job and node identities, owner, placement-group, role-slot, model-device, Ray accelerator, and physical GPU UUID observations. Logical `cuda:0` or a bundle number alone does not prove physical GPU placement. |
 | Cleanup | Retain the terminal cleanup status and any original ingest error. Check `terminal_iterator_closed`, `cleanup.actor_processes_exited`, `cleanup.owned_group_removed`, and `cleanup.GPU_resources_released` before starting query models or another ingest. Forced cleanup fails qualification. |
 

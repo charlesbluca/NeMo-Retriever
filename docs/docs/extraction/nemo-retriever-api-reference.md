@@ -632,6 +632,13 @@ Hugging Face embedding actors remain `constructed` until their first normal
 batch verifies CUDA model parameters. They then become `ready`. This policy
 does not eagerly load their models or add synthetic inference.
 
+The `mr/b200-placement-callback-claims` follow-up preserves slots during
+Ray's read-only scheduling inspections. Real constructors claim slots before
+CUDA inspection or underlying model construction. Claims persist for the
+owned execution and reject reconstruction after actor death. Actor creation
+uses `get_if_exists=False`; custom `namespace` and `get_if_exists` overrides
+are rejected.
+
 The typed workflow records enabled-policy evidence in
 `IngestExecutionResult.run_metadata["gpu_placement"]`.
 `IngestExecutionResult.to_summary_dict()` also includes a `gpu_placement`

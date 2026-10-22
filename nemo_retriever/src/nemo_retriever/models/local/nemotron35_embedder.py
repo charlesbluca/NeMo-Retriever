@@ -146,7 +146,7 @@ class Nemotron35Embedder:
                         "shorten the text or increase the configured limit within the checkpoint maximum."
                     )
             if audit is not None:
-                audit.processor(batch, texts[i:i + step], current, i)
+                audit.processor(batch, texts[i : i + step], current, i)
             if self.backend == "hf":
                 batch = batch.to(self._model.device)
                 # Position real tokens independently of padding side/batch peers.

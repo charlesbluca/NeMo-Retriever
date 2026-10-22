@@ -75,6 +75,16 @@ def test_build_embed_option_kwargs_propagates_reshape_workers():
     assert kwargs["batch_tuning"].embed_reshape_workers == 4
 
 
+def test_build_embed_option_kwargs_propagates_repartition_opt_out():
+    kwargs = build_embed_option_kwargs(
+        "https://embed.example.com/v1/embeddings",
+        "nvidia/Nemotron-3.5-Embed-1B-BF16",
+        embed_repartition=False,
+    )
+
+    assert kwargs["batch_tuning"].embed_repartition is False
+
+
 def test_build_embed_option_kwargs_defers_remote_model_provider_prefix():
     kwargs = build_embed_option_kwargs(
         "https://litellm.example.com/v1/embeddings",

@@ -375,12 +375,66 @@ For LiteLLM `nvidia_nim/...` models, including the default `LiteLLMClient` and `
 
 Serializing a graph containing a literal API key fails with a contextual error instead of guessing which provider credential should be used on a worker.
 
+## Tune HNSW search { #hnsw-query-ef }
+
+!!! note "Development branch option"
+
+    Explicit `ef` is under development. It is not available in current
+    NVIDIA `main` or a released package.
+
+For LanceDB HNSW indexes, `ef` controls the search candidate list size. Larger
+values can improve recall at the cost of query latency. They do not guarantee
+that indexed search matches exhaustive search. This setting applies to dense
+retrieval and the vector search in hybrid retrieval.
+
+Pass a positive Python integer to set `ef`. Booleans, floating-point values,
+strings, zero, and negative values raise `ValueError`. The default, `None`,
+leaves the native LanceDB builder setting unchanged. It does not establish an
+effective numeric default.
+
+Use `QueryRetrievalOptions.ef` with the typed local query workflow.
+
+```python
+from nemo_retriever.query.options import (
+    QueryRequest,
+    QueryRetrievalOptions,
+    QueryStorageOptions,
+)
+from nemo_retriever.query.workflow import query_documents
+
+hits = query_documents(
+    QueryRequest(
+        query="What methods improve document retrieval?",
+        retrieval=QueryRetrievalOptions(retrieval_mode="dense", ef=256),
+        storage=QueryStorageOptions(lancedb_uri="./lancedb", table_name="nemo-retriever"),
+    )
+)
+```
+
+`Retriever.query()` also accepts `ef` in its per-query `vdb_kwargs`.
+
+```python
+from nemo_retriever.graph.retriever import Retriever
+
+retriever = Retriever(vdb_kwargs={"uri": "./lancedb", "table_name": "nemo-retriever"})
+hits = retriever.query("What methods improve document retrieval?", vdb_kwargs={"ef": 256})
+```
+
+The value `256` is an example, not a recommended setting. Tune it against your
+own retrieval-quality and latency measurements. `ef` does not change `top_k`
+or the `candidate_k` result bound.
+
+Sparse retrieval rejects explicit `ef`. Typed service and agentic query
+workflows also reject it rather than ignoring it. The CLI does not expose an
+`--ef` option.
+
 ## Compare indexed and exact dense search { #indexed-exact-dense-search }
 
 !!! note "Development branch diagnostic"
 
-    `Retriever.query_compare_exact()` is under development. It is not
-    available in current NVIDIA `main` or a released package.
+    `Retriever.query_compare_exact()` and explicit `ef` tuning are under
+    development. These APIs are not available in current NVIDIA `main` or a
+    released package.
 
 Use `Retriever.query_compare_exact()` to compare approximate nearest neighbor
 (ANN) search with exhaustive dense search. The method embeds your query once
@@ -425,6 +479,13 @@ results after normal hit shaping. `candidate_k` controls the candidate bound
 shared by both searches and must be at least `top_k`. The method also
 accepts `page_dedup`, `content_types`, `vdb_kwargs`, and `embed_kwargs`.
 
+To tune HNSW search, pass `vdb_kwargs={"ef": 256}` to
+`query_compare_exact()`. Only the indexed search applies this value. The exact
+search never applies `ef`. The evidence field `indexed_ef` records the explicit
+integer, or `None` when you request the native default. It does not report the
+native effective value. Refer to [Tune HNSW search](#hnsw-query-ef) for accepted
+values and tuning guidance.
+
 For an overlength query, the normal embedding path can produce multiple rows.
 Both searches receive those rows in the same order and apply the existing
 fusion policy independently. Each call accepts up to 256 expanded query rows
@@ -455,10 +516,11 @@ call clears its temporary capture state. Query vectors are not cached by query
 text. The hit lists retain their normal document text and metadata, so they
 are separate from the hash-only evidence privacy contract.
 
-The indexed search retains its normal index settings. The exact search calls
-LanceDB's `bypass_vector_index()` query-builder method to scan the stored
-vectors. It does not rebuild the index or re-ingest documents. ANN probe and
-refinement settings do not tune the exhaustive search.
+The indexed search applies `ef` only when you supply it. The exact search
+calls LanceDB's `bypass_vector_index()`
+query-builder method to scan the stored vectors. It does not rebuild the index
+or re-ingest documents. ANN probe, refinement, and `ef` settings do not tune
+the exhaustive search.
 
 ### Interpret the comparison { #indexed-exact-interpretation }
 

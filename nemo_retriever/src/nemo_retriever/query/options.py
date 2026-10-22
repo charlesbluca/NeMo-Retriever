@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from typing import Literal, Sequence
 
 from nemo_retriever.common.params import EmbedInputAuditParams
+from nemo_retriever.common.vdb.query_options import validate_hnsw_ef
 
 QueryRetrievalMode = Literal["auto", "dense", "hybrid", "sparse"]
 
@@ -21,6 +22,13 @@ class QueryRetrievalOptions:
     # ``auto`` lets LanceDB table capability detection choose dense, hybrid, or
     # sparse retrieval. Explicit modes are expert overrides.
     retrieval_mode: QueryRetrievalMode = "auto"
+    # None preserves LanceDB's native HNSW search default.
+    ef: int | None = None
+
+    def __post_init__(self) -> None:
+        validate_hnsw_ef(self.ef)
+        if self.ef is not None and self.retrieval_mode == "sparse":
+            raise ValueError("ef requires dense or hybrid LanceDB retrieval.")
 
 
 @dataclass(frozen=True)
@@ -96,3 +104,7 @@ class ServiceQueryRequest:
     query: str
     retrieval: QueryRetrievalOptions = field(default_factory=QueryRetrievalOptions)
     service: QueryServiceOptions = field(default_factory=QueryServiceOptions)
+
+    def __post_init__(self) -> None:
+        if self.retrieval.ef is not None:
+            raise ValueError("ef is not supported by service query requests.")

@@ -17,6 +17,7 @@ from nemo_retriever.models.hf_cache import collect_hf_runtime_env
 
 _UV_ENV_VARS = ("UV", "UV_RUN_RECURSION_DEPTH")
 _RAY_UV_RUNTIME_ENV_FLAG = "RAY_ENABLE_UV_RUN_RUNTIME_ENV"
+_LOCAL_RUNTIME_OWNER: tuple[int, str] | None = None
 
 
 @contextmanager
@@ -63,13 +64,17 @@ def build_local_ray_runtime_env() -> dict[str, Any]:
     return {"env_vars": ray_env_vars, "py_executable": sys.executable}
 
 
-def ensure_local_ray_runtime(ray_address: str | None = None, *, log_to_driver: bool | None = None) -> object:
+def ensure_local_ray_runtime(
+    ray_address: str | None = None, *, log_to_driver: bool | None = None, record_local_owner: bool = False
+) -> object:
     """Import Ray and initialize it with Retriever's local worker runtime env."""
 
+    global _LOCAL_RUNTIME_OWNER
     with without_uv_run_env():
         import ray
 
         disable_ray_uv_runtime_env_hook(ray)
+        fresh_local = not ray_address and not ray.is_initialized()
         if ray_address or not ray.is_initialized():
             init_kwargs: dict[str, Any] = {
                 "address": ray_address,
@@ -79,4 +84,19 @@ def ensure_local_ray_runtime(ray_address: str | None = None, *, log_to_driver: b
             if log_to_driver is not None:
                 init_kwargs["log_to_driver"] = log_to_driver
             ray.init(**init_kwargs)
+            if fresh_local and record_local_owner:
+                context = getattr(ray, "get_runtime_context", None)
+                if not callable(context):
+                    raise ValueError("balanced_four_gpu requires Ray runtime ownership metadata")
+                _LOCAL_RUNTIME_OWNER = (os.getpid(), str(context().get_job_id()))
         return ray
+
+
+def require_owned_local_ray_runtime(ray: object) -> None:
+    """Reject external/preinitialized runtimes for the opt-in placement owner."""
+    if _LOCAL_RUNTIME_OWNER != (os.getpid(), str(ray.get_runtime_context().get_job_id())):
+        raise ValueError("balanced_four_gpu requires a local Ray runtime created by this Retriever process")
+    from ray.util import get_current_placement_group
+
+    if get_current_placement_group() is not None:
+        raise ValueError("balanced_four_gpu does not support a nested placement group")

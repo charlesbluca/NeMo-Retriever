@@ -77,6 +77,131 @@ Related batch-size, CPU, and GPU-per-actor flags are documented in the [CLI inge
 
 Use the Ray dashboard to verify the available-resource snapshot and the planned worker allocation when you tune throughput.
 
+### Place fixed actor pools across four GPUs { #balanced-four-gpu-placement }
+
+!!! note "Development branch option"
+
+    `gpu_placement="balanced_four_gpu"` is available on the
+    `mr/b200-balanced-four-gpu-placement` development branch. It is not
+    available in current NVIDIA `main` or a released package.
+
+The default `gpu_placement="legacy"` preserves the existing Ray scheduling
+path. The opt-in `balanced_four_gpu` policy assigns fixed Page Elements, OCR,
+and local Hugging Face embedding actor pools to one owned Ray placement group.
+
+The first supported configuration requires the following resources and graph.
+
+- A local, single-node Ray batch runtime started by the ingestor, with exactly
+  four visible GPUs. Do not supply `ray_address` or initialize Ray separately.
+- An explicit `CUDA_VISIBLE_DEVICES` value containing four distinct GPU
+  indices or UUIDs in the driver environment before Ray starts.
+- One PDF extraction branch with local Page Elements and OCR, and a local
+  Hugging Face embedding stage.
+- Exactly 2 Page Elements actors, 4 OCR actors, and 8 embedding actors. Each
+  actor requests 1 CPU and 0.25 GPU.
+- Table Structure disabled. A configured worker count for a disabled stage
+  does not create actors.
+
+The policy reserves four bundles, each containing 4 CPUs and 1 GPU, with the
+Ray `STRICT_PACK` strategy. CPU-only PDF, source, and other tasks run outside
+the group. Preflight deducts the 16 reserved CPUs before sizing these tasks
+and their actor pools. The complete CPU plan must fit the available resources.
+
+The planned actor slots use the following bundle mapping.
+
+| Logical bundle | Page Elements actors | OCR actors | Embedding actors |
+| --- | --- | --- | --- |
+| `0` | 1 | 1 | 2 |
+| `1` | 1 | 1 | 2 |
+| `2` | 0 | 1 | 2 |
+| `3` | 0 | 1 | 2 |
+
+Bundle numbers are logical placement identifiers. They are not host GPU
+indices. The policy leaves the unused capacity in bundles `2` and `3`
+reserved until the owned group is removed.
+
+The following example configures the supported fixed pools. Replace the PDF
+path with a file that you supply, and provide enough CPUs for work outside
+the 16-CPU placement group.
+
+```python
+from nemo_retriever import create_ingestor
+from nemo_retriever.common.params import BatchTuningParams
+
+ingestor = (
+    create_ingestor(
+        run_mode="batch",
+        gpu_placement="balanced_four_gpu",
+        gpu_placement_ready_timeout_s=60.0,
+    )
+    .files(["/path/to/your/document.pdf"])
+    .extract(
+        method="pdfium_hybrid",
+        use_page_elements=True,
+        use_table_structure=False,
+        batch_tuning=BatchTuningParams(
+            page_elements_workers=2,
+            page_elements_cpus_per_actor=1,
+            gpu_page_elements=0.25,
+            ocr_workers=4,
+            ocr_cpus_per_actor=1,
+            gpu_ocr=0.25,
+        ),
+    )
+    .embed(
+        local_ingest_embed_backend="hf",
+        batch_tuning=BatchTuningParams(
+            embed_workers=8,
+            embed_cpus_per_actor=1,
+            gpu_embed=0.25,
+        ),
+    )
+)
+chunks = ingestor.ingest()
+placement_receipt = ingestor.gpu_placement_receipt
+```
+
+`gpu_placement_ready_timeout_s` defaults to `60.0` seconds and must be finite
+and positive. A nondefault value requires `gpu_placement="balanced_four_gpu"`.
+The timeout bounds placement-group readiness, actor startup, and group-removal
+waiting separately. Unsupported graph shapes, resource conflicts, and
+placement readiness failures abort ingestion. The policy does not silently
+select legacy scheduling, CPU inference, or additional GPUs.
+
+The ingestor owns the group for the complete extraction and embedding
+execution. It removes only that group during cleanup. After execution,
+`ingestor.gpu_placement_receipt` returns a copy of the placement and cleanup
+evidence. Check actual GPU UUIDs and successful resource release before you
+treat a run as placement-qualified. The property returns `None` for legacy
+placement and before an enabled execution produces a receipt.
+
+The fixed pools do not grow or reuse completed actor slots. An unexpected
+actor allocation beyond the declared slots fails the execution.
+
+Actor readiness requires verified CUDA model parameters. Local Hugging Face
+embedding models load lazily on their first normal batch. Their placement
+state remains `constructed` until that batch verifies CUDA parameters, then
+changes to `ready`. Page Elements and OCR can reach `ready` during
+construction when their CUDA models are already loaded. The policy adds no
+eager embedding-model load or synthetic inference. All 14 actors must reach
+`ready`, and this requirement is included in the actor-startup timeout.
+
+A passed cleanup receipt confirms that the terminal iterator closed, owned
+actor processes exited, the owned group was removed, and all four Ray GPU
+resources became available again. Process-exit checks use recorded PIDs and
+process start times. Forced actor cleanup is recorded as a failure.
+
+This policy changes scheduling. It does not select new models or change
+configured batch sizes, rendering, tokenization, or extraction options.
+Scheduling can still change batch membership and numerical outputs. The
+policy has no qualified throughput or semantic-equivalence claim. Compare
+output quality and end-to-end throughput with matched runs before adopting it.
+
+For configuration details, refer to
+[GPU placement options](nemo-retriever-api-reference.md#gpu-placement-options).
+For failures, refer to
+[Four-GPU placement is rejected or fails](troubleshoot.md#balanced-four-gpu-placement-failures).
+
 ### Control row repartitioning
 
 In batch mode, the following `BatchTuningParams` controls enable size-based Ray

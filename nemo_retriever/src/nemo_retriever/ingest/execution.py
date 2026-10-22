@@ -46,13 +46,16 @@ class IngestExecutionResult:
         return f"{self.lancedb_uri}/{self.table_name}"
 
     def to_summary_dict(self) -> dict[str, Any]:
-        return {
+        summary = {
             "n_documents": len(self.plan.documents),
             "lancedb_uri": self.lancedb_uri,
             "table_name": self.table_name,
             "n_rows": self.n_rows,
             "result_n_rows": self.result_n_rows,
         }
+        if "gpu_placement" in self.run_metadata:
+            summary["gpu_placement"] = self.run_metadata["gpu_placement"]
+        return summary
 
 
 def build_ingest_pipeline(plan: ResolvedIngestPlan) -> Ingestor:
@@ -114,36 +117,52 @@ def execute_ingest_plan(
     if verify_rows and not overwrite:
         initial_n_rows = _count_lancedb_rows(lancedb_uri, table_name)
 
-    result = build_ingest_pipeline(plan).ingest()
-    if plan.sparse:
-        _write_sparse_lancedb_result(result, lancedb_uri=lancedb_uri, table_name=table_name, overwrite=overwrite)
+    ingestor = build_ingest_pipeline(plan)
+    try:
+        result = ingestor.ingest()
+        if plan.sparse:
+            _write_sparse_lancedb_result(result, lancedb_uri=lancedb_uri, table_name=table_name, overwrite=overwrite)
 
-    result_n_rows = _count_result_rows(result) if verify_rows else None
-    n_rows = _count_lancedb_rows(lancedb_uri, table_name) if verify_rows else None
-    if verify_rows and raise_on_empty:
-        _raise_for_empty_ingest(
-            documents=plan.documents,
-            lancedb_uri=lancedb_uri,
-            table_name=table_name,
+        result_n_rows = _count_result_rows(result) if verify_rows else None
+        n_rows = _count_lancedb_rows(lancedb_uri, table_name) if verify_rows else None
+        if verify_rows and raise_on_empty:
+            _raise_for_empty_ingest(
+                documents=plan.documents,
+                lancedb_uri=lancedb_uri,
+                table_name=table_name,
+                n_rows=n_rows,
+                result_n_rows=result_n_rows,
+                initial_n_rows=initial_n_rows,
+            )
+
+        return IngestExecutionResult(
+            plan=plan,
+            result=result,
             n_rows=n_rows,
             result_n_rows=result_n_rows,
             initial_n_rows=initial_n_rows,
+            lancedb_uri=lancedb_uri,
+            table_name=table_name,
+            run_metadata={
+                "lancedb_target": f"{lancedb_uri}/{table_name}",
+                "profile": plan.profile,
+                "branch_summary": format_branch_summary(plan.branches),
+                **(
+                    {"gpu_placement": ingestor.gpu_placement_receipt}
+                    if plan.create_kwargs.get("gpu_placement") == "balanced_four_gpu"
+                    else {}
+                ),
+            },
         )
+    except Exception as exc:
+        if plan.create_kwargs.get("gpu_placement") != "balanced_four_gpu":
+            raise
+        from nemo_retriever.graph.gpu_placement import GpuPlacementError
 
-    return IngestExecutionResult(
-        plan=plan,
-        result=result,
-        n_rows=n_rows,
-        result_n_rows=result_n_rows,
-        initial_n_rows=initial_n_rows,
-        lancedb_uri=lancedb_uri,
-        table_name=table_name,
-        run_metadata={
-            "lancedb_target": f"{lancedb_uri}/{table_name}",
-            "profile": plan.profile,
-            "branch_summary": format_branch_summary(plan.branches),
-        },
-    )
+        receipt = ingestor.gpu_placement_receipt
+        if isinstance(exc, GpuPlacementError) or receipt is None:
+            raise
+        raise GpuPlacementError("Balanced placement workflow failed after ingestion", receipt) from exc
 
 
 def _resolve_lancedb_target(plan: ResolvedIngestPlan) -> tuple[str, str, bool] | None:

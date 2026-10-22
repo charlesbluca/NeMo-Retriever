@@ -405,7 +405,7 @@ from nemo_retriever.query.workflow import query_documents
 hits = query_documents(
     QueryRequest(
         query="What methods improve document retrieval?",
-        retrieval=QueryRetrievalOptions(retrieval_mode="dense", ef=256),
+        retrieval=QueryRetrievalOptions(retrieval_mode="dense", ef=4096),
         storage=QueryStorageOptions(lancedb_uri="./lancedb", table_name="nemo-retriever"),
     )
 )
@@ -417,12 +417,19 @@ hits = query_documents(
 from nemo_retriever.graph.retriever import Retriever
 
 retriever = Retriever(vdb_kwargs={"uri": "./lancedb", "table_name": "nemo-retriever"})
-hits = retriever.query("What methods improve document retrieval?", vdb_kwargs={"ef": 256})
+hits = retriever.query("What methods improve document retrieval?", vdb_kwargs={"ef": 4096})
 ```
 
-The value `256` is an example, not a recommended setting. Tune it against your
-own retrieval-quality and latency measurements. `ef` does not change `top_k`
-or the `candidate_k` result bound.
+With the pinned LanceDB `0.34.0` and `lance-index` `8.0.0`, an explicit `ef`
+must be at least `candidate_limit × refine_factor`. A candidate limit of `50`
+and refinement factor of `50` require `ef >= 2500`. The pinned native source
+computes an omitted `ef` of `3750` for this configuration. That value is
+version-specific, not a stable NeMo Retriever Library default.
+
+The examples use `4096` to satisfy this compatibility bound. This value is
+not a retrieval-quality or latency recommendation. Tune it against your own
+measurements, and check the installed backend's constraints before choosing
+another value. `ef` does not change `top_k` or the `candidate_k` result bound.
 
 Sparse retrieval rejects explicit `ef`. Typed service and agentic query
 workflows also reject it rather than ignoring it. The CLI does not expose an
@@ -479,7 +486,7 @@ results after normal hit shaping. `candidate_k` controls the candidate bound
 shared by both searches and must be at least `top_k`. The method also
 accepts `page_dedup`, `content_types`, `vdb_kwargs`, and `embed_kwargs`.
 
-To tune HNSW search, pass `vdb_kwargs={"ef": 256}` to
+To tune HNSW search, pass `vdb_kwargs={"ef": 4096}` to
 `query_compare_exact()`. Only the indexed search applies this value. The exact
 search never applies `ef`. The evidence field `indexed_ef` records the explicit
 integer, or `None` when you request the native default. It does not report the
@@ -583,6 +590,66 @@ service = create_ingestor(run_mode="service", base_url="http://localhost:7670")
     options:
       heading_level: 4
       show_docstring_description: false
+
+#### GPU placement options { #gpu-placement-options }
+
+!!! note "Development branch option"
+
+    These options are available on `mr/b200-balanced-four-gpu-placement`.
+    They are not available in current NVIDIA `main` or a released package.
+
+`create_ingestor()` and `GraphIngestor` accept the following runtime options.
+Typed ingest plans expose the same fields on
+`nemo_retriever.ingest.plan.IngestRuntimeOptions`.
+
+| Option | Default | Behavior |
+| --- | --- | --- |
+| `gpu_placement` | `"legacy"` | Preserves the existing scheduling path. Set `"balanced_four_gpu"` to request the supported fixed-pool placement policy. Other values are rejected. |
+| `gpu_placement_ready_timeout_s` | `60.0` | Bounds placement-group readiness, actor startup, and group-removal waiting separately, in seconds. The value must be finite and positive. A nondefault value requires `"balanced_four_gpu"`. |
+
+`balanced_four_gpu` supports an ingestor-owned local Ray batch runtime on one
+node with four distinct GPUs explicitly selected by `CUDA_VISIBLE_DEVICES`.
+It requires one PDF extraction branch,
+local Page Elements and OCR, local Hugging Face embedding, and disabled Table
+Structure. Fixed actor counts are 2 for Page Elements, 4 for OCR, and 8 for
+embedding. Each GPU actor requests 1 CPU and 0.25 GPU. The policy rejects
+unsupported graphs or conflicting resource and scheduling overrides.
+
+The policy reserves one placement group for the complete ingest execution.
+Its readiness, actor-placement, and cleanup checks are part of that execution.
+An error does not fall back to legacy placement or CPU inference. The policy
+does not guarantee higher throughput or bit-identical output.
+
+Read `GraphIngestor.gpu_placement_receipt` after execution to obtain a deep
+copy of the creator identities, owner, plan, actor GPU UUIDs, model devices,
+and terminal cleanup observations. The receipt includes outside-group CPU
+and source reservations. Cleanup observations cover iterator closure, physical
+actor process exit, group removal, and returned Ray GPU resources. The
+property returns `None` for legacy placement and before an enabled execution
+produces a receipt.
+
+Hugging Face embedding actors remain `constructed` until their first normal
+batch verifies CUDA model parameters. They then become `ready`. This policy
+does not eagerly load their models or add synthetic inference.
+
+The typed workflow records enabled-policy evidence in
+`IngestExecutionResult.run_metadata["gpu_placement"]`.
+`IngestExecutionResult.to_summary_dict()` also includes a `gpu_placement`
+entry. Legacy execution omits these metadata and summary entries.
+
+Invalid options and early graph admission can raise `ValueError`. Ordinary
+failures inside the owned placement execution raise
+`nemo_retriever.graph.gpu_placement.GpuPlacementError`, a `RuntimeError`
+subclass. Its `gpu_placement_receipt` attribute retains the failure and
+cleanup evidence after the owner exits. Inspect the chained exception for
+the original cause.
+
+`KeyboardInterrupt` and `SystemExit` retain their original types. When they
+pass through the owned execution, they receive a `gpu_placement_receipt`
+attribute after cleanup.
+
+For a complete example and resource accounting, refer to
+[Place fixed actor pools across four GPUs](performance_guide.md#balanced-four-gpu-placement).
 
 ### Graph ingest { #graph-ingestor }
 

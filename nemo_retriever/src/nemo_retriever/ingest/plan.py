@@ -92,6 +92,8 @@ class IngestRuntimeOptions:
     run_mode: IngestRunModeValue = "inprocess"
     ray_address: str | None = None
     ray_log_to_driver: bool | None = None
+    gpu_placement: Literal["legacy", "balanced_four_gpu"] = "legacy"
+    gpu_placement_ready_timeout_s: float = 60.0
 
 
 @dataclass(frozen=True)
@@ -624,6 +626,11 @@ def resolve_ingest_plan(request: IngestPlanRequest) -> ResolvedIngestPlan:
     storage = request.storage
 
     validated_run_mode = _validate_run_mode(runtime.run_mode)
+    from nemo_retriever.graph.gpu_placement import validate_policy
+
+    validate_policy(runtime.gpu_placement, runtime.gpu_placement_ready_timeout_s)
+    if runtime.gpu_placement != "legacy" and (validated_run_mode != "batch" or runtime.ray_address):
+        raise ValueError("balanced_four_gpu requires local batch ingestion")
     validated_profile = validate_ingest_profile(source.profile)
     validated_input_type = validate_ingest_input_type(source.input_type)
     requested_index_mode = validate_ingest_index_mode(storage.index_mode)
@@ -797,6 +804,9 @@ def resolve_ingest_plan(request: IngestPlanRequest) -> ResolvedIngestPlan:
         create_kwargs["ray_address"] = runtime.ray_address
     if runtime.ray_log_to_driver is not None:
         create_kwargs["ray_log_to_driver"] = runtime.ray_log_to_driver
+    if runtime.gpu_placement != "legacy":
+        create_kwargs["gpu_placement"] = runtime.gpu_placement
+        create_kwargs["gpu_placement_ready_timeout_s"] = runtime.gpu_placement_ready_timeout_s
 
     return ResolvedIngestPlan(
         documents=document_list,

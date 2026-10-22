@@ -319,10 +319,18 @@ class IngestorCreateParams(_ParamsModel):
     node_overrides: Optional[dict[str, dict[str, Any]]] = None
     api_key: Optional[str] = None
     error_policy: Literal["raise", "collect"] = "raise"
+    gpu_placement: Literal["legacy", "balanced_four_gpu"] = "legacy"
+    gpu_placement_ready_timeout_s: float = Field(default=60.0, gt=0, allow_inf_nan=False, strict=True)
     # service run mode: maximum number of concurrent page uploads.  Lower
     # values (e.g. 2-4) reduce burst pressure on Kubernetes NodePort /
     # kube-proxy paths that otherwise reset connections under heavy load.
     max_concurrency: Optional[int] = None
+
+    @model_validator(mode="after")
+    def _validate_gpu_placement(self) -> "IngestorCreateParams":
+        if self.gpu_placement == "legacy" and self.gpu_placement_ready_timeout_s != 60.0:
+            raise ValueError("gpu_placement_ready_timeout_s requires balanced_four_gpu")
+        return self
 
 
 class UrlFetchParams(_ParamsModel):

@@ -57,6 +57,8 @@ def create_ingestor(
         parsed = IngestorCreateParams(**merged)
 
     if run_mode == "service":
+        if parsed.gpu_placement != "legacy":
+            raise ValueError("balanced_four_gpu is not supported by service ingestion")
         from nemo_retriever.service.service_ingestor import ServiceIngestor
 
         service_kwargs: dict[str, Any] = {
@@ -82,6 +84,14 @@ def create_ingestor(
         allow_no_gpu=parsed.allow_no_gpu,
         node_overrides=parsed.node_overrides,
         error_policy=parsed.error_policy,
+        **(
+            {
+                "gpu_placement": parsed.gpu_placement,
+                "gpu_placement_ready_timeout_s": parsed.gpu_placement_ready_timeout_s,
+            }
+            if parsed.gpu_placement != "legacy"
+            else {}
+        ),
     )
 
 

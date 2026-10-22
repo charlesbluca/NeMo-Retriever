@@ -126,6 +126,49 @@ is incorrect.
     shown in current NeMo Retriever Library output exists in `25.4.2`; include
     the exact old exception and logs when escalating.
 
+## Four-GPU placement is rejected or fails { #balanced-four-gpu-placement-failures }
+
+!!! note "Development branch option"
+
+    This section applies to `gpu_placement="balanced_four_gpu"` on
+    `mr/b200-balanced-four-gpu-placement`. The option is not available in
+    current NVIDIA `main` or a released package.
+
+The policy accepts a narrow fixed-pool graph and owns its Ray placement group
+for the complete ingest execution. A rejected configuration, readiness
+timeout, placement mismatch, or cleanup failure aborts ingestion.
+
+Invalid options and early graph admission can raise `ValueError`. Ordinary
+failures inside the owned execution raise
+`nemo_retriever.graph.gpu_placement.GpuPlacementError`. Retain its
+`gpu_placement_receipt` and chained exception. You can also read the receipt
+from `GraphIngestor.gpu_placement_receipt` after that execution. Early
+validation can fail before a placement receipt exists.
+
+`KeyboardInterrupt` and `SystemExit` keep their types and receive a
+`gpu_placement_receipt` attribute after the owned execution cleans up.
+
+Use the failing phase to select the corrective action.
+
+| Failing phase | Checks |
+| --- | --- |
+| Configuration or graph admission | Use `run_mode="batch"` with an ingestor-owned local Ray runtime. Omit `ray_address`, and do not reuse a runtime initialized externally or by legacy ingestion. Use one PDF branch, local Page Elements and OCR, local Hugging Face embedding, and disabled Table Structure. Remove unsupported GPU stages and scheduling overrides. |
+| Resource preflight | Set Page Elements, OCR, and embedding worker counts to `2`, `4`, and `8`. Request `1` CPU and `0.25` GPU per actor. Allow `16` CPUs for the group plus CPU capacity for PDF, source, and other work outside it. |
+| Placement-group readiness or actor startup | Set an explicit `CUDA_VISIBLE_DEVICES` value with four distinct GPU indices or UUIDs before Ray starts. Confirm that the runtime can reserve all four bundles on one node. A Hugging Face actor reaches `ready` after its first normal batch verifies CUDA parameters. Check resource availability, data flow, and actor logs before raising `gpu_placement_ready_timeout_s`. Its default is `60.0` seconds. |
+| Unexpected actor allocation | Use the fixed pools without adaptive concurrency or additional consumers. The policy rejects new allocations beyond the exact role-slot counts. |
+| Actor placement verification | Retain the creator job and node identities, owner, placement-group, role-slot, model-device, Ray accelerator, and physical GPU UUID observations. Logical `cuda:0` or a bundle number alone does not prove physical GPU placement. |
+| Cleanup | Retain the terminal cleanup status and any original ingest error. Check `terminal_iterator_closed`, `cleanup.actor_processes_exited`, `cleanup.owned_group_removed`, and `cleanup.GPU_resources_released` before starting query models or another ingest. Forced cleanup fails qualification. |
+
+The policy does not override an actor's CUDA device mask or silently use
+legacy scheduling, CPU inference, or extra GPUs. Do not remove unrelated
+placement groups or terminate unrelated actors to resolve a failed run.
+
+A cleanup failure can occur after a sink has written rows. Inspect the sink
+before retrying the same documents to avoid unintended duplicate writes.
+
+For the supported configuration and planned bundle mapping, refer to
+[Place fixed actor pools across four GPUs](performance_guide.md#balanced-four-gpu-placement).
+
 ## Can't process long, non-language text strings { #cant-process-long-non-language-text-strings }
 
 NeMo Retriever Library is designed to process language and language-length strings.

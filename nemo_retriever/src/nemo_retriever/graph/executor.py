@@ -135,7 +135,9 @@ def arrow_table_to_pandas(table: Any) -> pd.DataFrame:
 
 
 @nvtx.annotate("nrl.batch::ray.materialize", color="blue")
-def ray_dataset_to_pandas(dataset: ray.data.Dataset) -> pd.DataFrame:
+def ray_dataset_to_pandas(
+    dataset: ray.data.Dataset, *, on_iteration_closed: Callable[[], None] | None = None
+) -> pd.DataFrame:
     """Materialize a Ray Dataset without returning malformed Arrow arrays.
 
     Ray 2.56+ enables Arrow-backed pandas conversion by default. Calling
@@ -156,7 +158,18 @@ def ray_dataset_to_pandas(dataset: ray.data.Dataset) -> pd.DataFrame:
     pandas.DataFrame
         Row-safe DataFrame containing all rows from ``dataset``.
     """
-    frames = [arrow_table_to_pandas(block) for block in dataset.iter_batches(batch_format=None, batch_size=None)]
+    if on_iteration_closed is None:
+        frames = [arrow_table_to_pandas(block) for block in dataset.iter_batches(batch_format=None, batch_size=None)]
+    else:
+        iterator = iter(dataset.iter_batches(batch_format=None, batch_size=None))
+        try:
+            frames = [arrow_table_to_pandas(block) for block in iterator]
+        finally:
+            close = getattr(iterator, "close", None)
+            if not callable(close):
+                raise RuntimeError("Owned placement ingestion requires a closable Ray Data iterator")
+            close()
+            on_iteration_closed()
     if frames:
         return pd.concat(frames, ignore_index=True)
 
@@ -555,6 +568,7 @@ class RayDataExecutor(AbstractExecutor):
         self._node_overrides = node_overrides or {}
         self._auto_concurrency_nodes = auto_concurrency_nodes or set()
         self._resources_preflight_complete = False
+        self._placement: Any = None
 
     def _has_remote_endpoint(self, node: Node) -> bool:
         """Return whether a node delegates inference to a remote endpoint."""
@@ -686,7 +700,8 @@ class RayDataExecutor(AbstractExecutor):
         nodes = self._linearize(self.graph)
         sink_index = self._stream_ingest_index(nodes, require_terminal=not return_results)
         if sink_index is None:
-            return ray_dataset_to_pandas(self.build_dataset(data))
+            options = {"on_iteration_closed": self._placement.iteration_closed} if self._placement is not None else {}
+            return ray_dataset_to_pandas(self.build_dataset(data), **options)
 
         sink_operator = nodes[sink_index].operator
         has_downstream_nodes = sink_index + 1 < len(nodes)
@@ -723,6 +738,8 @@ class RayDataExecutor(AbstractExecutor):
             close = getattr(batch_iterator, "close", None)
             if callable(close):
                 close()
+                if self._placement is not None:
+                    self._placement.iteration_closed()
 
         if not return_results:
             return pd.DataFrame([{"input_rows": input_rows, "submitted_records": submitted_records}])
@@ -812,7 +829,9 @@ class RayDataExecutor(AbstractExecutor):
 
         cluster = self._preflight_cluster_resources or gather_cluster_resources(ray)
         available_gpus = cluster.available_gpu_count()
-        resolved_graph = resolve_graph(self.graph, cluster)
+        resolved_graph = (
+            self._placement.graphs[id(self)] if self._placement is not None else resolve_graph(self.graph, cluster)
+        )
         all_nodes = self._linearize(resolved_graph)
         sink_index = self._stream_ingest_index(all_nodes)
         if sink_index is not None and segment == "before_stream_ingest":
@@ -932,6 +951,22 @@ class RayDataExecutor(AbstractExecutor):
                     "operator_class": node.operator_class,
                     "operator_kwargs": node.operator_kwargs,
                 }
+
+            if self._placement is not None:
+                if num_gpus:
+                    from nemo_retriever.graph.gpu_placement import PlacementOperatorAdapter
+
+                    role = node.name
+                    overrides["ray_remote_args_fn"] = self._placement.register(role)
+                    overrides["max_restarts"] = 0
+                    constructor_kwargs = {
+                        "operator_class": map_operator_class,
+                        "operator_kwargs": constructor_kwargs,
+                        "placement": self._placement.actor_payload(role),
+                    }
+                    map_operator_class = PlacementOperatorAdapter
+                else:
+                    overrides["scheduling_strategy"] = "DEFAULT"
 
             ds = ds.map_batches(
                 map_operator_class,

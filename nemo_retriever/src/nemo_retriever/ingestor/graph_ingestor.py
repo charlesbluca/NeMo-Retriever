@@ -28,6 +28,8 @@ from __future__ import annotations
 
 import logging
 import os
+from contextlib import contextmanager, nullcontext
+from copy import deepcopy
 from dataclasses import dataclass
 from io import BytesIO
 from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Self, Sequence, Tuple, Union
@@ -511,6 +513,8 @@ class GraphIngestor(ingestor):
         node_overrides: Optional[Dict[str, Dict[str, Any]]] = None,
         show_progress: bool = True,
         error_policy: str = "raise",
+        gpu_placement: str = "legacy",
+        gpu_placement_ready_timeout_s: float = 60.0,
     ) -> None:
         super().__init__()
         self.files(documents or [])
@@ -518,6 +522,14 @@ class GraphIngestor(ingestor):
             raise ValueError(f"run_mode must be 'batch' or 'inprocess', got {run_mode!r}")
         if error_policy not in {"raise", "collect"}:
             raise ValueError(f"error_policy must be 'raise' or 'collect', got {error_policy!r}")
+        from nemo_retriever.graph.gpu_placement import validate_policy
+
+        validate_policy(gpu_placement, gpu_placement_ready_timeout_s)
+        if gpu_placement != "legacy" and (run_mode != "batch" or ray_address or allow_no_gpu):
+            raise ValueError("balanced_four_gpu requires local GPU batch ingestion")
+        self._gpu_placement = gpu_placement
+        self._gpu_placement_ready_timeout_s = gpu_placement_ready_timeout_s
+        self._gpu_placement_receipt: dict[str, Any] | None = None
         self._run_mode = run_mode
         self._ray_address = ray_address
         self._ray_log_to_driver = ray_log_to_driver
@@ -923,6 +935,8 @@ class GraphIngestor(ingestor):
         """
         return_failures = self._resolve_execute_flag(params, kwargs, "return_failures", default=False)
         return_results = self._resolve_execute_flag(params, kwargs, "return_results", default=True)
+        if self._gpu_placement != "legacy":
+            self._gpu_placement_receipt = None
         if not return_results:
             if self._run_mode != "batch" or self._vdb_upload_params is None:
                 raise ValueError("return_results=False requires run_mode='batch' with a VDB upload")
@@ -952,6 +966,22 @@ class GraphIngestor(ingestor):
             return self._finalize_ingest_result(result, return_failures=return_failures)
 
         default_branches = self._plan_default_extraction_branches()
+        if self._gpu_placement != "legacy":
+            if (
+                not default_branches
+                or len(default_branches) != 1
+                or default_branches[0].family != "pdf"
+                or self._all_buffers()
+                or self._inline_texts
+                or self._caption_params is not None
+                or self._embed_params is None
+                or self._embed_params.local_ingest_embed_backend != "hf"
+                or self._extract_params is None
+                or self._extract_params.use_table_structure
+            ):
+                raise ValueError(
+                    "balanced_four_gpu supports one PDF branch, local HF embedding and disabled table structure"
+                )
         execute_branches = default_branches is not None and (
             len(default_branches) > 1 or self._has_mixed_inline_sources() or bool(self._effective_source_map())
         )
@@ -1060,12 +1090,13 @@ class GraphIngestor(ingestor):
             return result
 
         ray, cluster_resources = self._ensure_batch_runtime()
+        sizing_resources = self._placement_sizing_resources(cluster_resources)
         effective_allow_no_gpu = self._allow_no_gpu or cluster_resources.total_gpu_count() == 0
         derived_overrides = batch_tuning_to_node_overrides(
             effective_extraction.extract_params,
             self._embed_params,
             store_params=self._store_params,
-            cluster_resources=cluster_resources,
+            cluster_resources=sizing_resources,
             allow_no_gpu=effective_allow_no_gpu,
             caption_params=self._caption_params,
             video_frame_params=effective_extraction.video_frame_params,
@@ -1087,16 +1118,18 @@ class GraphIngestor(ingestor):
                 )
                 - {name for name, override in self._node_overrides.items() if "concurrency" in override}
             ),
+            **({"source_cpu_reservation": 1} if self._gpu_placement != "legacy" else {}),
         )
         executor_input = self._inline_text_dataset(ray.data) if self._inline_texts else self._documents
-        if return_results:
-            result = executor.ingest(executor_input)
-        else:
-            result = executor._ingest(
-                executor_input,
-                return_results=False,
-                validate_batch=self._raise_for_stage_errors,
-            )
+        with self._placement_context(ray, [executor], cluster_resources):
+            if return_results:
+                result = executor.ingest(executor_input)
+            else:
+                result = executor._ingest(
+                    executor_input,
+                    return_results=False,
+                    validate_batch=self._raise_for_stage_errors,
+                )
         self._rd_dataset = result
         return result
 
@@ -1179,13 +1212,76 @@ class GraphIngestor(ingestor):
             ensure_batch_runtime=self._ensure_batch_runtime,
             return_results=return_results,
             validate_batch=self._raise_for_stage_errors if not return_results else None,
+            **(
+                {
+                    "placement_context": self._placement_context,
+                    "placement_sizing_resources": self._placement_sizing_resources,
+                }
+                if self._gpu_placement != "legacy"
+                else {}
+            ),
         ).execute()
         self._rd_dataset = result if self._run_mode == "batch" else None
         return result
 
     def _ensure_batch_runtime(self) -> tuple[Any, Any]:
-        ray = ensure_local_ray_runtime(self._ray_address, log_to_driver=self._ray_log_to_driver)
+        runtime_kwargs = {"log_to_driver": self._ray_log_to_driver}
+        if self._gpu_placement != "legacy":
+            runtime_kwargs["record_local_owner"] = True
+        ray = ensure_local_ray_runtime(self._ray_address, **runtime_kwargs)
         return ray, gather_cluster_resources(ray)
+
+    @property
+    def gpu_placement_receipt(self) -> dict[str, Any] | None:
+        """Hash-free actor/UUID/ownership and terminal cleanup evidence, when enabled."""
+        return deepcopy(self._gpu_placement_receipt)
+
+    def _placement_sizing_resources(self, resources: Any) -> Any:
+        if self._gpu_placement == "legacy":
+            return resources
+        from nemo_retriever.graph.gpu_placement import outside_resources
+
+        return outside_resources(resources)
+
+    @contextmanager
+    def _placement_context(self, ray: Any, executors: list[Any], resources: Any) -> Any:
+        if self._gpu_placement == "legacy":
+            with nullcontext():
+                yield None
+            return
+        from nemo_retriever.graph.gpu_placement import BalancedPlacement, GpuPlacementError
+
+        owner = None
+        try:
+            owner = BalancedPlacement(ray, executors, resources, ready_timeout_s=self._gpu_placement_ready_timeout_s)
+            with owner:
+                yield owner
+        except BaseException as exc:
+            receipt = (
+                owner.receipt
+                if owner is not None
+                else {
+                    "schema_version": 1,
+                    "policy": "balanced_four_gpu",
+                    "status": "failed",
+                    "phase": "preflight",
+                    "cleanup": {
+                        "status": "passed",
+                        "owned_group_created": False,
+                        "owned_group_removed": False,
+                        "forced_actor_names": [],
+                        "errors": [],
+                    },
+                }
+            )
+            self._gpu_placement_receipt = receipt
+            if not isinstance(exc, Exception):
+                exc.gpu_placement_receipt = receipt
+                raise
+            raise GpuPlacementError("Balanced GPU placement ingestion failed", receipt) from exc
+        finally:
+            if owner is not None:
+                self._gpu_placement_receipt = owner.receipt
 
     # ------------------------------------------------------------------
     # Internal helpers

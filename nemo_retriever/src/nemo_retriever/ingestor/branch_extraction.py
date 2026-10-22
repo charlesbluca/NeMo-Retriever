@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import logging
+from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from io import BytesIO
 from pathlib import Path
@@ -128,6 +129,8 @@ class ExtractionBranchExecutor:
     ensure_batch_runtime: Callable[[], tuple[Any, Any]]
     return_results: bool = True
     validate_batch: Callable[[Any], None] | None = None
+    placement_context: Callable[..., Any] | None = None
+    placement_sizing_resources: Callable[[Any], Any] | None = None
 
     def execute(self) -> Any:
         logger.info(
@@ -141,6 +144,11 @@ class ExtractionBranchExecutor:
 
     def _execute_batch(self) -> Any:
         ray_module, cluster_resources = self.ensure_batch_runtime()
+        sizing_resources = (
+            self.placement_sizing_resources(cluster_resources)
+            if self.placement_sizing_resources is not None
+            else cluster_resources
+        )
         effective_allow_no_gpu = self.allow_no_gpu or cluster_resources.total_gpu_count() == 0
         branch_datasets: list[Any] = []
         branch_executors: list[RayDataExecutor] = []
@@ -158,7 +166,7 @@ class ExtractionBranchExecutor:
                 effective_extraction.extract_params,
                 None,
                 store_params=None,
-                cluster_resources=cluster_resources,
+                cluster_resources=sizing_resources,
                 allow_no_gpu=effective_allow_no_gpu,
                 caption_params=None,
                 video_frame_params=effective_extraction.video_frame_params,
@@ -208,7 +216,7 @@ class ExtractionBranchExecutor:
             None,
             self.embed_params,
             store_params=self.store_params,
-            cluster_resources=cluster_resources,
+            cluster_resources=sizing_resources,
             allow_no_gpu=effective_allow_no_gpu,
             caption_params=self.caption_params,
             video_frame_params=None,
@@ -219,7 +227,7 @@ class ExtractionBranchExecutor:
             default_concurrency_node_names(None, self.embed_params, self.store_params, self.caption_params),
             source_cpu_reservation=0,
         )
-        if hasattr(cluster_resources, "available_cpu_count"):
+        if self.placement_context is None and hasattr(cluster_resources, "available_cpu_count"):
             normalization_cpus = 1.0 if len(branch_inputs) > 1 else 0.0
             preflight_executors(
                 [*branch_executors, post_executor],
@@ -227,25 +235,31 @@ class ExtractionBranchExecutor:
                 reserved_cpus=normalization_cpus,
             )
 
-        for executor, input_data in branch_inputs:
-            dataset = executor.build_dataset(input_data)
-            if self.source_map:
-                dataset = dataset.map_batches(
-                    call_pandas_function_on_arrow,
-                    batch_format="pyarrow",
-                    fn_kwargs={
-                        "fn": restore_source_urls,
-                        "fn_kwargs": {"source_map": self.source_map},
-                    },
-                )
-            branch_datasets.append(dataset)
-        normalized = normalize_ray_branch_datasets(branch_datasets)
-        combined = normalized[0]
-        for branch_ds in normalized[1:]:
-            combined = combined.union(branch_ds)
-        if self.return_results:
-            return post_executor.ingest(combined)
-        return post_executor._ingest(combined, return_results=False, validate_batch=self.validate_batch)
+        placement = (
+            self.placement_context(ray_module, [*branch_executors, post_executor], cluster_resources)
+            if self.placement_context is not None
+            else nullcontext()
+        )
+        with placement:
+            for executor, input_data in branch_inputs:
+                dataset = executor.build_dataset(input_data)
+                if self.source_map:
+                    dataset = dataset.map_batches(
+                        call_pandas_function_on_arrow,
+                        batch_format="pyarrow",
+                        fn_kwargs={
+                            "fn": restore_source_urls,
+                            "fn_kwargs": {"source_map": self.source_map},
+                        },
+                    )
+                branch_datasets.append(dataset)
+            normalized = normalize_ray_branch_datasets(branch_datasets)
+            combined = normalized[0]
+            for branch_ds in normalized[1:]:
+                combined = combined.union(branch_ds)
+            if self.return_results:
+                return post_executor.ingest(combined)
+            return post_executor._ingest(combined, return_results=False, validate_batch=self.validate_batch)
 
     def _execute_inprocess(self) -> Any:
         frames = []

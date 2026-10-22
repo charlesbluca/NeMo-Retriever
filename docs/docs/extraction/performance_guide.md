@@ -149,6 +149,34 @@ within each process. `EmbedParams.nim_http_max_concurrent` limits concurrent
 embedding requests per process and defaults to `32`. Ray actors run in separate
 processes, so multiple actors can submit requests concurrently.
 
+## Evaluate a dense index family { #evaluate-dense-index-family }
+
+!!! note "Development branch option"
+
+    Typed `IngestStorageOptions.index_type` is available on
+    `mr/b200-dense-index-family`. It is not available in current NVIDIA
+    `main` or a released package.
+
+Use an explicit `"IVF_HNSW_SQ"` or `"IVF_FLAT"` value to compare a fresh
+dense index build through the normal typed ingest workflow. Omit the field
+or leave it as `None` to preserve existing defaults. The explicit override
+requires dense mode and `overwrite=True`; it does not support sparse,
+hybrid, append, or reuse of a prebuilt index.
+
+Compare matched datasets, model revisions, embeddings, and query settings.
+Record the actual built index family and coverage, index-build time, memory,
+query latency, and retrieval-quality metrics. Keep each build in a separate
+target table so you can inspect both results. An IVF index is not built for
+fewer than 2 rows.
+
+Selecting `IVF_FLAT` does not establish exhaustive retrieval, explain
+differences between separately ingested tables, or guarantee a performance
+benefit. Evaluate the result with representative queries and relevance
+judgments before changing your deployment.
+
+For the accepted values, admission rules, and a complete execution example,
+refer to [Select a dense ingest index family](nemo-retriever-api-reference.md#dense-ingest-index-family).
+
 ## Profile batch ingestion with Nsight Systems
 
 Batch mode emits NVIDIA Tools Extension (NVTX) ranges from the driver and Ray

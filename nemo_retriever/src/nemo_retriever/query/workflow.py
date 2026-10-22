@@ -138,7 +138,11 @@ class ResolvedQueryPlan:
 
 def resolve_query_plan(request: QueryRequest) -> ResolvedQueryPlan:
     """Resolve root query options once so callers can reuse a Retriever."""
-    if request.retrieval.retrieval_mode == "sparse" and request.embed.embed_input_audit is not None and request.embed.embed_input_audit.enabled:
+    if (
+        request.retrieval.retrieval_mode == "sparse"
+        and request.embed.embed_input_audit is not None
+        and request.embed.embed_input_audit.enabled
+    ):
         raise ValueError("embed_input_audit requires a dense embedding stage.")
     embed_kwargs = build_embed_option_kwargs(
         request.embed.embed_invoke_url,

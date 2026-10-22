@@ -251,7 +251,9 @@ before model loading.
 Pass the typed audit configuration through `EmbedParams`,
 `IngestEmbedOptions`, or `QueryEmbedOptions`. The following ingestion example
 uses the existing `EmbedParams` API. Replace the input path and output directory
-with paths available to your workers.
+with paths available to your workers. For typed query plans, explicitly set
+`QueryEmbedOptions.local_query_embed_backend="hf"`; enabling the audit does not
+select a different inference backend.
 
 ```python
 from nemo_retriever import create_ingestor
@@ -287,7 +289,10 @@ decoded RGB pixels, rendered prompts, processor tensors, ordered microbatch
 membership, and output vectors before storage. Processor records distinguish
 valid tokens and image pixels from padded batch tensors. Identical images can
 have different padded tensors when their microbatch peers have different sizes.
-Compare valid content and batch context separately.
+Compare valid content and batch context separately. The shard header records
+`nrl-safe-yaml-v1`, the PyYAML version, and the exact canonicalization settings.
+Hash metadata uses sorted, alias-free UTF-8 YAML with explicit document markers
+and LF line endings. Compare fingerprints only under compatible hash contracts.
 
 The following limits apply independently to each actor.
 

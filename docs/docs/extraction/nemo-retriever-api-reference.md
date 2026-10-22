@@ -375,6 +375,112 @@ For LiteLLM `nvidia_nim/...` models, including the default `LiteLLMClient` and `
 
 Serializing a graph containing a literal API key fails with a contextual error instead of guessing which provider credential should be used on a worker.
 
+## Compare indexed and exact dense search { #indexed-exact-dense-search }
+
+!!! note "Development branch diagnostic"
+
+    This section describes the `query_compare_exact()` API on the
+    `mr/b200-ann-exact-diagnostic` development branch. It does not describe an
+    API available in current NVIDIA `main` or a released package.
+
+Use `Retriever.query_compare_exact()` to compare approximate nearest neighbor
+(ANN) search with exhaustive dense search. The method embeds your query once
+and submits the same ordered vectors to both searches on one frozen LanceDB
+table version. Normal `Retriever.query()` and `Retriever.queries()` behavior
+remains unchanged.
+
+The diagnostic supports `run_mode="local"`, the default query graph, and a
+dense-only filesystem LanceDB table with a verified `l2` vector index. The
+table must have exactly one index on the selected vector column. The method rejects
+service execution, custom graphs, reranking, and sparse or hybrid retrieval.
+Agentic retrieval and collection service workflows do not expose this
+diagnostic.
+
+The following example queries an existing dense-only table. Use the same
+LanceDB location that you configured during ingestion. The table must retain
+its embedding-model identity so normal query compatibility checks can resolve
+the matching model and revision.
+
+```python
+from nemo_retriever.graph.retriever import Retriever
+
+retriever = Retriever(
+    vdb_kwargs={"uri": "./lancedb", "table_name": "nemo-retriever"},
+)
+comparison = retriever.query_compare_exact(
+    "What methods improve document retrieval?",
+    top_k=10,
+    candidate_k=50,
+)
+
+indexed_hits = comparison.indexed_hits
+exact_hits = comparison.exact_hits
+shared_input_evidence = comparison.evidence
+```
+
+`DenseSearchComparisonResult` contains `indexed_hits`, `exact_hits`, and typed
+`evidence`. Import the result and evidence types from
+`nemo_retriever.query.comparison` when you need explicit type annotations.
+Both hit lists use the normal retrieval hit format. `top_k` limits final
+results after normal hit shaping. `candidate_k` controls the candidate bound
+shared by both searches and must be at least `top_k`. The method also
+accepts `page_dedup`, `content_types`, `vdb_kwargs`, and `embed_kwargs`.
+
+For an overlength query, the normal embedding path can produce multiple rows.
+Both searches receive those rows in the same order and apply the existing
+fusion policy independently. Each call accepts up to 256 expanded query rows
+and vector dimensions from 1 through 65,536. Refer to
+[Text inputs that exceed the model limit](embedding.md#text-input-overflow).
+
+### Verify the shared inputs { #indexed-exact-shared-inputs }
+
+The comparison evidence records the frozen table identity, version, vector
+column, dimension, effective distance metric, and embedding-model identity.
+It also records ordered query-row identities and hashes of the vector values
+submitted to each search. The diagnostic verifies complete row coverage and
+equal shared inputs. An invalid vector, changed table identity, or evidence
+mismatch raises an error instead of returning a successful comparison.
+
+Successful evidence sets `complete=True` and `timing_qualification=False`.
+You can convert the evidence to ordinary Python containers with
+`dataclasses.asdict()` for YAML serialization. Vector hashes use SHA-256 over
+an IEEE 754 little-endian float64 encoding of the extracted Python values.
+Metadata hashes use deterministic safe YAML. Hashing does not change the
+values submitted to either search.
+
+The evidence contains hashes and metadata rather than query vectors, raw
+query text, images, or model tensors. Vectors remain in memory for the current
+query. Repeated calls with the same configuration reuse a separate diagnostic
+graph and embedding model. Calls on one `Retriever` are serialized, and each
+call clears its temporary capture state. Query vectors are not cached by query
+text. The hit lists retain their normal document text and metadata, so they
+are separate from the hash-only evidence privacy contract.
+
+The indexed search retains its normal index settings. The exact search calls
+LanceDB's `bypass_vector_index()` query-builder method to scan the stored
+vectors. It does not rebuild the index or re-ingest documents. ANN probe and
+refinement settings do not tune the exhaustive search.
+
+### Interpret the comparison { #indexed-exact-interpretation }
+
+Matching results reduce the indexed-search explanation for this fixed table
+and these query vectors. They do not establish that earlier runs used the
+same query vectors, corpus vectors, or model inputs.
+
+Different results establish a search-path contribution with shared inputs.
+Inspect distance ties and their ordering before attributing a recall or
+ranking difference to missed neighbors. The comparison does not establish a
+cause for differences between separately ingested tables.
+
+Use both hit lists with the same evaluator, relevance judgments, document-ID
+mapping, and cutoff values. The method returns retrieval results and evidence;
+it does not compute retrieval-quality metrics.
+
+This is a ranking diagnostic. Hashing, exhaustive search, and the sequential
+search order change the work and cache state. Exclude the complete diagnostic
+run from throughput qualification and baseline promotion. Search durations
+cannot establish production latency or throughput gains.
+
 ## Generated Python API { #generated-python-api }
 
 The signatures below are the supported public ingest, retrieve, generation, and parameter surfaces. Private helpers, module loggers, and duplicate re-exports are omitted.
@@ -511,6 +617,9 @@ queries are split losslessly, searched, and fused before optional reranking
 with the original full query text. `top_k` limits the final hits per original
 query. For the fusion policy, refer to
 [Text inputs that exceed the model limit](embedding.md#text-input-overflow).
+
+For the development-branch paired search API, refer to
+[Compare indexed and exact dense search](#indexed-exact-dense-search).
 
 `Retriever.answer()` requires an `LLMClient` and returns `AnswerResult`. Pass an `AnswerJudge` only when you also pass `reference`. Those types are documented in [LLM clients, tasks, and results](#llm-clients-tasks-and-results).
 

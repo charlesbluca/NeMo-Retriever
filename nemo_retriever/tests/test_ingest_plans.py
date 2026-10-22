@@ -471,6 +471,17 @@ def test_batch_tuning_to_node_overrides_parallelizes_only_named_embed_reshape_no
     assert "UDFOperator" not in names
 
 
+def test_batch_tuning_to_node_overrides_can_skip_embed_repartition() -> None:
+    embed_params = EmbedParams(
+        batch_tuning=BatchTuningParams(embed_batch_size=128, embed_repartition=False),
+    )
+
+    overrides = batch_tuning_to_node_overrides(None, embed_params)
+
+    assert overrides["_BatchEmbedActor"]["batch_size"] == 128
+    assert "target_num_rows_per_block" not in overrides["_BatchEmbedActor"]
+
+
 def test_batch_preflight_reduces_default_pools_on_constrained_cluster() -> None:
     from nemo_retriever.graph.executor import RayDataExecutor
 
@@ -685,6 +696,29 @@ def test_batch_tuning_to_node_overrides_honors_table_structure_tuning() -> None:
     assert overrides["TableStructureActor"]["target_num_rows_per_block"] == 12
     assert overrides["TableStructureActor"]["num_cpus"] == 0.4
     assert overrides["TableStructureActor"]["num_gpus"] == 0.25
+
+
+def test_batch_tuning_to_node_overrides_can_skip_page_elements_repartition() -> None:
+    extract_params = ExtractParams(
+        batch_tuning=BatchTuningParams(page_elements_batch_size=8, page_elements_repartition=False),
+    )
+
+    overrides = batch_tuning_to_node_overrides(extract_params=extract_params, embed_params=None)
+
+    assert overrides["PageElementDetectionActor"]["batch_size"] == 8
+    assert "target_num_rows_per_block" not in overrides["PageElementDetectionActor"]
+
+
+def test_batch_tuning_to_node_overrides_can_skip_table_structure_repartition() -> None:
+    extract_params = ExtractParams(
+        use_table_structure=True,
+        batch_tuning=BatchTuningParams(table_structure_batch_size=8, table_structure_repartition=False),
+    )
+
+    overrides = batch_tuning_to_node_overrides(extract_params=extract_params, embed_params=None)
+
+    assert overrides["TableStructureActor"]["batch_size"] == 8
+    assert "target_num_rows_per_block" not in overrides["TableStructureActor"]
 
 
 def test_batch_tuning_to_node_overrides_repartitions_pdf_pages_for_extraction() -> None:
@@ -932,3 +966,54 @@ def test_build_graph_audio_mode_still_uses_audio_only_graph() -> None:
     )
 
     assert _root_names(graph)[:2] == ["MediaChunkActor", "ASRActor"]
+
+
+@pytest.mark.parametrize("stage", ["page_elements", "table_structure", "embed"])
+@pytest.mark.parametrize("repartition", [None, True, False])
+def test_ingest_request_preserves_independent_repartition_policy(tmp_path, stage, repartition) -> None:
+    from nemo_retriever.ingest.plan import (
+        IngestEmbedBatchOptions,
+        IngestEmbedOptions,
+        IngestExtractBatchOptions,
+        IngestExtractOptions,
+        IngestPlanRequest,
+        IngestRuntimeOptions,
+        IngestSourceOptions,
+        resolve_ingest_plan,
+    )
+
+    document = tmp_path / "document.pdf"
+    document.write_bytes(b"%PDF")
+    extract_policy = {f"{stage}_repartition": repartition} if stage != "embed" else {}
+    embed_policy = {"embed_repartition": repartition} if stage == "embed" else {}
+    plan = resolve_ingest_plan(
+        IngestPlanRequest(
+            source=IngestSourceOptions(documents=[str(document)]),
+            runtime=IngestRuntimeOptions(run_mode="batch"),
+            extract=IngestExtractOptions(
+                use_table_structure=True,
+                batch=IngestExtractBatchOptions(
+                    page_elements_batch_size=8,
+                    table_structure_batch_size=8,
+                    **extract_policy,
+                ),
+            ),
+            embed=IngestEmbedOptions(
+                embed_invoke_url="https://embed.example.com/v1/embeddings",
+                embed_model_name="nvidia/Nemotron-3.5-Embed-1B-BF16",
+                batch=IngestEmbedBatchOptions(embed_batch_size=16, **embed_policy),
+            ),
+        )
+    )
+
+    overrides = batch_tuning_to_node_overrides(plan.extract_params, plan.embed_params)
+    for name, actor, batch_size in (
+        ("page_elements", "PageElementDetectionActor", 8),
+        ("table_structure", "TableStructureActor", 8),
+        ("embed", "_BatchEmbedActor", 16),
+    ):
+        assert overrides[actor]["batch_size"] == batch_size
+        if name == stage and repartition is False:
+            assert "target_num_rows_per_block" not in overrides[actor]
+        else:
+            assert overrides[actor]["target_num_rows_per_block"] == batch_size

@@ -77,6 +77,78 @@ Related batch-size, CPU, and GPU-per-actor flags are documented in the [CLI inge
 
 Use the Ray dashboard to verify the available-resource snapshot and the planned worker allocation when you tune throughput.
 
+### Control row repartitioning
+
+In batch mode, the following `BatchTuningParams` controls enable size-based Ray
+repartitioning before each stage. Each control defaults to `True`.
+
+| Stage | Control | Row-batch setting |
+| --- | --- | --- |
+| Page Elements | `page_elements_repartition` | `page_elements_batch_size` |
+| Table Structure | `table_structure_repartition` | `table_structure_batch_size` |
+| Embedding | `embed_repartition` | `embed_batch_size` |
+
+When enabled and a stage has a positive batch size, the library uses that size
+as `target_num_rows_per_block` before the stage runs. Set a control to `False`
+to omit this derived block-size target. The stage still uses its configured
+batch size and worker settings. Required grouping in other graph stages still
+applies.
+
+The following example disables these three block-size targets. Replace
+`/path/to/your/document.pdf` with a PDF file that you supply.
+
+```python
+from nemo_retriever import create_ingestor
+from nemo_retriever.common.params import BatchTuningParams
+
+chunks = (
+    create_ingestor(run_mode="batch")
+    .files(["/path/to/your/document.pdf"])
+    .extract(
+        batch_tuning=BatchTuningParams(
+            page_elements_repartition=False,
+            table_structure_repartition=False,
+        )
+    )
+    .embed(
+        batch_tuning=BatchTuningParams(
+            embed_repartition=False,
+        )
+    )
+    .ingest()
+)
+```
+
+For typed ingest plans, set the extraction controls in
+`IngestExtractBatchOptions` and the embedding control in
+`IngestEmbedBatchOptions`. These optional fields default to `None`, which
+preserves the `True` defaults when the shared ingest plan resolves them.
+Compare throughput, memory use, errors, and extracted outputs against a
+representative baseline after changing these controls.
+
+### Tune embedding batches and reshape workers
+
+Set `BatchTuningParams.embed_batch_size` through `.embed(batch_tuning=...)` to
+control the Ray row-batch size supplied to embedding actors. The default is
+`32`. Set `embed_workers` to control embedding actor concurrency.
+
+Set `BatchTuningParams.embed_reshape_workers` to control concurrency separately
+for the content-to-page and content-to-element reshape stages before embedding.
+Its default, `None`, leaves their concurrency unspecified. Typed ingest plans
+accept this setting through `IngestEmbedBatchOptions`.
+
+For remote `image` and `text_image` embedding, set
+`.embed(embed_inference_batch_size=...)` to limit inputs per HTTP request. The
+default is `16`, and the effective request size is capped by
+`EmbedParams.inference_batch_size`, which defaults to `32`. This request limit
+is separate from the Ray row-batch size. Typed ingest plans accept it through
+`IngestEmbedOptions`.
+
+Remote embedding reuses its HTTP client and request worker pool across batches
+within each process. `EmbedParams.nim_http_max_concurrent` limits concurrent
+embedding requests per process and defaults to `32`. Ray actors run in separate
+processes, so multiple actors can submit requests concurrently.
+
 ## Profile batch ingestion with Nsight Systems
 
 Batch mode emits NVIDIA Tools Extension (NVTX) ranges from the driver and Ray

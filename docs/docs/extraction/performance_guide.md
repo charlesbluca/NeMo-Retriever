@@ -158,9 +158,8 @@ processes, so multiple actors can submit requests concurrently.
 
 !!! note "Development branch option"
 
-    Typed `IngestStorageOptions.index_type` is available on
-    `mr/b200-dense-index-family`. It is not available in current NVIDIA
-    `main` or a released package.
+    `IngestStorageOptions.index_type` is under development. It is not
+    available in current NVIDIA `main` or a released package.
 
 Use an explicit `"IVF_HNSW_SQ"` or `"IVF_FLAT"` value to compare a fresh
 dense index build through the normal typed ingest workflow. Omit the field

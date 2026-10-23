@@ -79,6 +79,11 @@ Use the Ray dashboard to verify the available-resource snapshot and the planned 
 
 ### Control row repartitioning
 
+!!! note "Development branch controls"
+
+    These repartition controls are under development. They are not available
+    in current NVIDIA `main` or a released package.
+
 In batch mode, the following `BatchTuningParams` controls enable size-based Ray
 repartitioning before each stage. Each control defaults to `True`.
 

@@ -379,9 +379,8 @@ Serializing a graph containing a literal API key fails with a contextual error i
 
 !!! note "Development branch diagnostic"
 
-    This section describes the `query_compare_exact()` API on the
-    `mr/b200-ann-exact-diagnostic` development branch. It does not describe an
-    API available in current NVIDIA `main` or a released package.
+    `Retriever.query_compare_exact()` is under development. It is not
+    available in current NVIDIA `main` or a released package.
 
 Use `Retriever.query_compare_exact()` to compare approximate nearest neighbor
 (ANN) search with exhaustive dense search. The method embeds your query once
